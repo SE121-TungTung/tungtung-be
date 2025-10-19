@@ -2,85 +2,211 @@ from pydantic import create_model, Field
 from sqlalchemy.inspection import inspect
 from sqlalchemy import String, Integer, Boolean, DateTime, Float, Text, JSON, UUID
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from typing import Optional, get_type_hints, Union, Any, List
+from sqlalchemy.types import Enum as SQLEnum
+from typing import Optional, get_type_hints, Union, Any, List, Dict, Type
 import datetime
 import logging
 import uuid
+from decimal import Decimal
+import enum
 
 logger = logging.getLogger(__name__)
 
-def sqlalchemy_to_pydantic_type(column):
-    """Convert SQLAlchemy column type to Python type with better handling"""
+def _is_valid_type(obj):
+    """Kiểm tra xem obj có phải là một valid Python type class không"""
     try:
-        # Handle PostgreSQL UUID specifically
-        if isinstance(column.type, (UUID, PG_UUID)):
-            return uuid.UUID
+        # Type class thực sự
+        if isinstance(obj, type):
+            return True
+        # Decimal là một exception
+        if obj == Decimal or obj is Decimal:
+            return True
+        # Typing objects (Optional, Union, List, Dict, etc)
+        if hasattr(obj, '__origin__'):
+            return True
+        return False
+    except TypeError:
+        return False
+
+def _is_enum_type(python_type):
+    """Check if a type is an Enum"""
+    try:
+        return isinstance(python_type, type) and issubclass(python_type, enum.Enum)
+    except (TypeError, AttributeError):
+        return False
+
+def sqlalchemy_to_pydantic_type(column):
+    """Convert SQLAlchemy column type to Python type with better handling and error checks."""
+    
+    python_type: Type = str 
+
+    # 1. Handle PostgreSQL UUID
+    if isinstance(column.type, (UUID, PG_UUID)):
+        python_type = uuid.UUID
+    
+    # 2. Handle JSON fields
+    elif isinstance(column.type, JSON):
+        python_type = dict
         
-        # Handle JSON fields
-        if isinstance(column.type, JSON):
-            return dict
-        
-        # Handle standard types
-        python_type = column.type.python_type
-        
-    except (NotImplementedError, AttributeError):
-        # Fallback for complex types
-        if isinstance(column.type, (String, Text)):
+    # 3. Handle SQLAlchemy Enum
+    elif isinstance(column.type, SQLEnum):
+        try:
+            # Ưu tiên sử dụng Enum Class
+            python_type = column.type.enum_class
+        except AttributeError:
             python_type = str
-        elif isinstance(column.type, Integer):
-            python_type = int
-        elif isinstance(column.type, Float):
-            python_type = float
-        elif isinstance(column.type, Boolean):
-            python_type = bool
-        elif isinstance(column.type, DateTime):
-            python_type = datetime.datetime
-        else:
-            python_type = str
+    
+    # 4. Handle standard types
+    else:
+        try:
+            resolved_type = column.type.python_type
+            
+            if not _is_valid_type(resolved_type):
+                raise TypeError("python_type attribute is not a valid type class.")
+            
+            python_type = resolved_type
+                
+        except (NotImplementedError, AttributeError, TypeError) as e:
+            logger.debug(f"Column {column.name}: python_type resolution failed ({e}), falling back to isinstance checks")
+            
+            # 5. Fallback cho các kiểu phức tạp
+            if isinstance(column.type, (String, Text)):
+                python_type = str
+            elif isinstance(column.type, Integer):
+                python_type = int
+            elif isinstance(column.type, Float):
+                python_type = float
+            elif isinstance(column.type, Boolean):
+                python_type = bool
+            elif isinstance(column.type, DateTime):
+                python_type = datetime.datetime
+            elif 'decimal' in str(type(column.type)).lower() or 'numeric' in str(type(column.type)).lower():
+                python_type = Decimal
+            else:
+                python_type = str
+                logger.warning(f"Column {column.name}: Unable to determine type for {type(column.type)}, using str fallback")
     
     # Handle nullable columns
     if column.nullable:
-        return Optional[python_type]
-    return python_type
+        if _is_valid_type(python_type) and not hasattr(python_type, '__origin__'):
+            return Optional[python_type]
+        
+        if hasattr(python_type, '__origin__'):
+            return python_type
+
+        logger.warning(f"Final type check failed for nullable column {column.name}. Type: {python_type}. Falling back to Optional[str].")
+        return Optional[str]
+
+    # Trường hợp NON-NULLABLE
+    if _is_valid_type(python_type):
+        return python_type
+    
+    logger.warning(f"Final type check failed for required column {column.name}. Type: {python_type}. Falling back to str.")
+    return str
+
 
 def get_column_default(column):
     """Get default value from SQLAlchemy column with better handling"""
-    # Check for client-side default
-    if column.default is not None:
-        if hasattr(column.default, 'arg'):
-            default_value = column.default.arg
-            if callable(default_value):
-                try:
-                    # Handle functions like uuid.uuid4
-                    if default_value.__name__ == 'uuid4':
-                        return Field(default_factory=uuid.uuid4)
-                    return default_value()
-                except:
-                    return None
-            return default_value
-    
-    # Server defaults can't be evaluated client-side
-    if column.server_default is not None:
+    try:
+        if column.default is not None:
+            if hasattr(column.default, 'arg'):
+                default_value = column.default.arg
+                if callable(default_value):
+                    try:
+                        if hasattr(default_value, '__name__') and default_value.__name__ == 'uuid4':
+                            return Field(default_factory=uuid.uuid4)
+                        return default_value()
+                    except Exception as e:
+                        logger.debug(f"Failed to call default function: {e}")
+                        return None
+                return default_value
+        
+        if column.server_default is not None:
+            return None
+        
+        if not column.nullable:
+            return ... # Dấu chấm lửng nghĩa là BẮT BUỘC (required field)
+        
         return None
-    
-    # Required field if not nullable and no default
-    if not column.nullable:
-        return ...
-    
-    return None
+    except Exception as e:
+        logger.debug(f"Error getting column default for {column.name}: {e}")
+        return None
 
 def get_field_constraints(column):
     """Extract field constraints for validation"""
     constraints = {}
     
-    # String length constraints
-    if hasattr(column.type, 'length') and column.type.length:
-        constraints['max_length'] = column.type.length
-    
-    # Numeric constraints (if any check constraints exist)
-    # This is basic - could be expanded for more complex constraints
+    if isinstance(column.type, SQLEnum):
+        return constraints
+
+    # Chỉ áp dụng max_length cho String/Text types, không cho Enum
+    if isinstance(column.type, (String, Text)):
+        if hasattr(column.type, 'length') and column.type.length:
+            constraints['max_length'] = column.type.length
     
     return constraints
+
+def _is_optional_type(type_hint):
+    """Check if a type hint is Optional[T]"""
+    try:
+        return (hasattr(type_hint, '__origin__') and 
+                type_hint.__origin__ is Union and
+                type(None) in type_hint.__args__)
+    except (AttributeError, TypeError):
+        return False
+
+def _get_example_value(python_type, field_name: str):
+    """Generate realistic example values for OpenAPI docs"""
+    try:
+        # --- FIX: Trích xuất Base Type an toàn ---
+        base_type = python_type
+        if _is_optional_type(python_type):
+            non_none_args = [arg for arg in python_type.__args__ if arg is not type(None)]
+            base_type = non_none_args[0] if non_none_args else str
+        
+        # SỬ DỤNG base_type cho tất cả các kiểm tra tiếp theo
+        
+        # Field-specific examples (giữ nguyên)
+        field_examples = {
+            'email': 'user@example.com', 'phone': '+1234567890', 'name': 'Example Name',
+            'first_name': 'John', 'last_name': 'Doe', 'title': 'Example Title',
+            'description': 'This is an example description', 'password': 'SecurePassword123',
+            'url': 'https://example.com', 'address': '123 Main St, City, State',
+        }
+        
+        for key, value in field_examples.items():
+            if key in field_name.lower():
+                return value
+        
+        # Handle Enum types
+        if _is_enum_type(base_type):
+            try:
+                first_member = next(iter(base_type))
+                return str(first_member.value)
+            except (StopIteration, AttributeError):
+                return None
+        
+        # --- Type-based examples ---
+        if base_type == str: return 'example string'
+        elif base_type == int: 
+            # Cung cấp ví dụ Integer hợp lý hơn cho các trường phổ biến
+            if 'capacity' in field_name.lower() or 'max_students' in field_name.lower():
+                return 20
+            elif 'hour' in field_name.lower():
+                return 60
+            return 42
+        elif base_type == float: return 123.45
+        elif base_type == bool: return True
+        elif base_type == datetime.datetime: return '2024-01-01T00:00:00Z'
+        elif base_type == datetime.date: return '2024-01-01'
+        elif base_type == uuid.UUID: return str(uuid.uuid4())
+        elif base_type == dict: return {}
+        elif base_type == Decimal or base_type is Decimal: return 999.99
+        
+        return None
+    except Exception as e:
+        logger.debug(f"Error generating example value for {field_name}: {e}")
+        return None
 
 def create_pydantic_model_from_sqlalchemy(
     sqlalchemy_model,
@@ -106,107 +232,85 @@ def create_pydantic_model_from_sqlalchemy(
         try:
             python_type = sqlalchemy_to_pydantic_type(column)
             
-            # Override optionality based on parameters
-            if column.name in optional_fields:
-                if not _is_optional_type(python_type):
-                    python_type = Optional[python_type]
-            elif column.name in required_fields:
-                if _is_optional_type(python_type):
-                    # Extract the non-optional type
-                    python_type = python_type.__args__[0]
-            
-            # Get default value
+            # Khởi tạo giá trị mặc định
             default_value = get_column_default(column)
             
+            # --- LOGIC GHI ĐÈ BẮT BUỘC CHO UPDATE SCHEMA (PARTIAL UPDATE) ---
+            is_explicitly_optional = column.name in optional_fields
+            
+            if is_explicitly_optional:
+                # 1. Buộc kiểu dữ liệu là Optional[T]
+                if not _is_optional_type(python_type):
+                    python_type = Optional[python_type]
+                    
+                # 2. Buộc giá trị mặc định là None (thay thế ...) để trở thành tùy chọn
+                if default_value is ...:
+                    default_value = None 
+            # -------------------------------------------------------------------
+            
+            # Logic required_fields (giữ nguyên)
+            elif column.name in required_fields:
+                if _is_optional_type(python_type):
+                    non_none_args = [arg for arg in python_type.__args__ if arg is not type(None)]
+                    if non_none_args:
+                        python_type = non_none_args[0]
+                    else:
+                        python_type = str
+            
+            # Validate type
+            if not _is_valid_type(python_type):
+                logger.warning(f"Invalid type {python_type} for column {column.name}. Using Optional[str].")
+                raise TypeError(f"Resolved type {python_type} is not a valid Python type class.")
+
             # Get constraints
             constraints = get_field_constraints(column)
             
             # Create Field with all information
             field_kwargs = {
                 'description': f"{column.name.replace('_', ' ').title()}",
-                'example': _get_example_value(python_type, column.name),
                 **constraints
             }
             
+            # Add example safely
+            example_value = _get_example_value(python_type, column.name)
+            if example_value is not None:
+                field_kwargs['example'] = example_value
+            
+            # Handle default value safely
             if default_value is not None:
-                if isinstance(default_value, Field):
-                    # If it's already a Field (like uuid default_factory)
-                    field_kwargs.update(default_value.__dict__)
-                    field_info = Field(**field_kwargs)
+                if hasattr(default_value, '__class__') and default_value.__class__.__name__ == 'FieldInfo':
+                    # Handle Field(default_factory)
+                    field_info = Field(default=default_value.default, **field_kwargs)
                 else:
                     field_info = Field(default=default_value, **field_kwargs)
             else:
-                field_info = Field(**field_kwargs)
+                # Nếu default_value là None, Field sẽ coi là tùy chọn và mặc định là None
+                field_info = Field(default=None, **field_kwargs)
             
             fields[column.name] = (python_type, field_info)
             
         except Exception as e:
-            logger.warning(f"Could not process column {column.name}: {e}")
+            logger.warning(
+                f"Column processing failed for '{column.name}'. Using Optional[str] as fallback. "
+                f"Original error: {str(e)}"
+            )
             # Fallback to optional string
-            fields[column.name] = (Optional[str], Field(default=None))
+            fields[column.name] = (Optional[str], Field(default=None, description=f"{column.name.replace('_', ' ').title()}"))
     
     # Add relationships if requested
     if include_relationships:
         for relationship in mapper.relationships:
             if relationship.key not in exclude_fields:
-                # Import here to avoid circular imports
-                from typing import TYPE_CHECKING
-                if TYPE_CHECKING:
-                    fields[relationship.key] = (Optional[Any], Field(default=None))
-                else:
-                    fields[relationship.key] = (Optional[dict], Field(default=None))
+                try:
+                    from typing import TYPE_CHECKING
+                    if TYPE_CHECKING:
+                        fields[relationship.key] = (Optional[Any], Field(default=None))
+                    else:
+                        fields[relationship.key] = (Optional[dict], Field(default=None))
+                except Exception as e:
+                    logger.debug(f"Error adding relationship {relationship.key}: {e}")
     
     return create_model(model_name, **fields)
-
-def _is_optional_type(type_hint):
-    """Check if a type hint is Optional[T]"""
-    return (hasattr(type_hint, '__origin__') and 
-            type_hint.__origin__ is Union and
-            type(None) in type_hint.__args__)
-
-def _get_example_value(python_type, field_name: str):
-    """Generate realistic example values for OpenAPI docs"""
-    # Handle Optional types
-    if _is_optional_type(python_type):
-        python_type = python_type.__args__[0]
-    
-    # Field-specific examples
-    field_examples = {
-        'email': 'user@example.com',
-        'phone': '+1234567890',
-        'name': 'Example Name',
-        'first_name': 'John',
-        'last_name': 'Doe',
-        'title': 'Example Title',
-        'description': 'This is an example description',
-        'password': 'SecurePassword123',
-        'url': 'https://example.com',
-        'address': '123 Main St, City, State',
-    }
-    
-    for key, value in field_examples.items():
-        if key in field_name.lower():
-            return value
-    
-    # Type-based examples
-    if python_type == str:
-        return 'example string'
-    elif python_type == int:
-        return 42
-    elif python_type == float:
-        return 123.45
-    elif python_type == bool:
-        return True
-    elif python_type == datetime.datetime:
-        return '2024-01-01T00:00:00Z'
-    elif python_type == datetime.date:
-        return '2024-01-01'
-    elif python_type == uuid.UUID:
-        return str(uuid.uuid4())
-    elif python_type == dict:
-        return {}
-    
-    return None
 
 # Auto-generate schema sets for a model
 def generate_model_schemas(sqlalchemy_model, exclude_audit_fields: bool = True):
@@ -215,7 +319,7 @@ def generate_model_schemas(sqlalchemy_model, exclude_audit_fields: bool = True):
     
     # Standard fields to exclude
     base_exclude = ['id'] if exclude_audit_fields else []
-    audit_exclude = ['created_at', 'updated_at', 'created_by', 'updated_by'] if exclude_audit_fields else []
+    audit_exclude = ['created_at', 'updated_at', 'created_by', 'updated_by', 'deleted_at'] if exclude_audit_fields else []
     
     # Response schema (include everything)
     response_schema = create_pydantic_model_from_sqlalchemy(
@@ -238,7 +342,7 @@ def generate_model_schemas(sqlalchemy_model, exclude_audit_fields: bool = True):
         sqlalchemy_model,
         f"{model_name}Update",
         exclude_fields=base_exclude + audit_exclude,
-        optional_fields=all_fields
+        optional_fields=all_fields # Đảm bảo TẤT CẢ các trường này được xử lý là optional
     )
     
     return {

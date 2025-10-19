@@ -7,7 +7,9 @@ from pydantic import BaseModel
 from fastapi import HTTPException
 import logging
 import math
-from sqlalchemy import String, Text
+# THÊM: Import DateTime và datetime
+from sqlalchemy import String, Text, DateTime
+from datetime import datetime
 
 ModelType = TypeVar("ModelType", bound=DeclarativeMeta)
 CreateSchemaType = TypeVar("CreateSchemaType", bound=BaseModel)
@@ -21,6 +23,16 @@ class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         self.pk_column = self._get_primary_key()
         self.searchable_fields = self._get_searchable_fields()
         self.sortable_fields = self._get_sortable_fields()
+
+    # --- PHẦN MỚI: FILTER CHO SOFT DELETE ---
+    def _apply_soft_delete_filter(self, query: Query, include_deleted: bool = False) -> Query:
+        """Thêm điều kiện lọc chỉ lấy các bản ghi chưa bị xóa (deleted_at IS NULL)."""
+        if include_deleted or not hasattr(self.model, 'deleted_at'):
+            return query
+        
+        # Thêm điều kiện: deleted_at IS NULL
+        return query.filter(getattr(self.model, 'deleted_at') == None)
+    # -------------------------------------------
     
     def _get_primary_key(self):
         """Get primary key column dynamically"""
@@ -43,10 +55,13 @@ class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         mapper = inspect(self.model)
         return [col.name for col in mapper.columns]
     
-    def get(self, db: Session, id: Any) -> Optional[ModelType]:
-        """Get single record by ID"""
+    # --- SỬA ĐỔI: Thêm include_deleted và áp dụng filter ---
+    def get(self, db: Session, id: Any, include_deleted: bool = False) -> Optional[ModelType]:
+        """Get single record by ID, tự động lọc bản ghi đã xóa."""
         try:
-            return db.query(self.model).filter(self.pk_column == id).first()
+            query = db.query(self.model).filter(self.pk_column == id)
+            query = self._apply_soft_delete_filter(query, include_deleted) # Áp dụng lọc
+            return query.first()
         except Exception as e:
             logger.error(f"Error getting {self.model.__name__} with id {id}: {e}")
             return None
@@ -60,11 +75,15 @@ class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
         filters: Dict[str, Any] = None,
         search: str = None,
         sort_by: str = None,
-        sort_order: str = "asc"
+        sort_order: str = "asc",
+        include_deleted: bool = False # <-- THAM SỐ MỚI
     ) -> Dict[str, Any]:
         """Get multiple records with advanced filtering and pagination"""
         try:
             query = db.query(self.model)
+            
+            # Áp dụng bộ lọc xóa mềm
+            query = self._apply_soft_delete_filter(query, include_deleted) # Áp dụng lọc
             
             # Apply filters
             if filters:
@@ -198,46 +217,50 @@ class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
     
     def delete(self, db: Session, *, id: Any) -> ModelType:
         """Delete record (hard delete)"""
+        # --- SỬA ĐỔI: Dùng self.get(..., include_deleted=True) để xóa cứng luôn cả bản ghi đã xóa mềm ---
+        obj = self.get(db, id, include_deleted=True) 
+        if not obj:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"{self.model.__name__} not found"
+            )
+        
         try:
-            obj = self.get(db, id)
-            if not obj:
-                raise HTTPException(
-                    status_code=404, 
-                    detail=f"{self.model.__name__} not found"
-                )
-            
             db.delete(obj)
             db.commit()
             return obj
-            
-        except HTTPException:
-            raise
         except Exception as e:
             db.rollback()
             logger.error(f"Error deleting {self.model.__name__} with id {id}: {e}")
             raise HTTPException(status_code=500, detail="Error deleting record")
+            
     
     def soft_delete(self, db: Session, *, id: Any) -> ModelType:
-        """Soft delete with support for different soft delete patterns"""
+        """Soft delete: Cập nhật deleted_at timestamp nếu model hỗ trợ."""
+        
+        # Chỉ lấy bản ghi CHƯA bị xóa (include_deleted=False mặc định)
+        obj = self.get(db, id) 
+        if not obj:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"{self.model.__name__} not found"
+            )
+        
         try:
-            obj = self.get(db, id)
-            if not obj:
-                raise HTTPException(
-                    status_code=404, 
-                    detail=f"{self.model.__name__} not found"
-                )
-            
-            # Try different soft delete patterns
-            if hasattr(obj, 'is_active'):
-                obj.is_active = False
-            elif hasattr(obj, 'status'):
-                obj.status = 'inactive'  # or 'deleted'
-            elif hasattr(obj, 'deleted_at'):
-                from datetime import datetime
+            # Ưu tiên cơ chế deleted_at
+            if hasattr(obj, 'deleted_at'):
                 obj.deleted_at = datetime.utcnow()
+            
+            # # Fallback nếu không có deleted_at
+            # elif hasattr(obj, 'is_active'):
+            #     obj.is_active = False
+            # elif hasattr(obj, 'status'):
+            #     obj.status = 'inactive'
             else:
-                # No soft delete support, use hard delete
-                return self.delete(db, id=id)
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{self.model.__name__} does not support soft delete (missing soft delete columns)."
+                )
             
             db.commit()
             db.refresh(obj)
@@ -251,21 +274,22 @@ class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
             raise HTTPException(status_code=500, detail="Error deleting record")
     
     def get_by_field(self, db: Session, field_name: str, value: Any) -> Optional[ModelType]:
-        """Get record by any field"""
+        """Get record by any field, tự động lọc bản ghi đã xóa."""
         if not hasattr(self.model, field_name):
             return None
         
         try:
-            return db.query(self.model).filter(
+            query = db.query(self.model).filter(
                 getattr(self.model, field_name) == value
-            ).first()
+            )
+            query = self._apply_soft_delete_filter(query) # Áp dụng lọc
+            return query.first()
         except Exception as e:
             logger.error(f"Error getting {self.model.__name__} by {field_name}: {e}")
             return None
     
     def exists(self, db: Session, id: Any) -> bool:
-        """Check if record exists"""
-        return db.query(
-            db.query(self.model).filter(self.pk_column == id).exists()
-        ).scalar()
-    
+        """Check if record exists, tự động lọc bản ghi đã xóa."""
+        query = db.query(self.model).filter(self.pk_column == id)
+        query = self._apply_soft_delete_filter(query) # Áp dụng lọc
+        return db.query(query.exists()).scalar()
