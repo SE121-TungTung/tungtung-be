@@ -1,5 +1,5 @@
-from sqlalchemy import Column, String, Enum, Boolean, Date, JSON, Text, Integer, TIMESTAMP
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, String, Enum, Boolean, Date, Text, Integer, TIMESTAMP
+from sqlalchemy.dialects.postgresql import JSONB
 from app.models.base import BaseModel
 import enum
 
@@ -23,9 +23,9 @@ class User(BaseModel):
     email = Column(String(255), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(Enum(UserRole, values_callable=lambda obj: [e.value for e in obj], 
-        native_enum=False), default=UserRole.STUDENT, nullable=False)
+        native_enum=False, name='user_role'), default=UserRole.STUDENT, nullable=False)
     status = Column(Enum(UserStatus, values_callable=lambda obj: [e.value for e in obj], 
-        native_enum=False), default=UserStatus.ACTIVE, nullable=False)
+        native_enum=False, name='user_status'), default=UserStatus.ACTIVE, nullable=False)
     
     # Personal info
     first_name = Column(String(100), nullable=False)
@@ -36,8 +36,8 @@ class User(BaseModel):
     address = Column(Text)
     
     # Additional data
-    emergency_contact = Column(JSON)  # {name, phone, relationship}
-    preferences = Column(JSON, default={})
+    emergency_contact = Column(JSONB)  # {name, phone, relationship}
+    preferences = Column(JSONB, default={})
     
     # Security
     last_login = Column(TIMESTAMP(timezone=True))
@@ -45,10 +45,6 @@ class User(BaseModel):
     must_change_password = Column(Boolean, default=False)
     failed_login_attempts = Column(Integer, default=0)
     locked_until = Column(TIMESTAMP(timezone=True))
-    
-    # Audit
-    created_by = Column(UUID, nullable=True)
-    updated_by = Column(UUID, nullable=True)
 
 # class PasswordResetToken(BaseModel):
 #     __tablename__ = "password_reset_tokens"

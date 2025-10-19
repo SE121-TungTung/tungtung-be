@@ -1,14 +1,25 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Path, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from typing import Any, Dict, List, Optional, Type
-from pydantic import BaseModel, create_model
+from typing import Any, Dict, List, Optional, Type, get_type_hints
+from pydantic import BaseModel, create_model, Field
 import inflect
 from app.schemas.generator import generate_model_schemas
 from app.routers.generic_crud import CRUDBase
 
 # Initialize inflect for proper pluralization
 inflector = inflect.engine()
+
+# Hàm helper để cập nhật type hints cho các hàm được tạo động
+def _update_type_hints(func, hints: Dict[str, Type]):
+    """Applies type hints dynamically to a function to resolve dynamic types."""
+    existing_hints = get_type_hints(func)
+    
+    for name, type_ in hints.items():
+        existing_hints[name] = type_
+        
+    func.__annotations__ = existing_hints
+
 
 class RouteGenerator:
     def __init__(
@@ -49,16 +60,50 @@ class RouteGenerator:
             tags=[self.tag_name]
         )
         
+        # Lấy các Pydantic Model Class ra khỏi dictionary
+        ResponseSchema = self.schemas['response']
+        CreateSchema = self.schemas['create']
+        UpdateSchema = self.schemas['update']
+        
+        # --- FIX LỖI PydanticUserError BẰNG CÁCH DÙNG MODEL BASE ---
+        
+        # 1. Định nghĩa Base Model cho Phân trang (chứa model_config)
+        class PaginatedBase(BaseModel):
+            """Base model for paginated responses, defining common fields and config."""
+            # Cài đặt model_config (from_attributes=True) là thuộc tính của Class
+            model_config = {'from_attributes': True}
+            
+            # Định nghĩa các trường phân trang (chúng ta có thể ghi đè chúng trong create_model)
+            total: int = 0
+            page: int = 1
+            size: int = 100
+            pages: int = 1
+            has_next: bool = False
+            has_prev: bool = False
+        
+        # 2. Tạo ListResponseSchema bằng cách thừa kế từ PaginatedBase
+        ListResponseSchema = create_model(
+            f"{self.model_name.title()}ListResponse",
+            # Sử dụng __base__ để thừa kế các trường và model_config
+            __base__=PaginatedBase, 
+            # Định nghĩa trường 'items' (Trường mới duy nhất)
+            items=(List[ResponseSchema], Field(..., description=f"List of {self.model_plural}")),
+            # KHÔNG cần truyền model_config ở đây
+        )
+        # -------------------------------------------------------
+        
         # Conditional dependencies
         auth_dep = [Depends(self.auth_dependency)] if self.auth_dependency else []
-        
+        db_dep = Depends(self.get_db)
+
         # LIST endpoint
         if 'list' in active_routes:
             @router.get(
                 "/",
-                response_model=Dict[str, Any],  # Paginated response
+                response_model=ListResponseSchema,  # FIX LỖI Serialization
                 summary=f"List {self.model_plural}",
-                description=f"Retrieve a paginated list of {self.model_plural} with filtering and search"
+                description=f"Retrieve a paginated list of {self.model_plural} with filtering and search",
+                dependencies=auth_dep
             )
             async def list_items(
                 skip: int = Query(0, ge=0, description="Number of records to skip"),
@@ -66,8 +111,8 @@ class RouteGenerator:
                 sort_by: Optional[str] = Query(None, description="Field to sort by"),
                 sort_order: str = Query("asc", regex="^(asc|desc)$", description="Sort order"),
                 search: Optional[str] = Query(None, description="Search term"),
-                db: Session = Depends(self.get_db),
-                *auth_dep
+                include_deleted: bool = Query(False, description="Set true to include soft-deleted records"),
+                db: Session = db_dep
             ):
                 result = self.crud.get_multi(
                     db,
@@ -75,7 +120,8 @@ class RouteGenerator:
                     limit=limit,
                     search=search,
                     sort_by=sort_by,
-                    sort_order=sort_order
+                    sort_order=sort_order,
+                    include_deleted=include_deleted
                 )
                 return result
         
@@ -83,14 +129,14 @@ class RouteGenerator:
         if 'get' in active_routes:
             @router.get(
                 "/{item_id}",
-                response_model=self.schemas['response'],
+                response_model=ResponseSchema,
                 summary=f"Get {self.model_name}",
-                description=f"Retrieve a single {self.model_name} by ID"
+                description=f"Retrieve a single {self.model_name} by ID",
+                dependencies=auth_dep
             )
             async def get_item(
                 item_id: str = Path(..., description=f"{self.model_name.title()} ID"),
-                db: Session = Depends(self.get_db),
-                *auth_dep
+                db: Session = db_dep
             ):
                 db_item = self.crud.get(db, id=item_id)
                 if db_item is None:
@@ -104,31 +150,36 @@ class RouteGenerator:
         if 'create' in active_routes:
             @router.post(
                 "/",
-                response_model=self.schemas['response'],
+                response_model=ResponseSchema,
                 status_code=status.HTTP_201_CREATED,
                 summary=f"Create {self.model_name}",
-                description=f"Create a new {self.model_name}"
+                description=f"Create a new {self.model_name}",
+                dependencies=auth_dep
             )
             async def create_item(
-                item: Any = self.schemas['create'],
-                db: Session = Depends(self.get_db),
-                *auth_dep
+                # FIX LỖI CÚ PHÁP: Dùng Any làm placeholder.
+                item: Any = Body(..., description=f"The {self.model_name} data to create"), 
+                db: Session = db_dep
             ):
                 return self.crud.create(db=db, obj_in=item)
+            
+            # Gán kiểu dữ liệu động sau khi hàm được định nghĩa
+            _update_type_hints(create_item, {"item": CreateSchema})
         
         # UPDATE endpoint
         if 'update' in active_routes:
             @router.put(
                 "/{item_id}",
-                response_model=self.schemas['response'],
+                response_model=ResponseSchema,
                 summary=f"Update {self.model_name}",
-                description=f"Update an existing {self.model_name}"
+                description=f"Update an existing {self.model_name}",
+                dependencies=auth_dep
             )
             async def update_item(
                 item_id: str = Path(..., description=f"{self.model_name.title()} ID"),
-                item: Any = self.schemas['update'],
-                db: Session = Depends(self.get_db),
-                *auth_dep
+                # FIX LỖI CÚ PHÁP: Dùng Any làm placeholder.
+                item: Any = Body(..., description=f"The {self.model_name} data to update"),
+                db: Session = db_dep
             ):
                 db_item = self.crud.get(db, id=item_id)
                 if db_item is None:
@@ -137,19 +188,22 @@ class RouteGenerator:
                         detail=f"{self.model_name.title()} not found"
                     )
                 return self.crud.update(db=db, db_obj=db_item, obj_in=item)
+            
+            # Gán kiểu dữ liệu động sau khi hàm được định nghĩa
+            _update_type_hints(update_item, {"item": UpdateSchema})
         
         # DELETE endpoint
         if 'delete' in active_routes:
             @router.delete(
                 "/{item_id}",
                 summary=f"Delete {self.model_name}",
-                description=f"Delete a {self.model_name}"
+                description=f"Delete a {self.model_name}",
+                dependencies=auth_dep
             )
             async def delete_item(
                 item_id: str = Path(..., description=f"{self.model_name.title()} ID"),
-                soft: bool = Query(False, description="Perform soft delete if supported"),
-                db: Session = Depends(self.get_db),
-                *auth_dep
+                soft: bool = Query(True, description="Perform soft delete if supported"),
+                db: Session = db_dep
             ):
                 if soft:
                     deleted_item = self.crud.soft_delete(db=db, id=item_id)
