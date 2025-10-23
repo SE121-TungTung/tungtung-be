@@ -15,7 +15,7 @@ base_router = create_crud_router(
 )
 
 # Main router
-router = APIRouter(prefix="/courses", tags=["Courses"])
+router = APIRouter(tags=["Courses"])
 router.include_router(base_router, prefix="")
 
 # Custom endpoints

@@ -4,8 +4,7 @@ from sqlalchemy import pool
 import os
 from dotenv import load_dotenv
 from alembic import context
-from app.models.academic import  Room, Course
-from app.models.user import User 
+from app import models  # noqa: F401
 
 load_dotenv()
 target_metadata = None

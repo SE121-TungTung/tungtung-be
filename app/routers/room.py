@@ -15,7 +15,7 @@ base_router = create_crud_router(
 )
 
 # Main router
-router = APIRouter(prefix="/rooms", tags=["Rooms"])
+router = APIRouter(tags=["Rooms"])
 
 # Include generated CRUD
 router.include_router(base_router, prefix="")

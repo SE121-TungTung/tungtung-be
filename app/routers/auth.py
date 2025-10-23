@@ -130,7 +130,14 @@ async def request_password_reset(
     db: Session = Depends(get_db)
 ):
     """Request password reset - sends email with reset link"""
-    await user_service.request_password_reset(db, request.email)
+    
+    user_email = await user_service.request_password_reset(db, request.email)
+
+    if not user_email:
+        return PasswordResetResponse(
+            message="Your email is not registered",
+            detail="Please check and try again"
+        )
     
     return PasswordResetResponse(
         message="If your email is registered, you will receive a password reset link",
@@ -142,7 +149,7 @@ async def confirm_password_reset(
     reset_data: PasswordResetConfirm,
     db: Session = Depends(get_db)
 ):
-    """Confirm password reset with token"""
+    """Confirm password reset with (token) otp"""
     await user_service.reset_password(
         db, 
         reset_data.token, 
@@ -166,3 +173,4 @@ async def validate_reset_token(token: str, db: Session = Depends(get_db)):
         )
     
     return {"valid": True, "email": email}
+

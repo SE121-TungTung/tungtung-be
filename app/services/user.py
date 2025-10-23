@@ -72,7 +72,7 @@ class UserService(BaseService):
         # Don't reveal if user exists or not for security
         if not user:
             # Still return success to prevent email enumeration
-            return True
+            return False
         
         # Create reset token
         reset_token = create_password_reset_token(user.email, db)
