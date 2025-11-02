@@ -46,7 +46,7 @@ def sqlalchemy_to_pydantic_type(column):
     
     # 2. Handle JSON fields
     elif isinstance(column.type, JSON):
-        python_type = dict
+        python_type = Union[dict, list]
         
     # 3. Handle SQLAlchemy Enum
     elif isinstance(column.type, SQLEnum):

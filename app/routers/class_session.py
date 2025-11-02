@@ -8,7 +8,8 @@ from app.routers.generator import create_crud_router
 base_router = create_crud_router(
     model=ClassSession,
     db_dependency=get_db,
-    auth_dependency=get_current_admin_user
+    auth_dependency=get_current_admin_user,
+    tag_prefix="Class Session"
 )
 
 # Main router

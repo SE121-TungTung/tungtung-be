@@ -8,9 +8,10 @@ from app.routers.generator import create_crud_router
 base_router = create_crud_router(
     model=ClassEnrollment,
     db_dependency=get_db,
-    auth_dependency=get_current_admin_user
+    auth_dependency=get_current_admin_user,
+    tag_prefix="Class Enrollment"
 )
 
 # Main router
-router = APIRouter(tags=["Classenrollments"])
+router = APIRouter()
 router.include_router(base_router, prefix="")
