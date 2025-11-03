@@ -1,11 +1,13 @@
 # app/api/v1/endpoints/schedule.py
 
-from fastapi import APIRouter, Depends, status, HTTPException, Path
+from fastapi import APIRouter, Depends, status, HTTPException, Path, Query
+from datetime import date
+from typing import Optional
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.dependencies import get_current_admin_user
+from app.dependencies import get_current_admin_user, _get_current_week_range
 from app.services.schedule import schedule_service
-from app.schemas.schedule import ScheduleGenerateRequest, ScheduleProposal, SessionCreate, SessionUpdate, SessionResponse
+from app.schemas.schedule import ScheduleGenerateRequest, ScheduleProposal, SessionCreate, SessionUpdate, SessionResponse, WeeklySchedule
 from uuid import UUID
 from typing import Dict, Any
 
@@ -44,6 +46,25 @@ async def create_session(
 ):
     """UC MF.3.1: Tạo session thủ công với Conflict Check"""
     return schedule_service.create_session_manual(db, data)
+
+@router.get("/weekly", response_model=WeeklySchedule, tags=["Schedule Viewing"])
+async def get_weekly_schedule_view(
+    start_date: Optional[date] = Query(None, description="Ngày bắt đầu của tuần (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Ngày kết thúc của tuần (YYYY-MM-DD)"),
+    class_id: Optional[UUID] = Query(None, description="Lọc theo ID lớp học"),
+    db: Session = Depends(get_db),
+    # Cho phép xem TKBiểu cá nhân
+    user_id: Optional[UUID] = Query(None, description="Lọc theo ID người dùng (Giáo viên)"),
+):
+    """
+    Lấy thời khóa biểu chi tiết dạng tuần, có thể lọc theo lớp hoặc giáo viên.
+    """
+    # Nếu user_id không được cung cấp, sử dụng ID của người dùng hiện tại (nếu cần)
+    if not (start_date and end_date):
+        start_date, end_date = _get_current_week_range()
+    return schedule_service.get_weekly_schedule(
+        db, start_date, end_date, class_id=class_id, user_id=user_id
+    )
 
 @router.put("/sessions/{session_id}", response_model=SessionResponse)
 async def update_session(

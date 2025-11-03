@@ -182,8 +182,11 @@ class TestAttempt(BaseModel):
     
     # Relationships
     test = relationship("Test", back_populates="attempts")
-    student = relationship("User", backref="test_attempts")
-    grader = relationship("User", foreign_keys=[graded_by])
+    student = relationship("User", 
+                       foreign_keys="[TestAttempt.student_id]", 
+                       backref="test_attempts")
+    grader = relationship("User", 
+                      foreign_keys="[TestAttempt.graded_by]")
     responses = relationship("TestResponse", back_populates="attempt")
 
     __table_args__ = (

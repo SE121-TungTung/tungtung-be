@@ -65,8 +65,7 @@ class ScheduleGenerateRequest(BaseModel):
     end_date: date = Field(..., description="Ngày kết thúc tạo lịch")
     
     class_ids: Optional[List[UUID]] = Field(None, description="Danh sách class cần xếp lịch.")
-    
-    max_sessions_per_day_per_class: int = Field(2, ge=1, le=4, description="Tối đa số buổi/ngày cho 1 class")
+    max_slots_per_session: Optional[int] = Field(None, ge=1, le=4, description="Giới hạn số tiết tối đa cho một buổi học")
     prefer_morning: bool = Field(True, description="Ưu tiên xếp buổi sáng")
     
     @validator('end_date')
@@ -115,6 +114,19 @@ class SessionResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+class WeeklySession(BaseModel):
+    session_id: UUID
+    class_name: str
+    teacher_name: str
+    room_name: str
+    day_of_week: str
+    start_time: time
+    end_time: time
+    topic: Optional[str]
+
+class WeeklySchedule(BaseModel):
+    schedule: List[WeeklySession]
 
 class ScheduleCopyRequest(BaseModel):
     """Copy schedule từ tuần/tháng trước (AF1)"""

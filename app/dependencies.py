@@ -1,4 +1,5 @@
-from typing import Generator, Optional
+from typing import Tuple
+from datetime import date, timedelta
 from fastapi import Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -35,6 +36,17 @@ def get_current_teacher_or_admin(
             detail="Not enough permissions"
         )
     return current_user
+
+def _get_current_week_range() -> Tuple[date, date]:
+    today = date.today()
+    # today.weekday() trả về 0 cho Thứ Hai, 6 cho Chủ Nhật
+    days_to_monday = today.weekday() 
+    
+    start_of_week = today - timedelta(days=days_to_monday)
+    # Giả sử tuần kết thúc vào Chủ Nhật
+    end_of_week = start_of_week + timedelta(days=6) 
+    
+    return start_of_week, end_of_week
 
 # Common query parameters
 class CommonQueryParams:

@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     
     # Frontend URL for reset links
     FRONTEND_URL: str
+
+    # Application Settings
+    DEFAULT_MAX_SLOT_PER_SESSION: int
     
     class Config:
         env_file = ".env"

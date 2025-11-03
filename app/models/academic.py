@@ -129,6 +129,8 @@ class Class(BaseModel):
     current_students = Column(Integer, default=0, nullable=False)
     
     fee_amount = Column(DECIMAL(10, 2), nullable=False)
+
+    sessions_per_week = Column(Integer, default=2, nullable=False)
     
     # FIX LOGIC: Default là SCHEDULED theo SQL gốc
     status = Column(Enum(ClassStatus, values_callable=lambda obj: [e.value for e in obj], 
