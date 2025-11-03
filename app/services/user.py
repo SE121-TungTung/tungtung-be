@@ -15,19 +15,25 @@ class UserService(BaseService):
         super().__init__(user_repository)
         self.repository = user_repository
     
-    async def create_user(self, db: Session, user_create: UserCreate, created_by: Optional[uuid.UUID] = None) -> User:
-        # Check if user already exists
-        existing_user = self.repository.get_by_email(db, user_create.email)
-        if existing_user:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Email already registered"
-            )
-        
-        user_data = user_create.dict()
-        user_data["created_by"] = created_by
-        
-        return self.repository.create_user(db, user_data)
+    async def create_user(self, db: Session, user_create: UserCreate, created_by: Optional[uuid.UUID] = None, default_class_id: Optional[uuid.UUID] = None) -> User:
+        try:
+            # Check if user already exists
+            existing_user = self.repository.get_by_email(db, user_create.email)
+            if existing_user:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Email already registered"
+                )
+            
+            user_data = user_create.model_dump()
+            user_data["created_by"] = created_by
+            user_data["updated_by"] = created_by
+            
+            new_user = self.repository.create_user(db, user_data, default_class_id=default_class_id)
+            db.commit()
+            return new_user
+        except Exception as e:
+            raise e
     
     async def authenticate_user(self, db: Session, email: str, password: str) -> Optional[User]:
         user = self.repository.authenticate(db, email, password)
@@ -72,7 +78,7 @@ class UserService(BaseService):
         # Don't reveal if user exists or not for security
         if not user:
             # Still return success to prevent email enumeration
-            return True
+            return False
         
         # Create reset token
         reset_token = create_password_reset_token(user.email, db)

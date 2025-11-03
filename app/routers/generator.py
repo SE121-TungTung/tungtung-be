@@ -226,7 +226,8 @@ def create_crud_router(
     db_dependency,
     auth_dependency = None,
     include_routes: List[str] = None,
-    exclude_routes: List[str] = None
+    exclude_routes: List[str] = None,
+    tag_prefix: str = None
 ) -> APIRouter:
     """Helper function to quickly create a CRUD router for a model"""
     
@@ -238,7 +239,8 @@ def create_crud_router(
         model=model,
         crud_class=crud,
         db_dependency=db_dependency,
-        auth_dependency=auth_dependency
+        auth_dependency=auth_dependency,
+        tag_prefix=tag_prefix
     )
     
     # Generate and return router

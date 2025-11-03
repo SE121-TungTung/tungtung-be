@@ -6,7 +6,7 @@ from app.dependencies import get_current_active_user, get_current_admin_user, Co
 from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse
 from app.services.user import user_service
 from app.models.user import User, UserRole, UserStatus
-import uuid
+from uuid import UUID
 
 router = APIRouter()
 
@@ -39,11 +39,15 @@ async def change_password(
 @router.post("/", response_model=UserResponse)
 async def create_user(
     user_create: UserCreate,
+    default_class_id: Optional[UUID] = Query(
+        None, 
+        description="ID của lớp học mà sinh viên sẽ được tự động gán vào (Enrollment ban đầu)"
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """Create new user (admin only)"""
-    return await user_service.create_user(db, user_create, current_user.id)
+    return await user_service.create_user(db, user_create, current_user.id, default_class_id=default_class_id)
 
 @router.get("/", response_model=UserListResponse)
 async def list_users(
@@ -77,7 +81,7 @@ async def list_users(
 
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
-    user_id: uuid.UUID,
+    user_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
@@ -92,7 +96,7 @@ async def get_user(
 
 @router.put("/{user_id}", response_model=UserResponse)
 async def update_user(
-    user_id: uuid.UUID,
+    user_id: UUID,
     user_update: UserUpdate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
@@ -102,7 +106,7 @@ async def update_user(
 
 @router.delete("/{user_id}")
 async def delete_user(
-    user_id: uuid.UUID,
+    user_id: UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 import app.core.database as database
 from app.core.config import settings
-from app.routers import auth, users, room, course
+from app.routers import auth, users, room, course, classes, enrollment, class_session, attendance, schedule, test
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 
@@ -43,5 +43,11 @@ api_router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 api_router.include_router(users.router, prefix="/users", tags=["Users"])
 api_router.include_router(room.router)
 api_router.include_router(course.router) 
+api_router.include_router(classes.router)
+api_router.include_router(enrollment.router)
+api_router.include_router(class_session.router)
+api_router.include_router(attendance.router)
+api_router.include_router(schedule.router)
+api_router.include_router(test.router)
 
 app.include_router(api_router, prefix="/api/v1")
