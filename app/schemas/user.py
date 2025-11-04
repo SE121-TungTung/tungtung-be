@@ -1,5 +1,5 @@
-from pydantic import BaseModel, EmailStr, Field, validator
-from typing import Optional, Dict, Any
+from pydantic import BaseModel, EmailStr, Field, field_validator
+from typing import Optional, Dict, Any, List
 from datetime import datetime, date
 from app.models.user import UserRole, UserStatus
 import uuid
@@ -14,20 +14,18 @@ class UserBase(BaseModel):
     address: Optional[str] = None
 
 class UserCreate(UserBase):
-    password: str = Field(..., min_length=8)
     role: UserRole = UserRole.STUDENT
     
-    @validator('password')
-    def validate_password(cls, v):
-        if len(v) < 8:
-            raise ValueError('Password must be at least 8 characters long')
-        if not any(c.isupper() for c in v):
-            raise ValueError('Password must contain at least one uppercase letter')
-        if not any(c.islower() for c in v):
-            raise ValueError('Password must contain at least one lowercase letter')
-        if not any(c.isdigit() for c in v):
-            raise ValueError('Password must contain at least one digit')
-        return v
+class UserBulkCreate(BaseModel):
+    email: EmailStr
+    first_name: str
+    last_name: str
+    role: UserRole = UserRole.STUDENT
+    class_id: Optional[uuid.UUID] = None
+
+class BulkImportRequest(BaseModel):
+    """Schema đại diện cho toàn bộ request Bulk Import."""
+    users: List[UserBulkCreate] # Đây là danh sách các users cần tạo
 
 class UserUpdate(BaseModel):
     first_name: Optional[str] = None
@@ -41,11 +39,16 @@ class UserPasswordUpdate(BaseModel):
     current_password: str
     new_password: str = Field(..., min_length=8)
     
-    @validator('new_password')
+    @field_validator('new_password')
     def validate_password(cls, v):
-        # Same validation as UserCreate
         if len(v) < 8:
             raise ValueError('Password must be at least 8 characters long')
+        if not any(c.isupper() for c in v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not any(c.islower() for c in v):
+            raise ValueError('Password must contain at least one lowercase letter')
+        if not any(c.isdigit() for c in v):
+            raise ValueError('Password must contain at least one digit')
         return v
 
 class UserResponse(UserBase):
