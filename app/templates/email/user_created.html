@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Thông Báo Tạo Tài Khoản Mới</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; margin: 0; padding: 0; background-color: #f4f4f4; }
+        .container { max-width: 600px; margin: 20px auto; padding: 0; border: 1px solid #ddd; background-color: white; border-radius: 8px; overflow: hidden; }
+        .header { background-color: #4F46E5; color: white; padding: 25px; text-align: center; }
+        .header h1 { margin: 0; font-size: 24px; }
+        .content { padding: 30px; }
+        .credentials { background-color: #e0e7ff; padding: 20px; border-radius: 5px; margin: 25px 0; border-left: 5px solid #4F46E5; }
+        .credentials p { margin: 5px 0; font-size: 16px; }
+        .credentials strong { display: inline-block; width: 150px; }
+        .security-note { color: #dc2626; font-weight: bold; margin-top: 20px; padding: 10px; border: 1px dashed #dc2626; border-radius: 4px; text-align: center; }
+        .button-container { text-align: center; margin: 30px 0; }
+        .button { display: inline-block; padding: 12px 30px; background-color: #4F46E5; 
+                  color: white !important; text-decoration: none; border-radius: 5px; font-weight: bold; }
+        .footer { text-align: center; font-size: 12px; color: #999; padding: 20px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Chào mừng đến với {{ app_name }}!</h1>
+        </div>
+        
+        <div class="content">
+            <h2>Xin chào {{ full_name }},</h2>
+            <p>Tài khoản của bạn đã được tạo thành công trên hệ thống **{{ app_name }}** với vai trò **{{ user_role }}**.</p>
+            
+            <p>Dưới đây là thông tin đăng nhập tạm thời của bạn:</p>
+            
+            <div class="credentials">
+                <p><strong>Tên đăng nhập (Email):</strong> {{ user_email }}</p>
+                <p><strong>Mật khẩu tạm thời:</strong> <span style="color: #4F46E5; font-size: 18px;">{{ raw_password }}</span></p>
+            </div>
+
+            <div class="security-note">
+                VÌ LÝ DO BẢO MẬT, BẠN BẮT BUỘC PHẢI THAY ĐỔI MẬT KHẨU NÀY SAU LẦN ĐĂNG NHẬP ĐẦU TIÊN.
+            </div>
+            
+            <div class="button-container">
+                <a href="{{ login_url }}" class="button">Đăng nhập ngay</a>
+            </div>
+            
+            <p style="margin-top: 30px;">Nếu bạn có bất kỳ câu hỏi nào, vui lòng liên hệ với Quản trị viên hệ thống.</p>
+        </div>
+        
+        <div class="footer">
+            <p>&copy; {{ current_year }} {{ app_name }}. All rights reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

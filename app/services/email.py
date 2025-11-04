@@ -85,6 +85,33 @@ class EmailService:
         except Exception as e:
             logger.error(f"Failed to send welcome email: {e}")
             return False
+    
+    async def send_account_creation_email(self, user_email: str, fullname: str, password: str, user_role: str):
+        subject = "THÔNG BÁO TẠO TÀI KHOẢN MỚI"
+        template_body = {
+            "full_name": fullname,
+            "user_email": user_email,
+            "raw_password": password,
+            "user_role": user_role,
+            "app_name": settings.PROJECT_NAME,
+            "login_url": f"{settings.FRONTEND_URL}/login",
+            "current_year": 2025
+        }
+        
+        message = MessageSchema(
+            subject=subject,
+            recipients=[user_email],
+            template_body=template_body,
+            subtype=MessageType.plain
+        )
+        try:
+            await self.fm.send_message(message, template_name="user_created.html")
+            logger.info(f"Account creation email sent to {user_email}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send account creation email: {e}")
+            print(f"Failed to send account creation email: {e}")
+            return False
 
 # Initialize service
 email_service = EmailService()

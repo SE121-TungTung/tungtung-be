@@ -1,4 +1,6 @@
 from typing import Tuple
+import string
+import secrets
 from datetime import date, timedelta
 from fastapi import Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
@@ -47,6 +49,31 @@ def _get_current_week_range() -> Tuple[date, date]:
     end_of_week = start_of_week + timedelta(days=6) 
     
     return start_of_week, end_of_week
+
+def generate_strong_password(length=12):
+    """Tạo mật khẩu tạm thời ngẫu nhiên và mạnh."""
+    
+    # 1. Định nghĩa các bộ ký tự
+    letters = string.ascii_letters
+    digits = string.digits
+    special_chars = '!@#$%^&*'
+    
+    # 2. Đảm bảo mật khẩu chứa ít nhất 1 ký tự từ mỗi loại
+    password = [
+        secrets.choice(string.ascii_uppercase), # Chữ hoa
+        secrets.choice(string.ascii_lowercase), # Chữ thường
+        secrets.choice(digits),                 # Số
+        secrets.choice(special_chars)           # Ký tự đặc biệt
+    ]
+    
+    # 3. Điền vào phần còn lại của mật khẩu
+    all_chars = letters + digits + special_chars
+    remaining_length = length - len(password)
+    password.extend(secrets.choice(all_chars) for _ in range(remaining_length))
+    
+    # 4. Trộn lẫn các ký tự và trả về
+    secrets.SystemRandom().shuffle(password)
+    return "".join(password)
 
 # Common query parameters
 class CommonQueryParams:

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies import get_current_active_user, get_current_admin_user, CommonQueryParams
-from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse
+from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest
 from app.services.user import user_service
 from app.models.user import User, UserRole, UserStatus
 from uuid import UUID
@@ -48,6 +48,15 @@ async def create_user(
 ):
     """Create new user (admin only)"""
     return await user_service.create_user(db, user_create, current_user.id, default_class_id=default_class_id)
+
+@router.post("/bulk", response_model=List[UserResponse], status_code=status.HTTP_201_CREATED)
+async def bulk_create_users(
+    request: BulkImportRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """Bulk create users from a list with auto-generated passwords and email notifications (admin only)."""
+    return await user_service.bulk_create_users(db, request, current_user.id)
 
 @router.get("/", response_model=UserListResponse)
 async def list_users(
