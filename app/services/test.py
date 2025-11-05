@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from app.models.assessment import Test, TestAttempt, TestResponse, TestQuestion, QuestionBank
 from app.models.assessment import AttemptStatus
 from decimal import Decimal
-from app.schemas.assessment import TestAttemptStart, TestResponseCreate, TestAttemptSubmit
+from app.schemas.assessment import TestAttemptStart, TestResponseCreate, TestQuestionLink
 from typing import Tuple
 # Giả định Repositories đã được DI
 
@@ -19,6 +19,48 @@ class TestService:
         self.user_repo = user_repo
         self.question_repo = question_repo
 
+    async def add_questions_to_test(self, db: Session, test_id: UUID, data: TestQuestionLink):
+        """Liên kết danh sách câu hỏi vào một đề thi (Test) và tính lại tổng điểm."""
+        
+        # 1. Kiểm tra Test có tồn tại không
+        test = self.test_repo.get(db, test_id)
+        if not test:
+            raise HTTPException(status_code=404, detail="Test not found.")
+
+        total_points = 0
+        
+        # 2. Xử lý từng câu hỏi trong danh sách
+        for question_id in data.question_ids:
+            # Kiểm tra QuestionBank có tồn tại không
+            question = self.question_repo.get(db, question_id)
+            if not question:
+                raise HTTPException(status_code=404, detail=f"Question ID {question_id} not found in Question Bank.")
+
+            # 3. Kiểm tra liên kết đã tồn tại chưa (để tránh trùng lặp)
+            existing_link = db.query(TestQuestion).filter(
+                TestQuestion.test_id == test_id,
+                TestQuestion.question_id == question_id
+            ).first()
+
+            if not existing_link:
+                # 4. Tạo bản ghi liên kết (TestQuestion)
+                link_data = {
+                    "test_id": test_id,
+                    "question_id": question_id,
+                    # có thể thêm 'order' hoặc 'weight' nếu cần
+                }
+                # Giả định self.test_question_repo tồn tại (hoặc dùng repo cơ bản)
+                self.test_question_repo.create(db, obj_in=link_data)
+            
+            # 5. Cộng tổng điểm
+            total_points += question.points 
+
+        # 6. Cập nhật tổng điểm của Test
+        test.total_points = total_points
+        self.test_repo.update(db, db_obj=test, obj_in={"total_points": total_points})
+
+        db.commit()
+        return {"message": f"Successfully linked {len(data.question_ids)} questions. Total points updated to {total_points}."}
     # =========================================================================
     # 1. START ATTEMPT (Bắt đầu làm bài)
     # =========================================================================
@@ -57,13 +99,16 @@ class TestService:
     # 2. SAVE RESPONSE (Lưu câu trả lời)
     # =========================================================================
     async def save_response(
-        self, db: Session, attempt_id: UUID, data: TestResponseCreate
+        self, db: Session, attempt_id: UUID, data: TestResponseCreate, user_id: UUID
     ) -> TestResponse:
-        
+
         attempt = self.attempt_repo.get(db, attempt_id)
         if not attempt or attempt.status != AttemptStatus.IN_PROGRESS:
             raise HTTPException(status_code=400, detail="Attempt not found or already submitted.")
             
+        if attempt.student_id != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to modify this attempt.")
+
         # Kiểm tra xem câu trả lời cho câu hỏi này đã tồn tại chưa
         existing_response = db.query(TestResponse).filter(
             TestResponse.attempt_id == attempt_id,
@@ -87,12 +132,15 @@ class TestService:
     # =========================================================================
     # 3. SUBMIT & GRADE (Nộp bài và Chấm điểm tự động)
     # =========================================================================
-    async def submit_and_grade(self, db: Session, attempt_id: UUID) -> TestAttempt:
+    async def submit_and_grade(self, db: Session, attempt_id: UUID, user_id: UUID) -> TestAttempt:
         
         attempt = self.attempt_repo.get(db, attempt_id)
         if not attempt or attempt.status != AttemptStatus.IN_PROGRESS:
             raise HTTPException(status_code=400, detail="Attempt already submitted or invalid.")
             
+        if attempt.student_id != user_id:
+            raise HTTPException(status_code=403, detail="Not authorized to modify this attempt.")
+        
         # 1. Ghi lại thời gian nộp bài và thời gian làm bài
         submitted_time = datetime.utcnow()
         time_taken = (submitted_time - attempt.started_at).total_seconds()

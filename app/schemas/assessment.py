@@ -15,8 +15,7 @@ class TestResponseCreate(BaseModel):
     response_data: Optional[Dict[str, Any]] = None # Dữ liệu phức tạp (JSONB)
     time_spent_seconds: Optional[int] = Field(None, ge=0)
     flagged_for_review: Optional[bool] = False
-    
-# --- Input: Nộp bài (Submit) ---
-class TestAttemptSubmit(BaseModel):
-    # Chỉ cần ID của Attempt để submit
-    pass
+
+class TestQuestionLink(BaseModel):
+    """Schema cho việc liên kết các câu hỏi vào một bài thi."""
+    question_ids: List[UUID]

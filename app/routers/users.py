@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies import get_current_active_user, get_current_admin_user, CommonQueryParams
@@ -39,15 +39,17 @@ async def change_password(
 @router.post("/", response_model=UserResponse)
 async def create_user(
     user_create: UserCreate,
+    background_tasks: BackgroundTasks,
     default_class_id: Optional[UUID] = Query(
         None, 
         description="ID của lớp học mà sinh viên sẽ được tự động gán vào (Enrollment ban đầu)"
     ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
+    
 ):
     """Create new user (admin only)"""
-    return await user_service.create_user(db, user_create, current_user.id, default_class_id=default_class_id)
+    return await user_service.create_user(db, user_create, current_user.id, default_class_id=default_class_id, background_tasks=background_tasks)
 
 @router.post("/bulk", response_model=List[UserResponse], status_code=status.HTTP_201_CREATED)
 async def bulk_create_users(
@@ -125,6 +127,11 @@ async def delete_user(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="User not found"
+        )
+    if user_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You cannot delete your own account"
         )
     
     # Soft delete by setting status to inactive
