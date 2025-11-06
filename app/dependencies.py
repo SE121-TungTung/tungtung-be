@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.user import User, UserRole, UserStatus
+from jose import jwt, JWTError
+from app.core.config import settings
 
 def get_current_active_user(
     current_user: User = Depends(get_current_user)
@@ -74,6 +76,37 @@ def generate_strong_password(length=12):
     # 4. Trộn lẫn các ký tự và trả về
     secrets.SystemRandom().shuffle(password)
     return "".join(password)
+
+async def get_current_user_from_token(token: str):
+    """
+    Validate JWT token and return user
+    Used for WebSocket authentication
+    """
+    try:
+        payload = jwt.decode(
+            token, 
+            settings.SECRET_KEY, 
+            algorithms=[settings.ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        if email is None:
+            raise HTTPException(401, "Invalid token")
+        
+        from app.services.user import user_service
+        from sqlalchemy.orm import Session
+        from app.core.database import SessionLocal
+        
+        db = SessionLocal()
+        try:
+            user = await user_service.get_user_by_email(db, email)
+            if not user:
+                raise HTTPException(401, "User not found")
+            return user
+        finally:
+            db.close()
+            
+    except JWTError:
+        raise HTTPException(401, "Could not validate credentials")
 
 # Common query parameters
 class CommonQueryParams:

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Date, Time, Text, ForeignKey, TIMESTAMP, Boolean, Integer, String, Enum, CheckConstraint, ARRAY
+from sqlalchemy import Column, Date, Time, Text, ForeignKey, TIMESTAMP, Boolean, Integer, String, Enum, CheckConstraint, ARRAY, SmallInteger
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.models.base import BaseModel
@@ -32,7 +32,7 @@ class ClassSession(BaseModel):
     session_date = Column(Date, nullable=False)
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
-    time_slots = Column(ARRAY(Integer), nullable=False)
+    time_slots = Column(ARRAY(SmallInteger), nullable=False)
     topic = Column(String(255))
     description = Column(Text)
     

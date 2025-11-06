@@ -3,6 +3,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, date
 from app.models.user import UserRole, UserStatus
 import uuid
+from fastapi import Form
 
 # Base schemas
 class UserBase(BaseModel):
@@ -34,6 +35,18 @@ class UserUpdate(BaseModel):
     address: Optional[str] = None
     emergency_contact: Optional[Dict[str, Any]] = None
     preferences: Optional[Dict[str, Any]] = None
+
+class UserUpdateForm(BaseModel):
+    first_name: Optional[str] = Form(None)
+    last_name: Optional[str] = Form(None)
+    phone: Optional[str] = Form(None)
+    address: Optional[str] = Form(None)
+    emergency_contact: Optional[str] = Form(None)
+    preferences: Optional[str] = Form(None)
+    
+    def to_update_schema(self, user_update_schema_class):
+        data = self.model_dump(exclude_none=True) 
+        return user_update_schema_class(**data)
 
 class UserPasswordUpdate(BaseModel):
     current_password: str
