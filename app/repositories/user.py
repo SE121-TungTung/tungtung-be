@@ -14,7 +14,9 @@ class UserRepository(BaseRepository[User]):
         super().__init__(User)
     
     def get_by_email(self, db: Session, email: str) -> Optional[User]:
-        return db.query(User).filter(User.email == email).first()
+        return db.query(User).filter(
+            User.email == email,
+            User.deleted_at.is_(None)).first()
     
     def create_user(self, db: Session, user_data: dict, default_class_id) -> User:
         try:
@@ -60,7 +62,7 @@ class UserRepository(BaseRepository[User]):
     def get_users_by_role(self, db: Session, role: UserRole, skip: int = 0, limit: int = 100) -> List[User]:
         return (
             db.query(User)
-            .filter(User.role == role)
+            .filter(User.role == role, User.deleted_at.is_(None))
             .offset(skip)
             .limit(limit)
             .all()
@@ -74,7 +76,7 @@ class UserRepository(BaseRepository[User]):
         )
         return (
             db.query(User)
-            .filter(search_filter)
+            .filter(search_filter, User.deleted_at.is_(None))
             .offset(skip)
             .limit(limit)
             .all()
