@@ -102,7 +102,7 @@ class EmailService:
             subject=subject,
             recipients=[user_email],
             template_body=template_body,
-            subtype=MessageType.plain
+            subtype=MessageType.html
         )
         try:
             await self.fm.send_message(message, template_name="user_created.html")

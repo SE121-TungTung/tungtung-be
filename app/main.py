@@ -20,7 +20,7 @@ if settings.BACKEND_CORS_ORIGINS:
         CORSMiddleware,
         allow_origins=[str(origin) for origin in settings.BACKEND_CORS_ORIGINS],
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -49,5 +49,7 @@ api_router.include_router(class_session.router)
 api_router.include_router(attendance.router)
 api_router.include_router(schedule.router)
 api_router.include_router(test.router)
+api_router.include_router(test.base_test_router, prefix="/tests", tags=["Tests (Admin CRUD)"])
+api_router.include_router(test.base_question_router, prefix="/question-banks", tags=["QuestionBank (Admin CRUD)"])
 
 app.include_router(api_router, prefix="/api/v1")

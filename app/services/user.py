@@ -1,6 +1,6 @@
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from fastapi import HTTPException, status
+from fastapi import HTTPException, status, BackgroundTasks
 from app.services.base import BaseService
 from app.repositories.user import user_repository
 from app.models.user import User, UserRole
@@ -17,7 +17,7 @@ class UserService(BaseService):
         super().__init__(user_repository)
         self.repository = user_repository
     
-    async def create_user(self, db: Session, user_create: UserCreate, created_by: Optional[uuid.UUID] = None, default_class_id: Optional[uuid.UUID] = None) -> User:
+    async def create_user(self, db: Session, user_create: UserCreate, created_by: Optional[uuid.UUID] = None, default_class_id: Optional[uuid.UUID] = None, background_tasks: BackgroundTasks = None) -> User:
         try:
             # Check if user already exists
             existing_user = self.repository.get_by_email(db, user_create.email)
@@ -39,7 +39,16 @@ class UserService(BaseService):
             db.commit()
 
             full_name = f"{new_user.first_name} {new_user.last_name}"
-            email_service.send_account_creation_email(new_user.email, full_name, password, "USER")
+
+
+            if background_tasks:
+                background_tasks.add_task(
+                    email_service.send_account_creation_email,
+                    new_user.email,
+                    full_name,
+                    password,
+                    new_user.role.value
+                )
             
             return new_user
         except Exception as e:
@@ -48,7 +57,7 @@ class UserService(BaseService):
     async def bulk_create_users(self, db: Session, request: BulkImportRequest, created_by: Optional[uuid.UUID] = None) -> List[User]:
         """Bulk create users, generate password and send email for each."""
         created_users = []
-        
+         
         # Lặp qua danh sách users từ request.users
         for user_data_in in request.users: # <-- Lặp trên request.users
             try:
@@ -81,7 +90,7 @@ class UserService(BaseService):
                 
                 # 4. GỬI EMAIL
                 full_name = f"{user.first_name} {user.last_name}"
-                email_service.send_account_creation_email(user.email, full_name, raw_password, user.role)
+                await email_service.send_account_creation_email(user.email, full_name, raw_password, user.role)
 
             except Exception as e:
                 print(f"Error creating user {user_data_in.email}: {e}")

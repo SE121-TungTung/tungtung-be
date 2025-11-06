@@ -5,29 +5,43 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies import get_current_user, get_current_admin_user # Giả định có dependency này
 from app.services.test import test_service # Giả định Service đã được khởi tạo
-from app.schemas.assessment import TestAttemptStart, TestResponseCreate, TestAttemptSubmit
+from app.schemas.assessment import TestAttemptStart, TestResponseCreate, TestQuestionLink
 from uuid import UUID
 from typing import Dict, Any, List
-from app.models.assessment import Test, TestAttempt, TestResponse, TestQuestion, QuestionBank
+from app.models.assessment import Test, QuestionBank
 from app.routers.generator import create_crud_router
 
 base_test_router = create_crud_router(
     model=Test,
     db_dependency=get_db,
     auth_dependency=get_current_admin_user,
-    tag_prefix="Tests (Admin CRUD)"
+    tag_prefix="Tests (Admin CRUD)",
+    prefix=""
 )
 
 base_question_router = create_crud_router(
     model=QuestionBank,
     db_dependency=get_db,
     auth_dependency=get_current_admin_user,
-    tag_prefix="QuestionBank (Admin CRUD)"
+    tag_prefix="QuestionBank (Admin CRUD)",
+    prefix=""
 )
 
 router = APIRouter(prefix="/tests", tags=["Assessment & Testing"])
-router.include_router(base_test_router, prefix="")
-router.include_router(base_question_router, prefix="")
+
+@router.post("/{test_id}/questions", status_code=status.HTTP_200_OK)
+async def link_questions_to_test(
+    link_data: TestQuestionLink,
+    test_id: UUID = Path(..., description="ID của đề thi cần thêm câu hỏi"),
+    db: Session = Depends(get_db),
+    # Chỉ Admin/Teacher mới có quyền chỉnh sửa đề thi
+    current_user = Depends(get_current_admin_user) 
+) -> Dict[str, Any]:
+    """
+    UC: Liên kết danh sách câu hỏi vào một đề thi và tính toán lại tổng điểm.
+    """
+    result = await test_service.add_questions_to_test(db, test_id, link_data)
+    return result
 
 @router.post("/{test_id}/start", status_code=status.HTTP_201_CREATED)
 async def start_test_attempt(
@@ -46,18 +60,20 @@ async def save_test_response(
     response_data: TestResponseCreate,
     attempt_id: UUID = Path(..., description="ID của lần làm bài"),
     db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
 ):
     """UC: Lưu câu trả lời cho một câu hỏi."""
-    await test_service.save_response(db, attempt_id, response_data)
+    await test_service.save_response(db, attempt_id, response_data, current_user.id)
     return {"message": "Response saved successfully"}
 
 @router.post("/attempts/{attempt_id}/submit", status_code=status.HTTP_200_OK)
 async def submit_test_attempt(
     attempt_id: UUID = Path(..., description="ID của lần làm bài cần nộp"),
     db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
 ):
     """UC: Nộp bài thi, ghi lại thời gian, và chạy chấm điểm tự động."""
-    attempt = await test_service.submit_and_grade(db, attempt_id)
+    attempt = await test_service.submit_and_grade(db, attempt_id, current_user.id)
     return {
         "message": "Test submitted and auto-graded.",
         "attempt_id": attempt.id,
