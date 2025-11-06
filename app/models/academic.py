@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, Text, DECIMAL, Enum, Date, TIMESTAMP, ForeignKey, CheckConstraint
+from sqlalchemy import Column, String, Integer, SmallInteger,Text, DECIMAL, Enum, Date, TIMESTAMP, ForeignKey, CheckConstraint
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -130,7 +130,7 @@ class Class(BaseModel):
     
     fee_amount = Column(DECIMAL(10, 2), nullable=False)
 
-    sessions_per_week = Column(Integer, default=2, nullable=False)
+    sessions_per_week = Column(SmallInteger, default=2, nullable=False)
     
     # FIX LOGIC: Default là SCHEDULED theo SQL gốc
     status = Column(Enum(ClassStatus, values_callable=lambda obj: [e.value for e in obj], 

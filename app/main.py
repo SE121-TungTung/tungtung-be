@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 import app.core.database as database
 from app.core.config import settings
-from app.routers import auth, users, room, course, classes, enrollment, class_session, attendance, schedule, test
+from app.routers import auth, users, room, course, classes, enrollment, class_session, attendance, schedule, test, message
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 
@@ -51,5 +51,8 @@ api_router.include_router(schedule.router)
 api_router.include_router(test.router)
 api_router.include_router(test.base_test_router, prefix="/tests", tags=["Tests (Admin CRUD)"])
 api_router.include_router(test.base_question_router, prefix="/question-banks", tags=["QuestionBank (Admin CRUD)"])
+api_router.include_router(message.router)
+api_router.include_router(message.base_message_router, prefix="/messages", tags=["Messages (CRUD)"])
+api_router.include_router(message.base_recepient_router, prefix="/message-recipients", tags=["MessageRecipients (CRUD)"])
 
 app.include_router(api_router, prefix="/api/v1")

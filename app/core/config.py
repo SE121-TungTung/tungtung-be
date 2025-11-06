@@ -1,6 +1,5 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
-import secrets
 
 
 class Settings(BaseSettings):
@@ -38,6 +37,12 @@ class Settings(BaseSettings):
     
     # Frontend URL for reset links
     FRONTEND_URL: str
+
+    #Cloudinary Configuration
+    CLOUDINARY_CLOUD_NAME: str
+    CLOUDINARY_API_KEY: str
+    CLOUDINARY_API_SECRET: str
+    CLOUDINARY_URL: str
 
     # Application Settings
     DEFAULT_MAX_SLOT_PER_SESSION: int
