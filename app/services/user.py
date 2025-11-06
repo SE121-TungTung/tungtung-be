@@ -11,6 +11,8 @@ from app.dependencies import generate_strong_password
 from app.services.email import email_service
 import uuid
 from datetime import datetime
+from fastapi import UploadFile
+from app.services import cloudinary
 
 class UserService(BaseService):
     def __init__(self):
@@ -113,7 +115,7 @@ class UserService(BaseService):
     async def get_user_by_email(self, db: Session, email: str) -> Optional[User]:
         return self.repository.get_by_email(db, email)
     
-    async def update_user(self, db: Session, user_id: uuid.UUID, user_update: UserUpdate, id_updated_by) -> User:
+    async def update_user(self, db: Session, user_id: uuid.UUID, user_update: UserUpdate, avatar_file: Optional[UploadFile], id_updated_by) -> User:
         user = await self.get(db, user_id)
         if not user:
             raise HTTPException(
@@ -121,7 +123,30 @@ class UserService(BaseService):
                 detail="User not found"
             )
         
-        update_data = user_update.model_dump(exclude_unset=True)
+        if avatar_file:
+            try:
+                # Gọi File Service để upload lên Cloudinary
+                upload_result = await cloudinary.upload_and_save_metadata(
+                    db=db, 
+                    uploaded_file=avatar_file, 
+                    user_id=user_id,
+                    folder="user_avatars"
+                )
+                
+                avatar_url = upload_result.file_path 
+
+                # Tùy chọn: Xóa avatar cũ khỏi Cloudinary nếu cần
+                # if user.avatar_url:
+                #     file_service.delete_file_by_url(user.avatar_url) 
+                
+                update_data = user_update.model_dump(exclude_unset=True)
+                update_data['avatar_url'] = avatar_url
+                
+            except HTTPException as e:
+                raise HTTPException(status_code=400, detail=f"Failed to upload avatar: {e.detail}")
+        
+        else:
+            update_data = user_update.model_dump(exclude_unset=True)
         update_data["updated_by"] = id_updated_by
         return self.repository.update(db, db_obj=user, obj_in=update_data)
     

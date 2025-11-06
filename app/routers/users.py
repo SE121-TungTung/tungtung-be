@@ -1,9 +1,9 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, UploadFile, File
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies import get_current_active_user, get_current_admin_user, CommonQueryParams
-from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest
+from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest, UserUpdateForm
 from app.services.user import user_service
 from app.models.user import User, UserRole, UserStatus
 from uuid import UUID
@@ -29,12 +29,14 @@ async def read_user_me(
 
 @router.put("/me", response_model=UserResponse)
 async def update_user_me(
-    user_update: UserUpdate,
+    update_form: UserUpdateForm = Depends(),
     db: Session = Depends(get_db),
+    avatar_file: Optional[UploadFile] = File(None, description="Avatar image file"),
     current_user: User = Depends(get_current_active_user)
 ):
+    user_update = update_form.to_update_schema(UserUpdate)
     """Update current user profile"""
-    return await user_service.update_user(db, current_user.id, user_update, id_updated_by=current_user.id)
+    return await user_service.update_user(db, current_user.id, user_update, avatar_file, id_updated_by=current_user.id)
 
 @router.post("/me/change-password")
 async def change_password(
@@ -119,32 +121,9 @@ async def get_user(
 async def update_user(
     user_id: UUID,
     user_update: UserUpdate,
+    avatar_file: Optional[UploadFile] = File(None, description="Avatar image file"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """Update user (admin only)"""
-    return await user_service.update_user(db, user_id, user_update, id_updated_by=current_user.id)
-
-# @router.delete("/{user_id}")
-# async def delete_user(
-#     user_id: UUID,
-#     db: Session = Depends(get_db),
-#     current_user: User = Depends(get_current_admin_user)
-# ):
-#     """Soft delete user (admin only)"""
-#     user = await user_service.get(db, user_id)
-#     if not user:
-#         raise HTTPException(
-#             status_code=status.HTTP_404_NOT_FOUND,
-#             detail="User not found"
-#         )
-#     if user_id == current_user.id:
-#         raise HTTPException(
-#             status_code=status.HTTP_400_BAD_REQUEST,
-#             detail="You cannot delete your own account"
-#         )
-    
-
-#     # Soft delete by setting status to inactive
-#     await user_service.update_user(db, user_id, UserUpdate(status=UserStatus.INACTIVE), current_user.id)
-#     return {"message": "User deleted successfully"}
+    return await user_service.update_user(db, user_id, user_update, avatar_file, id_updated_by=current_user.id)
