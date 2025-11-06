@@ -101,7 +101,7 @@ class Course(BaseModel):
     fee_amount = Column(DECIMAL(10,2), nullable=False)
     currency = Column(String(3), default='VND')
     
-    syllabus = Column(JSONB)
+    syllabus = Column(JSONB, nullable=False, default={}) 
     learning_objectives = Column(ARRAY(Text()), default=list)
     prerequisites = Column(ARRAY(Text()), default=list)
     

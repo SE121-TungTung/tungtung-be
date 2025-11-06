@@ -28,6 +28,7 @@ class RouteGenerator:
         crud_class: CRUDBase,
         db_dependency,
         auth_dependency = None,
+        prefix: str = None,
         tag_prefix: str = None
     ):
         self.model = model
@@ -38,6 +39,7 @@ class RouteGenerator:
         self.model_name = model.__name__.lower()
         self.model_plural = inflector.plural(self.model_name)
         self.tag_name = tag_prefix or self.model_plural.title()
+        self.prefix = prefix if prefix is not None else f"/{self.model_plural}"
         
         # Auto-generate schemas
         self.schemas = generate_model_schemas(model)
@@ -56,7 +58,7 @@ class RouteGenerator:
         active_routes = [route for route in include_routes if route not in exclude_routes]
         
         router = APIRouter(
-            prefix=f"/{self.model_plural}",
+            prefix=self.prefix,
             tags=[self.tag_name]
         )
         
@@ -227,6 +229,7 @@ def create_crud_router(
     auth_dependency = None,
     include_routes: List[str] = None,
     exclude_routes: List[str] = None,
+    prefix: str = None,
     tag_prefix: str = None
 ) -> APIRouter:
     """Helper function to quickly create a CRUD router for a model"""
@@ -240,6 +243,7 @@ def create_crud_router(
         crud_class=crud,
         db_dependency=db_dependency,
         auth_dependency=auth_dependency,
+        prefix=prefix,
         tag_prefix=tag_prefix
     )
     

@@ -15,19 +15,19 @@ base_test_router = create_crud_router(
     model=Test,
     db_dependency=get_db,
     auth_dependency=get_current_admin_user,
-    tag_prefix="Tests (Admin CRUD)"
+    tag_prefix="Tests (Admin CRUD)",
+    prefix=""
 )
 
 base_question_router = create_crud_router(
     model=QuestionBank,
     db_dependency=get_db,
     auth_dependency=get_current_admin_user,
-    tag_prefix="QuestionBank (Admin CRUD)"
+    tag_prefix="QuestionBank (Admin CRUD)",
+    prefix=""
 )
 
 router = APIRouter(prefix="/tests", tags=["Assessment & Testing"])
-router.include_router(base_test_router, prefix="")
-router.include_router(base_question_router, prefix="")
 
 @router.post("/{test_id}/questions", status_code=status.HTTP_200_OK)
 async def link_questions_to_test(

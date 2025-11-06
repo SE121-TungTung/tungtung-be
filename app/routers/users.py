@@ -7,8 +7,18 @@ from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordU
 from app.services.user import user_service
 from app.models.user import User, UserRole, UserStatus
 from uuid import UUID
+from app.routers.generator import create_crud_router
+
+delete_user_router = create_crud_router(
+    model=User,
+    db_dependency=get_db,
+    auth_dependency=get_current_admin_user,
+    exclude_routes=["create", "update", "list", "get"],
+    prefix=""
+)
 
 router = APIRouter()
+router.include_router(delete_user_router, prefix="")
 
 @router.get("/me", response_model=UserResponse)
 async def read_user_me(
@@ -24,7 +34,7 @@ async def update_user_me(
     current_user: User = Depends(get_current_active_user)
 ):
     """Update current user profile"""
-    return await user_service.update_user(db, current_user.id, user_update)
+    return await user_service.update_user(db, current_user.id, user_update, id_updated_by=current_user.id)
 
 @router.post("/me/change-password")
 async def change_password(
@@ -115,25 +125,26 @@ async def update_user(
     """Update user (admin only)"""
     return await user_service.update_user(db, user_id, user_update, id_updated_by=current_user.id)
 
-@router.delete("/{user_id}")
-async def delete_user(
-    user_id: UUID,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
-):
-    """Soft delete user (admin only)"""
-    user = await user_service.get(db, user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
-        )
-    if user_id == current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="You cannot delete your own account"
-        )
+# @router.delete("/{user_id}")
+# async def delete_user(
+#     user_id: UUID,
+#     db: Session = Depends(get_db),
+#     current_user: User = Depends(get_current_admin_user)
+# ):
+#     """Soft delete user (admin only)"""
+#     user = await user_service.get(db, user_id)
+#     if not user:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail="User not found"
+#         )
+#     if user_id == current_user.id:
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail="You cannot delete your own account"
+#         )
     
-    # Soft delete by setting status to inactive
-    await user_service.update_user(db, user_id, UserUpdate(status=UserStatus.INACTIVE))
-    return {"message": "User deleted successfully"}
+
+#     # Soft delete by setting status to inactive
+#     await user_service.update_user(db, user_id, UserUpdate(status=UserStatus.INACTIVE), current_user.id)
+#     return {"message": "User deleted successfully"}
