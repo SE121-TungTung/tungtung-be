@@ -133,6 +133,7 @@ class ScheduleService:
         
         rooms = db.query(Room).filter(
             Room.status == 'available',
+            Room.deleted_at == None,
             Room.capacity >= min_capacity
         ).order_by(Room.capacity).all()
         
