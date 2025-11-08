@@ -3,9 +3,10 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Background
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies import get_current_active_user, get_current_admin_user, CommonQueryParams
-from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest, UserUpdateForm
+from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest, UserUpdateForm, ClassWithMembersResponse
 from app.services.user import user_service
 from app.models.user import User, UserRole, UserStatus
+from app.models.academic import ClassEnrollment, Class
 from uuid import UUID
 from app.routers.generator import create_crud_router
 
@@ -31,7 +32,7 @@ async def read_user_me(
 async def update_user_me(
     update_form: UserUpdateForm = Depends(),
     db: Session = Depends(get_db),
-    avatar_file: Optional[UploadFile] = File(None, description="Avatar image file"),
+    avatar_file: Optional[UploadFile]= File(None, description="Avatar image file"),
     current_user: User = Depends(get_current_active_user)
 ):
     user_update = update_form.to_update_schema(UserUpdate)
@@ -117,13 +118,82 @@ async def get_user(
         )
     return user
 
+@router.get("/me/classes", response_model=list[ClassWithMembersResponse])
+async def get_my_classes(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Lấy danh sách lớp mà user hiện tại đang tham gia (học sinh),
+    kèm giáo viên và danh sách học sinh cùng lớp.
+    """
+    # Lấy các class_id mà user này đang tham gia
+    enrollments = (
+        db.query(ClassEnrollment)
+        .filter(
+            ClassEnrollment.student_id == current_user.id,
+            ClassEnrollment.deleted_at.is_(None)
+        )
+        .all()
+    )
+
+    if not enrollments:
+        return []
+
+    class_ids = [enrollment.class_id for enrollment in enrollments]
+
+    # Lấy danh sách lớp + join giáo viên
+    classes = (
+        db.query(Class)
+        .filter(
+            Class.id.in_(class_ids),
+            Class.deleted_at.is_(None)
+        )
+        .all()
+    )
+
+    result = []
+    for class_ in classes:
+        # Lấy danh sách học sinh cùng lớp
+        classmates = (
+            db.query(User)
+            .join(ClassEnrollment, ClassEnrollment.student_id == User.id)
+            .filter(
+                ClassEnrollment.class_id == class_.id,
+                User.deleted_at.is_(None),
+                ClassEnrollment.deleted_at.is_(None)
+            )
+            .all()
+        )
+
+        result.append({
+            **class_.__dict__,
+            "teacher": {
+                "id": class_.teacher.id if class_.teacher else None,
+                "full_name": f"{class_.teacher.first_name} {class_.teacher.last_name}" if class_.teacher else None,
+                "email": class_.teacher.email if class_.teacher else None,
+                "avatar_url": class_.teacher.avatar_url if class_.teacher.avatar_url else None
+            },
+            "students": [
+                {
+                    "id": student.id,
+                    "full_name": f"{student.first_name} {student.last_name}",
+                    "email": student.email,
+                    "avatar_url": student.avatar_url if student.avatar_url else None
+                } for student in classmates
+            ]
+        })
+
+    return result
+
 @router.put("/{user_id}", response_model=UserResponse)
 async def update_user(
     user_id: UUID,
-    user_update: UserUpdate,
+    update_form: UserUpdateForm = Depends(),
     avatar_file: Optional[UploadFile] = File(None, description="Avatar image file"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """Update user (admin only)"""
+    user_update = update_form.to_update_schema(UserUpdate)
     return await user_service.update_user(db, user_id, user_update, avatar_file, id_updated_by=current_user.id)
