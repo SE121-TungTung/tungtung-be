@@ -80,6 +80,35 @@ class UserResponse(UserBase):
         }
     }
 
+class UserMiniResponse(BaseModel):
+    id: uuid.UUID
+    full_name: str
+    email: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+    model_config = {
+        "from_attributes": True,
+        "json_encoders": {
+            uuid.UUID: str   # ép UUID về string khi trả JSON
+        }
+    }
+
+class ClassWithMembersResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    status: Optional[str] = None
+    teacher: Optional[UserMiniResponse] = None
+    students: List[UserMiniResponse] = []
+
+    model_config = {
+        "from_attributes": True,
+        "json_encoders": {
+            uuid.UUID: str   # ép UUID về string khi trả JSON
+        }
+    }
+
 class UserListResponse(BaseModel):
     users: list[UserResponse]
     total: int

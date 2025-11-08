@@ -8,7 +8,10 @@ class BaseRepository(Generic[T]):
         self.model = model
 
     def get(self, db: Session, id: int) -> Optional[T]:
-        return db.query(self.model).filter(self.model.deleted_at.is_(None)).get(id)
+        obj = db.get(self.model, id)
+        if obj and obj.deleted_at is None:
+            return obj
+        return None
 
     def get_all(self, db: Session, skip: int = 0, limit: int = 100) -> List[T]:
         return db.query(self.model).filter(self.model.deleted_at.is_(None)).offset(skip).limit(limit).all()
