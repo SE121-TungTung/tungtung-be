@@ -41,7 +41,7 @@ def get_current_teacher_or_admin(
         )
     return current_user
 
-def _get_current_week_range() -> Tuple[date, date]:
+def get_current_week_range() -> Tuple[date, date]:
     today = date.today()
     # today.weekday() trả về 0 cho Thứ Hai, 6 cho Chủ Nhật
     days_to_monday = today.weekday() 

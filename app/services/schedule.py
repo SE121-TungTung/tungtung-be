@@ -1,7 +1,7 @@
 # app/services/schedule.py
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Union
 from datetime import timedelta, date, time
 from uuid import UUID
 import logging
@@ -229,25 +229,16 @@ class ScheduleService:
         duration_days = (request.end_date - request.start_date).days
         total_weeks = duration_days / 7.0 
         
+        # Xác định giới hạn slot tối đa
+        max_slots_limit = request.max_slots_per_session if request.max_slots_per_session else MAX_SLOT_NUMBER 
+        
         # B2: Loop through classes
         for class_obj in classes:
             
             # --- TÍNH TOÁN MỤC TIÊU ---
-            # Giả định class_obj.sessions_per_week đã được thêm vào Model
             sessions_per_week = getattr(class_obj, 'sessions_per_week', 2) 
             target_session_count = math.ceil(sessions_per_week * total_weeks)
-            
             sessions_created_for_class = 0
-            
-            # Lấy quy tắc: Dùng quy tắc cố định HOẶC dùng quy tắc ngẫu nhiên mặc định
-            is_rules_empty = not class_obj.schedule or len(class_obj.schedule) == 0
-            
-            if is_rules_empty:
-                # Nếu không có quy tắc, dùng danh sách ngẫu nhiên (sẽ được chọn ngẫu nhiên sau)
-                rules_to_use = DEFAULT_SLOTS_TO_TRY 
-                logger.warning(f"Class {class_obj.id} has no schedule rules. Using random default slots.")
-            else:
-                rules_to_use = class_obj.schedule
             
             # B3: Loop through date range
             current_date = request.start_date
@@ -258,126 +249,49 @@ class ScheduleService:
                 if sessions_created_for_class >= target_session_count:
                     break 
                 
-                day_name = current_date.strftime('%A').lower()
-                
-                # --- XỬ LÝ QUY TẮC LỊCH (ĐÃ SỬA) ---
-                
-                # Xác định giới hạn slot tối đa từ request (Hard Constraint)
-                # Dùng MAX_SLOT_NUMBER làm default nếu request không gửi
-                max_slots_limit = request.max_slots_per_session if request.max_slots_per_session else MAX_SLOT_NUMBER 
-                
-                rule = None
-                
-                if is_rules_empty:
-                    # Logic xếp ngẫu nhiên
-                    eligible_rules = [r for r in rules_to_use if r['day'] == day_name]
-                    
-                    if not eligible_rules:
-                        current_date += timedelta(days=1)
-                        continue
-                        
-                    # 1. Filter by max_slots_per_session (Ràng buộc cứng)
-                    eligible_rules = [r for r in eligible_rules if len(r['slots']) <= max_slots_limit]
-                    
-                    if not eligible_rules:
-                        # Nếu không còn rule nào hợp lệ sau khi lọc max_slots
-                        current_date += timedelta(days=1)
-                        continue
-                        
-                    # 2. Prioritize Morning Slots (Ưu tiên mềm)
-                    if request.prefer_morning:
-                        # Slots 1 (8:00) và 2 (9:45) được coi là buổi sáng
-                        morning_slots_numbers = {1, 2} 
-                        morning_rules = [r for r in eligible_rules if all(slot in morning_slots_numbers for slot in r['slots'])]
-                        
-                        if morning_rules:
-                            # Ưu tiên chọn ngẫu nhiên từ các slot buổi sáng hợp lệ
-                            rule = random.choice(morning_rules)
-                        else:
-                            # Nếu không có slot buổi sáng hợp lệ, chọn ngẫu nhiên từ tất cả eligible
-                            rule = random.choice(eligible_rules)
-                    else:
-                        # Nếu không ưu tiên buổi sáng, chọn ngẫu nhiên từ tất cả eligible
-                        rule = random.choice(eligible_rules) 
-                        
-                else:
-                    # Dùng quy tắc cố định (Ưu tiên)
-                    matching_rules = [r for r in rules_to_use if r.get('day') == day_name and r.get('slots')]
-                    if not matching_rules:
-                        current_date += timedelta(days=1)
-                        continue
-                        
-                    # NEW: Áp dụng max_slots_per_session check cho các fixed rules (Ràng buộc cứng)
-                    filtered_rules = [r for r in matching_rules if len(r['slots']) <= max_slots_limit]
-                    
-                    if not filtered_rules:
-                        # Ghi nhận xung đột nếu quy tắc cố định bị vi phạm
-                        conflicts.append(ConflictInfo(
-                            class_id=class_obj.id, class_name=class_obj.name, conflict_type="max_slot_violation",
-                            session_date=current_date, time_slots=matching_rules[0]['slots'], 
-                            reason=f"Fixed rule violates max_slots_per_session limit ({max_slots_limit})."
-                        ))
-                        current_date += timedelta(days=1)
-                        continue
-                        
-                    # Chọn rule đầu tiên hợp lệ sau khi lọc
-                    rule = filtered_rules[0]
-                
-                # -------------------------
-                
-                # Đảm bảo rule đã được chọn
-                if not rule:
+                # 1. Chọn và kiểm tra quy tắc/slots khả dụng
+                rule, rule_conflict = self._select_and_validate_rule(
+                    class_obj=class_obj,
+                    current_date=current_date,
+                    max_slots_limit=max_slots_limit,
+                    prefer_morning=request.prefer_morning
+                )
+
+                if rule_conflict:
+                    conflicts.append(rule_conflict)
                     current_date += timedelta(days=1)
                     continue
-                    
-                time_slots = rule['slots']
-                is_slot_assigned = False
 
-                # 1. Kiểm tra Teacher Conflict (Hard Constraint)
-                if self._check_teacher_conflict(db, class_obj.teacher_id, current_date, time_slots):
-                    # Báo cáo xung đột và chuyển sang ngày/slot tiếp theo
-                    conflicts.append(ConflictInfo(
-                        class_id=class_obj.id, class_name=class_obj.name, conflict_type="teacher_busy",
-                        session_date=current_date, time_slots=time_slots, reason=f"Teacher {class_obj.teacher_id} is busy."
-                    ))
-                else:
-                    # 2. Tìm Phòng Trống (Hard Constraint)
-                    room_id = self._find_available_room(db, current_date, time_slots, class_obj.max_students)
-                    
-                    if room_id:
-                        # THÀNH CÔNG: Gán Slot
-                        start_time, end_time = self._get_time_range(time_slots)
-                        teacher = self.user_repo.get(db, class_obj.teacher_id)
-                        room = self.room_repo.get(db, room_id)
+                if rule:
+                    # 2. Thực hiện xếp lịch và kiểm tra tất cả xung đột (DB + Request)
+                    result = self._attempt_to_schedule_session(
+                        db=db,
+                        class_obj=class_obj,
+                        current_date=current_date,
+                        rule=rule,
+                        sessions_created_for_class=sessions_created_for_class,
+                        request_conflicts=request.class_conflict,
+                        request_teacher_conflicts=request.teacher_conflict
+                    )
 
-                        successful_sessions.append(SessionProposal(
-                            class_id=class_obj.id, class_name=class_obj.name, teacher_id=class_obj.teacher_id,
-                            teacher_name=f"{teacher.first_name} {teacher.last_name}", room_id=room_id,
-                            room_name=room.name, session_date=current_date, time_slots=time_slots,
-                            start_time=start_time, end_time=end_time,
-                            lesson_topic=f"Auto Lesson {sessions_created_for_class + 1} for {class_obj.name}"
-                        ))
+                    # 3. Xử lý kết quả
+                    if isinstance(result, SessionProposal):
+                        successful_sessions.append(result)
                         sessions_created_for_class += 1
-                        is_slot_assigned = True
                     else:
-                        # Báo cáo xung đột Phòng
-                        conflicts.append(ConflictInfo(
-                            class_id=class_obj.id, class_name=class_obj.name, conflict_type="room_unavailable",
-                            session_date=current_date, time_slots=time_slots, reason="No available room found matching capacity."
-                        ))
-
+                        conflicts.append(result) # result là ConflictInfo
+                
                 # Chuyển sang ngày tiếp theo
                 current_date += timedelta(days=1)
             
             # --- B4: KIỂM TRA BẤT KHẢ THI ---
-            # Nếu vòng lặp kết thúc mà chưa đủ target sessions
             if current_date > request.end_date and sessions_created_for_class < target_session_count:
                 raise HTTPException(
                     status_code=409, 
                     detail=f"HARD EXCEPTION: Cannot fulfill target of {target_session_count} sessions for class {class_obj.name} within the given range due to resource conflicts."
                 )
         
-        # B4: Trả về Proposal
+        # B5: Trả về Proposal
         total_attempts = len(successful_sessions) + len(conflicts)
         
         return ScheduleProposal(
@@ -584,7 +498,7 @@ class ScheduleService:
         return {"success": True, "message": "Session cancelled"}
     
     # =========================================================================
-    # HELPER: Convert to Response
+    # HELPER
     # =========================================================================
     
     def _to_response(self, db: Session, session) -> SessionResponse:
@@ -609,6 +523,145 @@ class ScheduleService:
             status=session.status,
             created_at=session.created_at
         )
+    
+    def _check_request_conflict(
+        self,
+        id_to_check: UUID,
+        session_date: date,
+        time_slots: List[int],
+        conflict_map: Optional[Dict[str, Dict[str, List[int]]]]
+    ) -> bool:
+        """Kiểm tra xung đột với dữ liệu nhập vào (class_conflict/teacher_conflict)."""
+        if not conflict_map:
+            return False
+        
+        id_str = str(id_to_check)
+        date_str = str(session_date)
+        
+        if id_str in conflict_map:
+            date_conflicts = conflict_map[id_str]
+            
+            if date_str in date_conflicts:
+                forbidden_slots = set(date_conflicts[date_str])
+                
+                if set(time_slots) & forbidden_slots:
+                    return True
+                    
+        return False
+        
+    # NEW HELPER: Select and Validate Scheduling Rule
+    def _select_and_validate_rule(
+        self, 
+        class_obj: Class, 
+        current_date: date, 
+        max_slots_limit: int, 
+        prefer_morning: bool
+    ) -> Tuple[Optional[Dict], Optional[ConflictInfo]]:
+        """Selects a scheduling rule (fixed or random) and validates against max_slots_limit."""
+        
+        day_name = current_date.strftime('%A').lower()
+        is_rules_empty = not class_obj.schedule or len(class_obj.schedule) == 0
+        rules_to_use = DEFAULT_SLOTS_TO_TRY if is_rules_empty else class_obj.schedule
+        
+        rule = None
+        conflict_info = None
+
+        matching_rules = [r for r in rules_to_use if r.get('day') == day_name and r.get('slots')]
+        if not matching_rules:
+            return None, None # No rule for this day
+
+        # Áp dụng max_slots_per_session check (Ràng buộc cứng)
+        filtered_rules = [r for r in matching_rules if len(r['slots']) <= max_slots_limit]
+
+        if not filtered_rules:
+            # Conflict: Fixed rule violates max_slots. Chỉ báo cáo nếu là quy tắc cố định.
+            if not is_rules_empty:
+                conflict_info = ConflictInfo(
+                    class_id=class_obj.id, class_name=class_obj.name, conflict_type="max_slot_violation",
+                    session_date=current_date, time_slots=matching_rules[0]['slots'], 
+                    reason=f"Fixed rule violates max_slots_per_session limit ({max_slots_limit})."
+                )
+            return None, conflict_info
+            
+        if is_rules_empty:
+            # Logic xếp ngẫu nhiên (Ưu tiên mềm)
+            if prefer_morning:
+                morning_slots_numbers = {1, 2} 
+                morning_rules = [r for r in filtered_rules if all(slot in morning_slots_numbers for slot in r['slots'])]
+                
+                rule = random.choice(morning_rules) if morning_rules else random.choice(filtered_rules)
+            else:
+                rule = random.choice(filtered_rules)
+        else:
+            # Dùng quy tắc cố định
+            rule = filtered_rules[0]
+            
+        return rule, None
+        
+    # NEW HELPER: Attempt to schedule a single session with all checks
+    def _attempt_to_schedule_session(
+        self,
+        db: Session,
+        class_obj: Class,
+        current_date: date,
+        rule: Dict,
+        sessions_created_for_class: int,
+        request_conflicts: Optional[Dict[str, Dict[str, List[int]]]],
+        request_teacher_conflicts: Optional[Dict[str, Dict[str, List[int]]]]
+    ) -> Union[SessionProposal, ConflictInfo]:
+        """Checks all conflicts for a given rule and creates a SessionProposal if successful."""
+        
+        time_slots = rule['slots']
+        teacher_id = class_obj.teacher_id
+
+        # 0. Check Conflicts from Request (Hard Constraints)
+        
+        # Check Class Conflict
+        if self._check_request_conflict(class_obj.id, current_date, time_slots, request_conflicts):
+            return ConflictInfo(
+                class_id=class_obj.id, class_name=class_obj.name, conflict_type="request_class_conflict",
+                session_date=current_date, time_slots=time_slots, 
+                reason="Class is manually marked as unavailable at this time (user input)."
+            )
+
+        # Check Teacher Conflict
+        if self._check_request_conflict(teacher_id, current_date, time_slots, request_teacher_conflicts):
+            return ConflictInfo(
+                class_id=class_obj.id, class_name=class_obj.name, conflict_type="request_teacher_conflict",
+                session_date=current_date, time_slots=time_slots, 
+                reason="Teacher is manually marked as unavailable at this time (user input)."
+            )
+
+        # 1. Check Teacher Conflict (from DB)
+        if self._check_teacher_conflict(db, teacher_id, current_date, time_slots):
+            return ConflictInfo(
+                class_id=class_obj.id, class_name=class_obj.name, conflict_type="teacher_busy",
+                session_date=current_date, time_slots=time_slots, reason=f"Teacher {teacher_id} is busy (DB conflict)."
+            )
+
+        # 2. Find Available Room (Hard Constraint - includes DB conflict check)
+        room_id = self._find_available_room(db, current_date, time_slots, class_obj.max_students)
+        
+        if not room_id:
+            return ConflictInfo(
+                class_id=class_obj.id, class_name=class_obj.name, conflict_type="room_unavailable",
+                session_date=current_date, time_slots=time_slots, reason="No available room found matching capacity."
+            )
+
+        # 3. SUCCESS: Create Session Proposal
+        start_time, end_time = self._get_time_range(time_slots)
+        teacher = self.user_repo.get(db, teacher_id)
+        room = self.room_repo.get(db, room_id)
+        
+        return SessionProposal(
+            class_id=class_obj.id, class_name=class_obj.name, teacher_id=teacher_id,
+            teacher_name=f"{teacher.first_name} {teacher.last_name}", room_id=room_id,
+            room_name=room.name, session_date=current_date, time_slots=time_slots,
+            start_time=start_time, end_time=end_time,
+            lesson_topic=f"Auto Lesson {sessions_created_for_class + 1} for {class_obj.name}"
+        )
+    
+
 
 schedule_service = ScheduleService(
     class_repo=class_repository,

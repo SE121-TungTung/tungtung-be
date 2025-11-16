@@ -67,6 +67,13 @@ class ScheduleGenerateRequest(BaseModel):
     class_ids: Optional[List[UUID]] = Field(None, description="Danh sách class cần xếp lịch.")
     max_slots_per_session: Optional[int] = Field(None, ge=1, le=4, description="Giới hạn số tiết tối đa cho một buổi học")
     prefer_morning: bool = Field(True, description="Ưu tiên xếp buổi sáng")
+
+    class_conflict: Optional[Dict[str, Dict[str, List[int]]]] = Field(
+        None, description="Khung giờ bị cấm cho từng lớp học: {class_id: {date: [slot]}}"
+    )
+    teacher_conflict: Optional[Dict[str, Dict[str, List[int]]]] = Field(
+        None, description="Khung giờ bị cấm cho từng giáo viên: {teacher_id: {date: [slot]}}"
+    )
     
     @validator('end_date')
     def validate_date_range(cls, v: date, values: Dict[str, Any]) -> date:

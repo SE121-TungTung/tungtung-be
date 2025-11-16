@@ -1,11 +1,11 @@
 # app/api/v1/endpoints/schedule.py
 
-from fastapi import APIRouter, Depends, status, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, status, Path, Query
 from datetime import date
 from typing import Optional
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.dependencies import get_current_admin_user, _get_current_week_range
+from app.dependencies import get_current_admin_user, get_current_week_range
 from app.services.schedule import schedule_service
 from app.schemas.schedule import ScheduleGenerateRequest, ScheduleProposal, SessionCreate, SessionUpdate, SessionResponse, WeeklySchedule
 from uuid import UUID
@@ -61,7 +61,7 @@ async def get_weekly_schedule_view(
     """
     # Nếu user_id không được cung cấp, sử dụng ID của người dùng hiện tại (nếu cần)
     if not (start_date and end_date):
-        start_date, end_date = _get_current_week_range()
+        start_date, end_date = get_current_week_range()
     return schedule_service.get_weekly_schedule(
         db, start_date, end_date, class_id=class_id, user_id=user_id
     )
