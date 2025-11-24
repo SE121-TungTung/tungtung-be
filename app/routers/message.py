@@ -1,20 +1,22 @@
-from fastapi import APIRouter
-from app.core.database import get_db
+import asyncio
+from fastapi import APIRouter, HTTPException, status, Query # Thêm HTTPException và status
+from app.core.database import get_db, SessionLocal
 from app.dependencies import get_current_active_user, get_current_user, get_current_user_from_token
 import logging
 from app.models.message import Message, MessageRecipient
+from app.schemas.message import MessageCreate, ConversationResponse
 from app.routers.generator import create_crud_router
-from app.services.message import MessageService
+from app.services.message import message_service
 from app.services.websocket import manager
 from fastapi import WebSocket, WebSocketDisconnect, Depends
 from sqlalchemy.orm import Session
 from uuid import UUID
-from fastapi import Query
+from typing import List
 
 logger = logging.getLogger(__name__)
 
 
-message_service = MessageService()
+message_service = message_service
 
 base_message_router = create_crud_router(
     model=Message,
@@ -34,17 +36,32 @@ base_recepient_router = create_crud_router(
 
 router = APIRouter(tags=["Messaging"])
 
+@router.post("/send")
+async def send_message_rest(
+    message_data: MessageCreate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    return await message_service.handle_new_message(
+        db,
+        sender_id=current_user.id,
+        message_data=message_data
+    )
+
 @router.websocket("/ws/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: UUID):
-    """WebSocket connection for real-time messaging"""
+async def websocket_endpoint_insecure(websocket: WebSocket, user_id: UUID):
+    """WebSocket connection for real-time messaging (Insecure/Deprecated)"""
     await manager.connect(websocket, user_id)
     try:
         while True:
             data = await websocket.receive_json()
-            # Handle incoming message
-            # await message_service.handle_new_message(...)
+            if data.get('type') == 'ping':
+                # Sử dụng user_id để xác định kết nối (cần định danh rõ ràng)
+                # Đây là một giải pháp tạm thời, nên tập trung vào endpoint /ws có token.
+                pass 
     except WebSocketDisconnect:
-        manager.disconnect(websocket, user_id)
+        # Nếu chỉ dùng user_id, cần tìm connection_id để disconnect
+        pass
 
 @router.get("/rooms/{room_id}/history")
 async def get_history(
@@ -57,6 +74,28 @@ async def get_history(
     """Get chat history for a room"""
     return await message_service.get_chat_history(
         db, room_id, current_user.id, skip, limit
+    )
+
+
+@router.get("/conversations/direct/{other_user_id}")
+async def get_direct_conversation(
+    other_user_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Get or create a direct conversation between current user and another user"""
+    return await message_service.get_or_create_direct_conversation(
+        db, current_user.id, other_user_id
+    )
+
+@router.get("/conversations/all", response_model=List[ConversationResponse])
+async def get_conversations(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Get list of conversations for the current user"""
+    return await message_service.get_user_conversations(
+        db, current_user.id
     )
 
 @router.websocket("/ws")
@@ -74,10 +113,11 @@ async def websocket_endpoint(
     user_id = None
     
     try:
-        # Authenticate before accepting connection
+        # 1. AUTHENTICATE (trước khi chấp nhận kết nối)
         user = await get_current_user_from_token(token)
         user_id = user.id
         
+        # 2. CHẤP NHẬN KẾT NỐI VÀ THÊM VÀO MANAGER
         # Accept connection
         connection_id = await manager.connect(websocket, user_id)
         
@@ -109,19 +149,47 @@ async def websocket_endpoint(
             
             elif msg_type == 'message':
                 # New message - delegate to MessageService
-                # This would integrate with your MessageService
-                pass
+                db = SessionLocal() # Khởi tạo session thủ công
+                try:
+                    await message_service.handle_new_message(
+                        db=db, 
+                        sender_id=user_id, 
+                        message_data=data
+                    )
+                except Exception as e:
+                    logger.error(f"Error handling new message: {e}", exc_info=True)
+                    await websocket.send_json({
+                        'type': 'error',
+                        'message': f'Failed to send message: {str(e)}'
+                    })
+                finally:
+                    db.close()
             
             else:
                 logger.warning(f"Unknown message type: {msg_type}")
     
+    except HTTPException as e:
+        # Xử lý LỖI XÁC THỰC: Ngay lập tức đóng kết nối
+        # KHÔNG GỌI websocket.accept() nếu auth thất bại.
+        # Nếu exception xảy ra trước accept(), chỉ cần return.
+        # Nếu exception xảy ra sau accept(), nó sẽ được bắt ở khối Exception chung.
+        if websocket.client_state.name == 'CONNECTING':
+             # Tùy chọn: Gửi lỗi trước khi đóng nếu có thể
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        logger.warning(f"WebSocket authentication failed for token. Status: {e.status_code}")
+        # Kết thúc request
+        return 
+        
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for user {user_id}")
     except Exception as e:
+        # Bắt các lỗi chung khác xảy ra SAU KHI kết nối đã được chấp nhận
         logger.error(f"WebSocket error: {e}", exc_info=True)
     finally:
+        # Dọn dẹp chỉ khi connection_id đã được thiết lập (tức là connection đã được chấp nhận)
         if connection_id and user_id:
             await manager.disconnect(connection_id, user_id)
+
 
 @router.get("/ws/stats")
 async def get_websocket_stats(

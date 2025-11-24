@@ -1,10 +1,9 @@
 import enum
-from sqlalchemy import Column, String, Text, Boolean, Integer, ForeignKey, CheckConstraint, UniqueConstraint, Index, func
+from sqlalchemy import Column, String, Text, Boolean, Integer, ForeignKey, CheckConstraint, UniqueConstraint, Index, func, Enum
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ENUM as PgEnum, TIMESTAMP
 from sqlalchemy.orm import relationship
 from app.models.base import Base
 
-# Enums (giữ nguyên)
 class MessageType(enum.Enum):
     DIRECT = 'direct'
     GROUP = 'group'
@@ -36,7 +35,8 @@ class ChatRoom(Base):
     __tablename__ = "chat_rooms"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=func.gen_random_uuid())
-    room_type = Column(PgEnum(MessageType, name='message_type', create_type=False), nullable=False)
+    room_type = Column(Enum(MessageType, values_callable=lambda obj: [e.value for e in obj], 
+        native_enum=False, name='message_type'), nullable=False)
     title = Column(String(255), nullable=True)
     
     participant1_id = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
@@ -67,13 +67,16 @@ class Message(Base):
         nullable=True
     )
     
-    message_type = Column(PgEnum(MessageType, name='message_type', create_type=False), nullable=False)
+    message_type = Column(Enum(MessageType, values_callable=lambda obj: [e.value for e in obj], 
+        native_enum=False, name='message_type'), nullable=False)
     subject = Column(String(255))
     content = Column(Text, nullable=False)
     attachments = Column(JSONB, default=[])
     
-    priority = Column(PgEnum(MessagePriority, name='message_priority', create_type=False), default=MessagePriority.NORMAL)
-    status = Column(PgEnum(MessageStatus, name='message_status', create_type=False), default=MessageStatus.SENT)
+    priority = Column(Enum(MessagePriority, values_callable=lambda obj: [e.value for e in obj], 
+        native_enum=False, name='message_priority'), default=MessagePriority.NORMAL, nullable=False)
+    status = Column(Enum(MessageStatus, values_callable=lambda obj: [e.value for e in obj],
+        native_enum=False, name='message_status'), default=MessageStatus.SENT, nullable=False)
     
     scheduled_at = Column(TIMESTAMP(timezone=True))
     expires_at = Column(TIMESTAMP(timezone=True))
@@ -102,8 +105,8 @@ class MessageRecipient(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=func.gen_random_uuid())
     message_id = Column(UUID(as_uuid=True), ForeignKey('messages.id', ondelete='CASCADE'), nullable=False)
     recipient_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
-    recipient_type = Column(PgEnum(RecipientType, name='recipient_type', create_type=False), default=RecipientType.USER)
-    
+    recipient_type = Column(Enum(RecipientType, values_callable=lambda obj: [e.value for e in obj], 
+        native_enum=False, name='recipient_type'), default=RecipientType.USER, nullable=False)
     read_at = Column(TIMESTAMP(timezone=True))
     replied_at = Column(TIMESTAMP(timezone=True))
     archived = Column(Boolean, default=False)

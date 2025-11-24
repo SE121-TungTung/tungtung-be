@@ -8,6 +8,9 @@ from app.services.websocket import manager
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import Dict, Any, List
+from app.schemas.message import MessageCreate
+from app.models.message import Message
+from app.schemas.message import ConversationResponse
 
 
 class MessageService:
@@ -25,7 +28,7 @@ class MessageService:
         p1_id, p2_id = UUID(ids[0]), UUID(ids[1])
         
         room = db.query(ChatRoom).filter(
-            ChatRoom.room_type == MessageType.DIRECT,
+            ChatRoom.room_type == MessageType.DIRECT.value,
             ChatRoom.participant1_id == p1_id,
             ChatRoom.participant2_id == p2_id
         ).first()
@@ -46,16 +49,15 @@ class MessageService:
         self, 
         db: Session, 
         sender_id: UUID, 
-        message_data: Dict[str, Any]
+        message_data: MessageCreate
     ):
         """Handle new message with WebSocket"""
-        receiver_id = UUID(message_data.get("receiver_id"))
-        content = message_data.get("content")
+        receiver_id = message_data.receiver_id
+        content = message_data.content
         
         if not receiver_id or not content:
             raise ValueError("Missing receiver_id or content")
         
-        # Get/create room
         room = self._get_or_create_direct_room(db, sender_id, receiver_id)
         
         # Save message
@@ -93,6 +95,61 @@ class MessageService:
         await manager.send_personal_message(payload, sender_id)
         
         return new_message
+    
+    async def get_user_conversations(
+        self, 
+        db: Session, 
+        user_id: UUID
+    ) -> List[Dict[str, Any]]:
+        """Get list of conversations for a user"""
+        from app.models.message import ChatRoom, Message
+        
+        rooms = db.query(ChatRoom).filter(
+            ((ChatRoom.participant1_id == user_id) | (ChatRoom.participant2_id == user_id))
+        ).all()
+        
+        conversations = []
+        for room in rooms:
+            last_message = db.query(Message).filter(
+                Message.chat_room_id == room.id
+            ).order_by(Message.created_at.desc()).first()
+            
+            conversations.append(ConversationResponse(
+                room_id=room.id,
+                room_type=room.room_type,
+                title=room.title,
+                last_message={
+                    "message_id": last_message.id if last_message else None,
+                    "content": last_message.content if last_message else None,
+                    "timestamp": last_message.created_at if last_message else None
+                } if last_message else None
+            ))
+        
+        return conversations
+    
+    async def get_or_create_direct_conversation(
+        self, 
+        db: Session, 
+        user_id: UUID, 
+        other_user_id: UUID
+    ) -> Dict[str, Any]:
+        """Get or create a direct conversation between two users"""
+        room = self._get_or_create_direct_room(db, user_id, other_user_id)
+        
+        last_message = db.query(Message).filter(
+            Message.chat_room_id == room.id
+        ).order_by(Message.created_at.desc()).first()
+        
+        return {
+            "room_id": str(room.id),
+            "room_type": room.room_type,
+            "title": room.title,
+            "last_message": {
+                "message_id": str(last_message.id) if last_message else None,
+                "content": last_message.content if last_message else None,
+                "timestamp": str(last_message.created_at) if last_message else None
+            }
+        }
     
     async def get_chat_history(
         self, 

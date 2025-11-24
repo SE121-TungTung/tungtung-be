@@ -6,10 +6,12 @@ from datetime import datetime, timedelta
 from collections import defaultdict, deque
 import json
 import logging
+import secrets # <-- BẮT BUỘC PHẢI Ở CẤP MODULE CHO MỤC ĐÍCH MOCKING
 
 logger = logging.getLogger(__name__)
 
 class ConnectionManager:
+    # ... (Phần còn lại của class ConnectionManager giữ nguyên)
     def __init__(self):
         # Multi-device support: {user_id: {connection_id: WebSocket}}
         self.active_connections: Dict[UUID, Dict[str, WebSocket]] = defaultdict(dict)
@@ -72,7 +74,7 @@ class ConnectionManager:
         
         # Generate connection_id if not provided
         if not connection_id:
-            import secrets
+            # import secrets # <-- ĐÃ BỎ
             connection_id = f"{user_id}_{secrets.token_hex(8)}"
         
         async with self.lock:
@@ -97,23 +99,50 @@ class ConnectionManager:
         return connection_id
     
     async def _send_queued_messages(self, user_id: UUID, connection_id: str):
-        """Send queued offline messages"""
-        if user_id in self.message_queues and self.message_queues[user_id]:
-            logger.info(f"Sending {len(self.message_queues[user_id])} queued messages to {user_id}")
-            
-            websocket = self.active_connections[user_id].get(connection_id)
-            if not websocket:
-                return
-            
-            while self.message_queues[user_id]:
-                message = self.message_queues[user_id].popleft()
-                try:
-                    await websocket.send_json(message)
-                except Exception as e:
-                    logger.error(f"Failed to send queued message: {e}")
-                    # Re-queue
-                    self.message_queues[user_id].appendleft(message)
-                    break
+        """
+        Send queued offline messages
+        
+        Best practice: Kết hợp cả lock và .get() để đảm bảo:
+        1. Thread-safety khi truy cập active_connections
+        2. Tránh side effect của defaultdict
+        3. Minimize lock time (chỉ giữ lock khi cần)
+        """
+        # Quick check: Có messages trong queue không?
+        if user_id not in self.message_queues or not self.message_queues[user_id]:
+            return
+        
+        # Lấy websocket reference với lock protection
+        websocket = None
+        async with self.lock:
+            # Dùng .get() để tránh defaultdict tạo entry mới
+            user_connections = self.active_connections.get(user_id)
+            if user_connections:
+                websocket = user_connections.get(connection_id)
+        
+        # Nếu không tìm thấy websocket, return
+        if not websocket:
+            logger.warning(
+                f"Cannot send queued messages: "
+                f"connection {connection_id} not found for user {user_id}"
+            )
+            return
+        
+        # Gửi messages NGOÀI lock để không block các operations khác
+        logger.info(f"Sending {len(self.message_queues[user_id])} queued messages to {user_id}")
+        
+        sent_count = 0
+        while self.message_queues[user_id]:
+            message = self.message_queues[user_id].popleft()
+            try:
+                await websocket.send_json(message)
+                sent_count += 1
+            except Exception as e:
+                logger.error(f"Failed to send queued message to {user_id}: {e}")
+                # Re-queue message khi gặp lỗi
+                self.message_queues[user_id].appendleft(message)
+                break
+        
+        logger.info(f"Successfully sent {sent_count}/{sent_count + len(self.message_queues[user_id])} queued messages to {user_id}")
     
     async def disconnect(self, connection_id: str, user_id: UUID):
         """Remove specific connection"""
@@ -267,6 +296,3 @@ class ConnectionManager:
 
 # Global instance
 manager = ConnectionManager()
-
-# Start heartbeat when module loads
-manager.start_heartbeat()

@@ -4,6 +4,7 @@ from app.core.config import settings
 from app.routers import auth, users, room, course, classes, enrollment, class_session, attendance, schedule, test, message
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
+from contextlib import asynccontextmanager
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -11,6 +12,15 @@ app = FastAPI(
     #,
     #openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("Application startup: Starting WebSocket Heartbeat...")
+    message.manager.start_heartbeat()
+    yield
+    print("Application shutdown: Stopping WebSocket Heartbeat...")
+    if message.manager._heartbeat_task:
+        message.manager._heartbeat_task.cancel()
 
 db = database.get_db()
 
