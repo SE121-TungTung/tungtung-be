@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict, deque
 import json
 import logging
+import secrets
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,9 @@ class ConnectionManager:
         
         # Connection metadata: {connection_id: {user_id, connected_at, last_ping}}
         self.connection_metadata: Dict[str, Dict[str, Any]] = {}
+        
+        # Room subscriptions: {room_id: Set[user_id]} - Track who's in which room
+        self.room_subscriptions: Dict[UUID, Set[UUID]] = defaultdict(set)
         
         # Lock for thread-safety
         self.lock = asyncio.Lock()
@@ -72,7 +76,6 @@ class ConnectionManager:
         
         # Generate connection_id if not provided
         if not connection_id:
-            import secrets
             connection_id = f"{user_id}_{secrets.token_hex(8)}"
         
         async with self.lock:
@@ -98,22 +101,37 @@ class ConnectionManager:
     
     async def _send_queued_messages(self, user_id: UUID, connection_id: str):
         """Send queued offline messages"""
-        if user_id in self.message_queues and self.message_queues[user_id]:
-            logger.info(f"Sending {len(self.message_queues[user_id])} queued messages to {user_id}")
-            
-            websocket = self.active_connections[user_id].get(connection_id)
-            if not websocket:
-                return
-            
-            while self.message_queues[user_id]:
-                message = self.message_queues[user_id].popleft()
-                try:
-                    await websocket.send_json(message)
-                except Exception as e:
-                    logger.error(f"Failed to send queued message: {e}")
-                    # Re-queue
-                    self.message_queues[user_id].appendleft(message)
-                    break
+        if user_id not in self.message_queues or not self.message_queues[user_id]:
+            return
+        
+        # Get websocket reference with lock protection
+        websocket = None
+        async with self.lock:
+            user_connections = self.active_connections.get(user_id)
+            if user_connections:
+                websocket = user_connections.get(connection_id)
+        
+        if not websocket:
+            logger.warning(
+                f"Cannot send queued messages: "
+                f"connection {connection_id} not found for user {user_id}"
+            )
+            return
+        
+        logger.info(f"Sending {len(self.message_queues[user_id])} queued messages to {user_id}")
+        
+        sent_count = 0
+        while self.message_queues[user_id]:
+            message = self.message_queues[user_id].popleft()
+            try:
+                await websocket.send_json(message)
+                sent_count += 1
+            except Exception as e:
+                logger.error(f"Failed to send queued message to {user_id}: {e}")
+                self.message_queues[user_id].appendleft(message)
+                break
+        
+        logger.info(f"Successfully sent {sent_count} queued messages to {user_id}")
     
     async def disconnect(self, connection_id: str, user_id: UUID):
         """Remove specific connection"""
@@ -134,6 +152,11 @@ class ConnectionManager:
             # Clean up if no more connections
             if not self.active_connections[user_id]:
                 del self.active_connections[user_id]
+                # Remove from all room subscriptions
+                for room_id in list(self.room_subscriptions.keys()):
+                    self.room_subscriptions[room_id].discard(user_id)
+                    if not self.room_subscriptions[room_id]:
+                        del self.room_subscriptions[room_id]
         
         if connection_id in self.connection_metadata:
             del self.connection_metadata[connection_id]
@@ -143,10 +166,10 @@ class ConnectionManager:
         if connection_id in self.connection_metadata:
             self.connection_metadata[connection_id]['last_ping'] = datetime.utcnow()
     
-    async def send_personal_message(
+    async def send_to_user(
         self, 
-        message: Dict[str, Any], 
         user_id: UUID,
+        message: Dict[str, Any], 
         store_if_offline: bool = True
     ) -> Dict[str, Any]:
         """
@@ -182,6 +205,16 @@ class ConnectionManager:
         
         return {'sent': sent_count, 'queued': False}
     
+    # Alias for backward compatibility
+    async def send_personal_message(
+        self, 
+        message: Dict[str, Any], 
+        user_id: UUID,
+        store_if_offline: bool = True
+    ) -> Dict[str, Any]:
+        """Alias for send_to_user (backward compatibility)"""
+        return await self.send_to_user(user_id, message, store_if_offline)
+    
     async def broadcast_to_users(
         self, 
         message: Dict[str, Any], 
@@ -192,7 +225,7 @@ class ConnectionManager:
         Returns: {sent_users: int, queued_users: int}
         """
         results = await asyncio.gather(
-            *[self.send_personal_message(message, uid) for uid in user_ids],
+            *[self.send_to_user(uid, message) for uid in user_ids],
             return_exceptions=True
         )
         
@@ -205,19 +238,87 @@ class ConnectionManager:
             'total_users': len(user_ids)
         }
     
+    async def subscribe_to_room(self, user_id: UUID, room_id: UUID):
+        """Subscribe user to room updates (for active listening)"""
+        async with self.lock:
+            self.room_subscriptions[room_id].add(user_id)
+        logger.info(f"User {user_id} subscribed to room {room_id}")
+    
+    async def unsubscribe_from_room(self, user_id: UUID, room_id: UUID):
+        """Unsubscribe user from room updates"""
+        async with self.lock:
+            self.room_subscriptions[room_id].discard(user_id)
+            if not self.room_subscriptions[room_id]:
+                del self.room_subscriptions[room_id]
+        logger.info(f"User {user_id} unsubscribed from room {room_id}")
+    
     async def broadcast_to_room(
         self, 
-        message: Dict[str, Any], 
         room_id: UUID,
-        exclude_user: UUID = None
-    ):
+        message: Dict[str, Any], 
+        exclude_user: UUID = None,
+        db_session = None
+    ) -> Dict[str, Any]:
         """
-        Broadcast to all users in a chat room
-        Requires room_participants to be fetched from DB
+        Broadcast message to all members of a chat room
+        
+        Args:
+            room_id: Room to broadcast to
+            message: Message to send
+            exclude_user: Optional user_id to exclude (e.g., message sender)
+            db_session: Optional DB session to fetch members if needed
+        
+        Returns:
+            {sent_users: int, queued_users: int, total_members: int}
         """
-        # This would need integration with MessageService to get participants
-        # For now, it's a placeholder
-        pass
+        from app.models.message import ChatRoomMember
+        
+        # Get room members from database
+        if db_session is None:
+            from app.core.database import SessionLocal
+            db = SessionLocal()
+            should_close = True
+        else:
+            db = db_session
+            should_close = False
+        
+        try:
+            # Fetch all members of the room
+            members = db.query(ChatRoomMember).filter(
+                ChatRoomMember.chat_room_id == room_id
+            ).all()
+            
+            member_ids = [m.user_id for m in members if m.user_id != exclude_user]
+            
+            if not member_ids:
+                return {
+                    'sent_users': 0,
+                    'queued_users': 0,
+                    'total_members': 0
+                }
+            
+            logger.info(
+                f"Broadcasting to room {room_id}: "
+                f"{len(member_ids)} members (excluding sender)"
+            )
+            
+            # Broadcast to all members
+            result = await self.broadcast_to_users(message, member_ids)
+            result['total_members'] = len(member_ids)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error broadcasting to room {room_id}: {e}", exc_info=True)
+            return {
+                'sent_users': 0,
+                'queued_users': 0,
+                'total_members': 0,
+                'error': str(e)
+            }
+        finally:
+            if should_close:
+                db.close()
     
     async def send_typing_indicator(
         self, 
@@ -233,8 +334,74 @@ class ConnectionManager:
             'is_typing': is_typing,
             'timestamp': datetime.utcnow().isoformat()
         }
-        # Would broadcast to room participants
-        # await self.broadcast_to_room(message, room_id, exclude_user=user_id)
+        
+        # Broadcast to room, excluding the typing user
+        await self.broadcast_to_room(
+            room_id=room_id,
+            message=message,
+            exclude_user=user_id
+        )
+    
+    async def notify_member_added(
+        self,
+        room_id: UUID,
+        added_user_ids: List[UUID],
+        added_by_user_id: UUID,
+        room_title: str
+    ):
+        """Notify room members when new members are added"""
+        message = {
+            'type': 'members_added',
+            'room_id': str(room_id),
+            'room_title': room_title,
+            'added_user_ids': [str(uid) for uid in added_user_ids],
+            'added_by': str(added_by_user_id),
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        await self.broadcast_to_room(room_id, message)
+    
+    async def notify_member_removed(
+        self,
+        room_id: UUID,
+        removed_user_id: UUID,
+        removed_by_user_id: UUID,
+        room_title: str
+    ):
+        """Notify room members when a member is removed"""
+        message = {
+            'type': 'member_removed',
+            'room_id': str(room_id),
+            'room_title': room_title,
+            'removed_user_id': str(removed_user_id),
+            'removed_by': str(removed_by_user_id),
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        await self.broadcast_to_room(room_id, message)
+        
+        # Also notify the removed user specifically
+        await self.send_to_user(removed_user_id, {
+            **message,
+            'type': 'you_were_removed'
+        })
+    
+    async def notify_group_updated(
+        self,
+        room_id: UUID,
+        updated_by_user_id: UUID,
+        updates: Dict[str, Any]
+    ):
+        """Notify room members when group info is updated"""
+        message = {
+            'type': 'group_updated',
+            'room_id': str(room_id),
+            'updated_by': str(updated_by_user_id),
+            'updates': updates,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        await self.broadcast_to_room(room_id, message)
     
     def get_online_users(self) -> List[UUID]:
         """Get list of currently online users"""
@@ -248,12 +415,19 @@ class ConnectionManager:
         """Get number of active devices for user"""
         return len(self.active_connections.get(user_id, {}))
     
+    def get_room_online_members(self, room_id: UUID) -> List[UUID]:
+        """Get list of online members in a room"""
+        if room_id not in self.room_subscriptions:
+            return []
+        return [uid for uid in self.room_subscriptions[room_id] if self.is_user_online(uid)]
+    
     async def get_stats(self) -> Dict[str, Any]:
         """Get connection statistics"""
         async with self.lock:
             return {
                 'total_users_online': len(self.active_connections),
                 'total_connections': sum(len(conns) for conns in self.active_connections.values()),
+                'total_rooms_active': len(self.room_subscriptions),
                 'queued_messages': {
                     str(user_id): len(queue) 
                     for user_id, queue in self.message_queues.items() 
@@ -267,6 +441,3 @@ class ConnectionManager:
 
 # Global instance
 manager = ConnectionManager()
-
-# Start heartbeat when module loads
-manager.start_heartbeat()

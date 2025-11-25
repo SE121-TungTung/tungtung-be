@@ -10,6 +10,7 @@ from uuid import UUID
 from typing import Dict, Any, List
 from app.models.assessment import Test, QuestionBank
 from app.routers.generator import create_crud_router
+from app.schemas.assessment import QuestionBankCreate, TestCreateCombined
 
 base_test_router = create_crud_router(
     model=Test,
@@ -42,6 +43,26 @@ async def link_questions_to_test(
     """
     result = await test_service.add_questions_to_test(db, test_id, link_data)
     return result
+
+@router.post("/question-bank", status_code=status.HTTP_201_CREATED, response_model=Dict[str, Any], tags=["QuestionBank (Admin CRUD)"])
+async def create_new_question(
+    question_in: QuestionBankCreate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_admin_user)
+) -> Dict[str, Any]:
+    """UC: Tạo một câu hỏi mới trong Kho câu hỏi."""
+    new_question = await test_service.create_question(db, question_in, current_user.id)
+    return {"message": "Question created successfully", "question_id": new_question.id}
+
+@router.post("/create-with-questions", status_code=status.HTTP_201_CREATED, response_model=Dict[str, Any])
+async def create_test_and_link_questions(
+    data: TestCreateCombined,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_admin_user)
+) -> Dict[str, Any]:
+    """UC: Tạo một bài thi mới và liên kết các câu hỏi ngay lập tức."""
+    new_test = await test_service.create_test_with_questions(db, data, current_user.id)
+    return {"message": "Test created and questions linked successfully", "test_id": new_test.id}
 
 @router.post("/{test_id}/start", status_code=status.HTTP_201_CREATED)
 async def start_test_attempt(
