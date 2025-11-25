@@ -4,7 +4,7 @@ from app.core.database import get_db, SessionLocal
 from app.dependencies import get_current_active_user, get_current_user, get_current_user_from_token
 import logging
 from app.models.message import Message, MessageRecipient
-from app.schemas.message import MessageCreate, ConversationResponse
+from app.schemas.message import MessageCreate, ConversationResponse, GroupCreateRequest, GroupDetailResponse, MemberResponse, AddMembersRequest, GroupUpdateRequest
 from app.routers.generator import create_crud_router
 from app.services.message import message_service
 from app.services.websocket import manager
@@ -12,6 +12,7 @@ from fastapi import WebSocket, WebSocketDisconnect, Depends
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import List
+from app.models.message import ChatRoom
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +98,106 @@ async def get_conversations(
     return await message_service.get_user_conversations(
         db, current_user.id
     )
+
+@router.post("/groups", status_code=status.HTTP_201_CREATED)
+async def create_group(
+    group_data: GroupCreateRequest,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Create a new group chat"""
+    return await message_service.create_group_chat(
+        db, current_user.id, group_data
+    )
+
+@router.get("/groups/{room_id}")
+async def get_group_details(
+    room_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Get group details and members"""
+    members = await message_service.get_group_members(db, room_id, current_user.id)
+    
+    # Get room info
+    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    return GroupDetailResponse(
+        id=room.id,
+        title=room.title,
+        description=room.description,
+        avatar_url=room.avatar_url,
+        room_type=room.room_type.value,
+        created_at=room.created_at,
+        member_count=len(members),
+        members=[MemberResponse(
+            user_id=m.user_id,
+            role=m.role.value,
+            joined_at=m.joined_at,
+            nickname=m.nickname
+        ) for m in members]
+    )
+
+@router.post("/groups/{room_id}/members")
+async def add_group_members(
+    room_id: UUID,
+    request: AddMembersRequest,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Add members to group"""
+    return await message_service.add_members_to_group(
+        db, room_id, current_user.id, request.user_ids
+    )
+
+@router.delete("/groups/{room_id}/members/{user_id}")
+async def remove_group_member(
+    room_id: UUID,
+    user_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Remove a member from group"""
+    return await message_service.remove_member_from_group(
+        db, room_id, current_user.id, user_id
+    )
+
+@router.put("/groups/{room_id}")
+async def update_group(
+    room_id: UUID,
+    update_data: GroupUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Update group information (admin only)"""
+    # Check if user is admin
+    from app.models.message import ChatRoomMember, MemberRole
+    
+    member = db.query(ChatRoomMember).filter(
+        ChatRoomMember.chat_room_id == room_id,
+        ChatRoomMember.user_id == current_user.id
+    ).first()
+    
+    if not member or member.role != MemberRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Only admins can update group")
+    
+    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+    if not room:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    if update_data.title:
+        room.title = update_data.title
+    if update_data.description is not None:
+        room.description = update_data.description
+    if update_data.avatar_url is not None:
+        room.avatar_url = update_data.avatar_url
+    
+    db.commit()
+    db.refresh(room)
+    
+    return room
 
 @router.websocket("/ws")
 async def websocket_endpoint(

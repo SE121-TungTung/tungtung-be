@@ -30,6 +30,11 @@ class RecipientType(enum.Enum):
     GROUP = 'group'
     CLASS = 'class'
 
+class MemberRole(enum.Enum):
+    ADMIN = 'admin'
+    MODERATOR = 'moderator'
+    MEMBER = 'member'
+
 # ChatRoom Model
 class ChatRoom(Base):
     __tablename__ = "chat_rooms"
@@ -48,6 +53,10 @@ class ChatRoom(Base):
     
     # Relationships
     messages = relationship("Message", back_populates="chat_room")
+    members = relationship("ChatRoomMember", back_populates="chat_room", cascade="all, delete-orphan")
+    created_by = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
+    avatar_url = Column(String(500))  # Group avatar
+    description = Column(Text)
     
     __table_args__ = (
         UniqueConstraint('participant1_id', 'participant2_id', name='uq_direct_chat'),
@@ -121,4 +130,29 @@ class MessageRecipient(Base):
         UniqueConstraint('message_id', 'recipient_id', name='uq_msg_recipient'),
         Index('ix_msg_recipient_unread', 'recipient_id', 'read_at'),
         Index('ix_msg_recipient_user', 'recipient_id', 'deleted'),
+    )
+
+class ChatRoomMember(Base):
+    __tablename__ = "chat_room_members"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=func.gen_random_uuid())
+    chat_room_id = Column(UUID(as_uuid=True), ForeignKey('chat_rooms.id', ondelete='CASCADE'), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    
+    role = Column(Enum(MemberRole, values_callable=lambda obj: [e.value for e in obj], 
+        native_enum=False, name='member_role'), default=MemberRole.MEMBER, nullable=False)
+    
+    joined_at = Column(TIMESTAMP(timezone=True), default=func.now())
+    last_read_at = Column(TIMESTAMP(timezone=True))
+    is_muted = Column(Boolean, default=False)
+    nickname = Column(String(100))  # Custom nickname in group
+    
+    # Relationships
+    chat_room = relationship("ChatRoom", back_populates="members")
+    user = relationship("User", backref="group_memberships")
+    
+    __table_args__ = (
+        UniqueConstraint('chat_room_id', 'user_id', name='uq_room_member'),
+        Index('ix_room_members_user', 'user_id'),
+        Index('ix_room_members_room', 'chat_room_id'),
     )
