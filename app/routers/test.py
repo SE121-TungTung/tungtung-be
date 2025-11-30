@@ -5,12 +5,14 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies import get_current_user, get_current_admin_user # Giả định có dependency này
 from app.services.test import test_service # Giả định Service đã được khởi tạo
-from app.schemas.assessment import TestAttemptStart, TestResponseCreate, TestQuestionLink
+from app.schemas.assessment import (
+    TestAttemptStart, 
+    TestResponseCreate,
+    TestQuestionCreate)
 from uuid import UUID
 from typing import Dict, Any, List
 from app.models.assessment import Test, QuestionBank
 from app.routers.generator import create_crud_router
-from app.schemas.assessment import QuestionBankCreate, TestCreateCombined
 
 base_test_router = create_crud_router(
     model=Test,
@@ -32,7 +34,7 @@ router = APIRouter(prefix="/tests", tags=["Assessment & Testing"])
 
 @router.post("/{test_id}/questions", status_code=status.HTTP_200_OK)
 async def link_questions_to_test(
-    link_data: TestQuestionLink,
+    link_data: List[TestQuestionCreate],
     test_id: UUID = Path(..., description="ID của đề thi cần thêm câu hỏi"),
     db: Session = Depends(get_db),
     # Chỉ Admin/Teacher mới có quyền chỉnh sửa đề thi
@@ -46,7 +48,7 @@ async def link_questions_to_test(
 
 @router.post("/question-bank", status_code=status.HTTP_201_CREATED, response_model=Dict[str, Any], tags=["QuestionBank (Admin CRUD)"])
 async def create_new_question(
-    question_in: QuestionBankCreate,
+    question_in: TestQuestionCreate,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_admin_user)
 ) -> Dict[str, Any]:
@@ -56,7 +58,7 @@ async def create_new_question(
 
 @router.post("/create-with-questions", status_code=status.HTTP_201_CREATED, response_model=Dict[str, Any])
 async def create_test_and_link_questions(
-    data: TestCreateCombined,
+    data: Dict[str, Any],
     db: Session = Depends(get_db),
     current_user = Depends(get_current_admin_user)
 ) -> Dict[str, Any]:

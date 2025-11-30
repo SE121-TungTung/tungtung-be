@@ -14,6 +14,30 @@ class QuestionType(enum.Enum):
     SPEAKING = "speaking"
     LISTENING = "listening"
 
+class IELTSSection(enum.Enum):
+    LISTENING = "listening"
+    READING = "reading"
+    WRITING = "writing"
+    SPEAKING = "speaking"
+
+class IELTSPart(enum.Enum):
+    # Reading Parts
+    READING_PASSAGE_1 = "reading_passage_1"
+    READING_PASSAGE_2 = "reading_passage_2"
+    READING_PASSAGE_3 = "reading_passage_3"
+    # Listening Parts
+    LISTENING_PART_1 = "listening_part_1"
+    LISTENING_PART_2 = "listening_part_2"
+    LISTENING_PART_3 = "listening_part_3"
+    LISTENING_PART_4 = "listening_part_4"
+    # Writing Tasks
+    WRITING_TASK_1 = "writing_task_1"
+    WRITING_TASK_2 = "writing_task_2"
+    # Speaking Parts
+    SPEAKING_PART_1 = "speaking_part_1"
+    SPEAKING_PART_2 = "speaking_part_2"
+    SPEAKING_PART_3 = "speaking_part_3"
+
 class SkillArea(enum.Enum):
     READING = "reading"
     WRITING = "writing"
@@ -51,6 +75,22 @@ class AttemptStatus(enum.Enum):
     SUBMITTED = "submitted"
     GRADED = "graded"
     CANCELLED = "cancelled"
+
+class SourceMaterial(BaseModel):
+    __tablename__ = "source_materials"
+
+    title = Column(String(255), nullable=False)
+    content_type = Column(String(50), nullable=False) # e.g., 'text', 'audio', 'image', 'rubric'
+    content_text = Column(Text, nullable=True) # Reading passage text, Writing prompt
+    
+    # NEW: Reference to FileUpload model
+    file_upload_id = Column(UUID(as_uuid=True), ForeignKey('file_uploads.id', ondelete='SET NULL'), nullable=True) 
+    
+    created_by = Column(UUID(as_uuid=True), ForeignKey('users.id'))
+    
+    # Relationships
+    questions = relationship("TestQuestion", back_populates="source_material")
+    uploaded_file = relationship("FileUpload")
 
 # --- QUESTION BANK (Kho câu hỏi) ---
 class QuestionBank(BaseModel):
@@ -141,9 +181,14 @@ class TestQuestion(BaseModel):
     points = Column(DECIMAL(4,2), nullable=False, default=1.00)
     required = Column(Boolean, default=True)
     
+    section_type = Column(Enum(IELTSSection, native_enum=True, name='ielts_section'), nullable=False)
+    part_type = Column(Enum(IELTSPart, native_enum=True, name='ielts_part'), nullable=False) 
+    source_material_id = Column(UUID(as_uuid=True), ForeignKey('source_materials.id', ondelete='SET NULL'), nullable=True)
+
     # Relationships
     test = relationship("Test", back_populates="questions")
     question = relationship("QuestionBank")
+    source_material = relationship("SourceMaterial", back_populates="questions")
 
     __table_args__ = (
         CheckConstraint('order_number > 0', name='tq_order_check'),
