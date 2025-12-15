@@ -6,3 +6,4 @@ from .file_upload import FileUpload
 from .message import Message, MessageRecipient, ChatRoom, ChatRoomMember
 from .exam_structure import ExamType, ExamStructure, ExamStructureSection, ExamStructurePart
 from .test import Test, TestSection, TestSectionPart, QuestionBank, TestQuestion, TestAttempt, TestResponse
+from .notification import Notification

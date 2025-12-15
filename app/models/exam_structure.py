@@ -41,8 +41,7 @@ class ExamStructureSection(BaseModel):
     structure_id = Column(UUID(as_uuid=True), ForeignKey("exam_structures.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)  # Listening, Reading...
     skill_area = Column(
-        Enum(SkillArea, values_callable=lambda obj: [e.value for e in obj], native_enum=True, name="skill_area"),
-        nullable=False
+        Enum(SkillArea, values_callable=lambda obj: [e.value for e in obj], native_enum=True, name="skill_area")
     )
     order_number = Column(Integer, nullable=False)
     time_limit_minutes = Column(Integer)  # optional override
