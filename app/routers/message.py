@@ -35,7 +35,7 @@ base_recepient_router = create_crud_router(
     prefix=""
 )
 
-router = APIRouter(tags=["Messaging"])
+router = APIRouter(tags=["Messaging"], prefix="/messaging")
 
 @router.post("/send")
 async def send_message_rest(
@@ -117,7 +117,7 @@ async def get_group_details(
     current_user = Depends(get_current_user)
 ):
     """Get group details and members"""
-    members = await message_service.get_group_members(db, room_id, current_user.id)
+    members_data = await message_service.get_group_members(db, room_id, current_user.id)
     
     # Get room info
     room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
@@ -131,13 +131,16 @@ async def get_group_details(
         avatar_url=room.avatar_url,
         room_type=room.room_type.value,
         created_at=room.created_at,
-        member_count=len(members),
+        member_count=len(members_data),
         members=[MemberResponse(
-            user_id=m.user_id,
-            role=m.role.value,
-            joined_at=m.joined_at,
-            nickname=m.nickname
-        ) for m in members]
+            user_id=m['user_id'],
+            role=m['role'],
+            joined_at=m['joined_at'],
+            nickname=m.get('nickname'),
+            full_name=m.get('full_name'),
+            avatar_url=m.get('avatar_url'),
+            is_online=m.get('is_online')
+        ) for m in members_data]
     )
 
 @router.post("/groups/{room_id}/members")

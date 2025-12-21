@@ -12,6 +12,12 @@ from app.schemas.message import MessageCreate, ConversationResponse, GroupCreate
 from app.models.message import Message, ChatRoom, ChatRoomMember, MessageType, MessageStatus, MemberRole
 from fastapi import HTTPException
 import logging
+from app.schemas.notification import NotificationCreate
+from app.models.notification import NotificationType, NotificationPriority
+from app.services.notification import notification_service
+from app.models.user import User
+from datetime import datetime, timezone
+
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +56,8 @@ class MessageService:
         self, 
         db: Session, 
         sender_id: UUID, 
-        message_data: MessageCreate
+        message_data: MessageCreate,
+        background_tasks: Optional[Any] = None
     ):
         """
         Handle new message with WebSocket support for both Direct and Group chats
@@ -128,6 +135,31 @@ class MessageService:
                 }
                 self.recipient_repo.create(db, obj_in=recipient_data)
         
+        members_to_notify = [] # List tạm để lưu những người cần nhận thông báo
+        if room.room_type == MessageType.DIRECT:
+            # Create recipient records
+            for uid in [sender_id, receiver_id]:
+                self.recipient_repo.create(db, obj_in={
+                    "message_id": new_message.id, 
+                    "recipient_id": uid, 
+                    "recipient_type": "user"
+                })
+            
+            # Chỉ định người nhận thông báo là receiver
+            members_to_notify.append(receiver_id)
+
+        elif room.room_type in [MessageType.GROUP, MessageType.CLASS]:
+            members = db.query(ChatRoomMember).filter(ChatRoomMember.chat_room_id == room.id).all()
+            for member in members:
+                self.recipient_repo.create(db, obj_in={
+                    "message_id": new_message.id, 
+                    "recipient_id": member.user_id, 
+                    "recipient_type": "group" if room.room_type == MessageType.GROUP else "class"
+                })
+                # Thêm vào list nhận thông báo (trừ người gửi)
+                if str(member.user_id) != str(sender_id):
+                    members_to_notify.append(member.user_id)
+
         # Update room's last_message_at
         room.last_message_at = new_message.created_at
         
@@ -162,6 +194,50 @@ class MessageService:
             )
             logger.info(f"Broadcast result: {result}")
         
+        if background_tasks:
+        # Lấy thông tin người gửi để làm Title thông báo
+            sender_user = db.query(User).filter(User.id == sender_id).first()
+            sender_name = (sender_user.first_name + " " + sender_user.last_name) if sender_user else "Someone"
+            
+            # Nội dung rút gọn nếu quá dài
+            preview_content = content[:100] + "..." if len(content) > 100 else content
+
+            # Xác định Title và Action URL dựa trên loại phòng
+            if room.room_type == MessageType.DIRECT:
+                noti_title = f"{sender_name} đã gửi tin nhắn cho bạn"
+                # Giả sử Frontend route là /messages/direct/{id}
+                action_url = f"/messages/direct/{sender_id}" 
+            else:
+                # Nếu group có tên thì hiện tên group, không thì hiện chung chung
+                group_name = getattr(room, 'name', 'Nhóm chat') or 'Nhóm chat'
+                noti_title = f"{sender_name} nhắn trong {group_name}"
+                action_url = f"/messages/group/{room.id}"
+
+            # Loop qua danh sách cần gửi noti    (đã filter ở trên)
+            for user_id_to_notify in members_to_notify:
+                noti_data = NotificationCreate(
+                    user_id=user_id_to_notify,
+                    title=noti_title,
+                    content=preview_content,
+                    notification_type=NotificationType.MESSAGE_RECEIVED,
+                    priority=NotificationPriority.NORMAL,
+                    action_url=action_url,
+                    data={
+                        "room_id": str(room.id),
+                        "message_id": str(new_message.id),
+                        "sender_id": str(sender_id)
+                    },
+                    channels=["in_app"] # Chat thường chỉ push in-app, tránh spam email
+                )
+                
+                # Sử dụng background_tasks để không chặn process chính
+                # Lưu ý: send_notification là hàm async, background_tasks.add_task hỗ trợ hàm async
+                background_tasks.add_task(
+                    notification_service.send_notification, 
+                    db, 
+                    noti_data
+                )
+
         return new_message
     
     async def get_user_conversations(
@@ -200,7 +276,7 @@ class MessageService:
             conversations.append(ConversationResponse(
                 room_id=room.id,
                 room_type=room.room_type.value,
-                title=other_user.full_name if other_user else "Unknown User",
+                title=(other_user.first_name + " " + other_user.last_name) if other_user else "Unknown User",
                 avatar_url=getattr(other_user, 'avatar_url', None) if other_user else None,
                 last_message={
                     "message_id": str(last_message.id) if last_message else None,
@@ -251,7 +327,10 @@ class MessageService:
             ))
         
         # Sort by last_message_at (most recent first)
-        conversations.sort(key=lambda x: x.last_message_at or x.room_id, reverse=True)
+        conversations.sort(
+            key=lambda x: x.last_message_at or datetime.min.replace(tzinfo=timezone.utc), 
+            reverse=True
+        )
         
         return conversations
     
@@ -274,7 +353,7 @@ class MessageService:
         return {
             "room_id": str(room.id),
             "room_type": room.room_type.value,
-            "title": other_user.full_name if other_user else "Unknown User",
+            "title": (other_user.first_name + " " + other_user.last_name) if other_user else "Unknown User",
             "avatar_url": getattr(other_user, 'avatar_url', None) if other_user else None,
             "last_message": {
                 "message_id": str(last_message.id) if last_message else None,
@@ -344,7 +423,7 @@ class MessageService:
             history.append({
                 "message_id": str(msg.id),
                 "sender_id": str(msg.sender_id) if msg.sender_id else None,
-                "sender_name": sender.full_name if sender else "System",
+                "sender_name": (sender.first_name + " " + sender.last_name) if sender else "System",
                 "content": msg.content,
                 "message_type": msg.message_type.value,
                 "timestamp": msg.created_at.isoformat(),
@@ -395,7 +474,7 @@ class MessageService:
             title=group_data.title,
             description=group_data.description,
             avatar_url=group_data.avatar_url,
-            created_by_id=creator_id,
+            created_by=creator_id,
             is_active=True
         )
         db.add(chat_room)
@@ -422,11 +501,13 @@ class MessageService:
         db.commit()
         db.refresh(chat_room)
         
+        creator = self.user_repo.get(db, id=creator_id)
+        creator_name = (creator.first_name + " " + creator.last_name) if creator else "Someone"
         # Send system message
         await self._send_system_message(
             db, 
             chat_room.id, 
-            f"Group '{chat_room.title}' was created by {self.user_repo.get(db, id=creator_id).full_name}"
+            f"Group '{chat_room.title}' was created by {creator_name}"
         )
         
         # Notify all members
@@ -558,16 +639,18 @@ class MessageService:
                     status_code=400, 
                     detail="Cannot remove the last admin. Promote another member first."
                 )
-        
         db.delete(member_to_remove)
         db.commit()
+        
+        deleted_user = self.user_repo.get(db, id=user_id_to_remove)
+        deleted_user_name = (deleted_user.first_name + " " + deleted_user.last_name) if deleted_user else "Someone"
         
         # Send notifications
         action = "left" if is_self_leave else "was removed from"
         await self._send_system_message(
             db,
             room_id,
-            f"{self.user_repo.get(db, id=user_id_to_remove).full_name} {action} the group"
+            f"{deleted_user_name} {action} the group"
         )
         
         await manager.notify_member_removed(
@@ -649,10 +732,11 @@ class MessageService:
             user = self.user_repo.get(db, id=m.user_id)
             result.append({
                 'user_id': str(m.user_id),
-                'full_name': user.full_name if user else "Unknown",
+                'full_name': (user.first_name + " " + user.last_name) if user else "Unknown",
                 'avatar_url': getattr(user, 'avatar_url', None) if user else None,
                 'role': m.role.value,
-                'joined_at': m.joined_at.isoformat(),
+                'joined_at': m.joined_at,
+                'nickname': m.nickname,
                 'is_online': manager.is_user_online(m.user_id)
             })
         

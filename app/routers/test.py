@@ -3,21 +3,21 @@ from fastapi import Depends
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies import get_current_admin_user
-from app.schemas.test_create import TestCreate
-from app.schemas.test_read import TestResponse, TestTeacherResponse
+from app.schemas.test.test_create import TestCreate
+from app.schemas.test.test_read import TestResponse, TestTeacherResponse
 from app.dependencies import get_current_user
 from uuid import UUID
 from app.models.user import UserRole
-from app.schemas.test_attempt import (
+from app.schemas.test.test_attempt import (
     StartAttemptResponse,
     SubmitAttemptRequest,
     SubmitAttemptResponse
 )
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile, File, Form
 
-from app.services.test import test_service
-from app.services.test_attempt_service import attempt_service
+from app.services.test.test import test_service
+from app.services.test.test_attempt_service import attempt_service
 
 router = APIRouter(tags=["Tests"], prefix="/tests")
 
@@ -73,3 +73,17 @@ def submit_test_attempt(attempt_id: UUID, payload: SubmitAttemptRequest, db: Ses
     # if attempt and attempt.test_id != test_id: raise HTTPException(400)
 
     return attempt_service.submit_attempt(db, payload, attempt_id)
+
+@router.post("/attempts/{attempt_id}/speaking")
+async def submit_speaking_answer(
+    attempt_id: UUID,
+    question_id: UUID = Form(...),
+    audio: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    return await attempt_service.submit_speaking(
+        db=db,
+        attempt_id=attempt_id,
+        question_id=question_id,
+        audio_file=audio
+    )

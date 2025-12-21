@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from uuid import UUID
-from app.schemas.test_create import TestCreate
+from app.schemas.test.test_create import TestCreate
 from app.models.test import (
     Test,
     TestSection,
@@ -8,7 +8,7 @@ from app.models.test import (
     QuestionBank,
     TestQuestion
 )
-from app.schemas.test_read import TestResponse, TestTeacherResponse
+from app.schemas.test.test_read import TestResponse, TestTeacherResponse
 from fastapi import HTTPException, status
 from sqlalchemy.orm import joinedload
 

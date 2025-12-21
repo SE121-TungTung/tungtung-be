@@ -46,6 +46,8 @@ class Settings(BaseSettings):
 
     # Application Settings
     DEFAULT_MAX_SLOT_PER_SESSION: int
+
+    AI_BASE_URL: str
     
     class Config:
         env_file = ".env"
