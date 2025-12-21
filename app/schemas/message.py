@@ -19,6 +19,9 @@ class ConversationResponse(BaseModel):
     room_type: str
     title: str
     last_message: Optional[LastMessageResponse]
+    last_message_at: Optional[datetime]
+    unread_count: int
+    
 
 #  Group Chat Schemas
 class GroupCreateRequest(BaseModel):
@@ -40,6 +43,9 @@ class MemberResponse(BaseModel):
     role: str
     joined_at: datetime
     nickname: Optional[str]
+    full_name: Optional[str]
+    avatar_url: Optional[str]
+    is_online: Optional[bool] = None
     
     class Config:
         from_attributes = True

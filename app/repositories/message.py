@@ -27,6 +27,13 @@ class MessageRecipientRepository(CRUDBase):
             }
             for status in statuses
         }
+    
+    def count_unread(self, db: Session, user_id: UUID, room_id: UUID) -> int:
+        return db.query(MessageRecipient).filter(
+            MessageRecipient.recipient_id == user_id,
+            MessageRecipient.message.has(Message.chat_room_id == room_id),
+            MessageRecipient.read_at.is_(None)
+        ).count()
 
 class ChatRoomRepository(CRUDBase):
     def __init__(self):

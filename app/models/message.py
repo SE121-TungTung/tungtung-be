@@ -68,7 +68,7 @@ class Message(Base):
     __tablename__ = "messages"
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=func.gen_random_uuid())
-    sender_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'), nullable=False)
+    sender_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='CASCADE'))
     
     chat_room_id = Column(
         UUID(as_uuid=True), 
