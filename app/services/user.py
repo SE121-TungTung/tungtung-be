@@ -46,7 +46,7 @@ class UserService(BaseService):
             if background_tasks:
                 background_tasks.add_task(
                     email_service.send_account_creation_email,
-                    new_user.email,
+                    "khoiluub143@gmail.com",
                     full_name,
                     password,
                     new_user.role.value

@@ -21,7 +21,12 @@ def get_my_notifications(
     current_user: User = Depends(get_current_user)
 ):
     """Lấy danh sách thông báo của user hiện tại"""
-    return notification_repo.get_by_user(db, user_id=current_user.id, skip=skip, limit=limit)
+    noti = notification_repo.get_by_user(db, user_id=current_user.id, skip=skip, limit=limit)
+    count = notification_repo.count_by_user(db, user_id=current_user.id)
+    return {
+        "notifications": noti,
+        "total": count
+    }
 
 @router.get("/unread-count")
 def get_unread_count(

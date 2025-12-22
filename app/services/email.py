@@ -1,93 +1,88 @@
-from fastapi_mail import FastMail, MessageSchema, ConnectionConfig, MessageType
-from pathlib import Path
-from typing import Dict, List
-from app.core.config import settings
+import httpx
 import logging
+from pathlib import Path
+from typing import Dict, Any, List
+from jinja2 import Environment, FileSystemLoader
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Email configuration
-conf = ConnectionConfig(
-    MAIL_USERNAME=settings.MAIL_USERNAME,
-    MAIL_PASSWORD=settings.MAIL_PASSWORD,
-    MAIL_FROM=settings.MAIL_FROM,
-    MAIL_PORT=settings.MAIL_PORT,
-    MAIL_SERVER=settings.MAIL_SERVER,
-    MAIL_FROM_NAME=settings.MAIL_FROM_NAME,
-    MAIL_STARTTLS=settings.MAIL_STARTTLS,
-    MAIL_SSL_TLS=settings.MAIL_SSL_TLS,
-    USE_CREDENTIALS=settings.USE_CREDENTIALS,
-    VALIDATE_CERTS=settings.VALIDATE_CERTS,
-    TEMPLATE_FOLDER=Path(__file__).parent.parent / 'templates/email'
-)
-
 class EmailService:
     def __init__(self):
-        self.fm = FastMail(conf)
-    
-    async def send_password_reset_email(
-        self, 
-        email: str, 
-        username: str, 
-        reset_token: str
-    ):
-        """Send password reset email"""
-        # reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"
-        
-        # template_body = {
-        #     "username": username,
-        #     "reset_link": reset_link,
-        #     "expires_minutes": settings.RESET_TOKEN_EXPIRE_MINUTES,
-        #     "app_name": settings.PROJECT_NAME
-        # }
-        
+        # Cấu hình Jinja2 để load template
+        template_dir = Path(__file__).parent.parent / 'templates/email'
+        self.env = Environment(
+            loader=FileSystemLoader(str(template_dir)),
+            autoescape=True
+        )
+        self.api_url = "https://api.resend.com/emails"
+        self.headers = {
+            "Authorization": f"Bearer {settings.MAIL_PASSWORD}", # Dùng API Key từ config
+            "Content-Type": "application/json"
+        }
+
+    def _render_template(self, template_name: str, context: Dict[str, Any]) -> str:
+        """Helper để render HTML từ template file"""
+        try:
+            template = self.env.get_template(template_name)
+            return template.render(**context)
+        except Exception as e:
+            logger.error(f"Error rendering template {template_name}: {e}")
+            raise e
+
+    async def _send_via_api(self, to_email: str, subject: str, html_content: str) -> bool:
+        """Hàm gửi core sử dụng httpx gọi Resend API"""
+        payload = {
+            "from": f"{settings.MAIL_FROM_NAME} <{settings.MAIL_FROM}>",
+            "to": [to_email],
+            "subject": subject,
+            "html": html_content
+        }
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                response = await client.post(
+                    self.api_url,
+                    headers=self.headers,
+                    json=payload
+                )
+                
+                if response.status_code in [200, 201]:
+                    logger.info(f"Email sent successfully to {to_email}. ID: {response.json().get('id')}")
+                    return True
+                else:
+                    logger.error(f"Resend API Error {response.status_code}: {response.text}")
+                    return False
+            except Exception as e:
+                logger.error(f"Failed to call Resend API: {e}")
+                return False
+
+    async def send_password_reset_email(self, email: str, username: str, reset_token: str):
         template_body = {
             "username": username,
-            "otp_code": reset_token,  # Đổi tên variable
+            "otp_code": reset_token,
             "expires_minutes": 30,
             "app_name": settings.PROJECT_NAME
         }
-
-        message = MessageSchema(
-            subject=f"{settings.PROJECT_NAME} - Password Reset Request",
-            recipients=[email],
-            template_body=template_body,
-            subtype=MessageType.html
-        )
         
-        try:
-            await self.fm.send_message(message, template_name="otp_reset.html")
-            logger.info(f"Password reset email sent to {email}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to send email to {email}: {e}")
-            return False
-    
+        html_content = self._render_template("otp_reset.html", template_body)
+        subject = f"{settings.PROJECT_NAME} - Password Reset Request"
+        
+        return await self._send_via_api(email, subject, html_content)
+
     async def send_welcome_email(self, email: str, username: str):
-        """Send welcome email to new users"""
         template_body = {
             "username": username,
             "app_name": settings.PROJECT_NAME,
             "login_url": f"{settings.FRONTEND_URL}/login"
         }
         
-        message = MessageSchema(
-            subject=f"Welcome to {settings.PROJECT_NAME}",
-            recipients=[email],
-            template_body=template_body,
-            subtype=MessageType.html
-        )
+        html_content = self._render_template("welcome.html", template_body)
+        subject = f"Welcome to {settings.PROJECT_NAME}"
         
-        try:
-            await self.fm.send_message(message, template_name="welcome.html")
-            logger.info(f"Welcome email sent to {email}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to send welcome email: {e}")
-            return False
-    
+        return await self._send_via_api(email, subject, html_content)
+
     async def send_account_creation_email(self, user_email: str, fullname: str, password: str, user_role: str):
-        subject = "THÔNG BÁO TẠO TÀI KHOẢN MỚI"
         template_body = {
             "full_name": fullname,
             "user_email": user_email,
@@ -98,20 +93,10 @@ class EmailService:
             "current_year": 2025
         }
         
-        message = MessageSchema(
-            subject=subject,
-            recipients=[user_email],
-            template_body=template_body,
-            subtype=MessageType.html
-        )
-        try:
-            await self.fm.send_message(message, template_name="user_created.html")
-            logger.info(f"Account creation email sent to {user_email}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to send account creation email: {e}")
-            print(f"Failed to send account creation email: {e}")
-            return False
+        html_content = self._render_template("user_created.html", template_body)
+        subject = "THÔNG BÁO TẠO TÀI KHOẢN MỚI"
+        
+        return await self._send_via_api(user_email, subject, html_content)
 
 # Initialize service
 email_service = EmailService()
