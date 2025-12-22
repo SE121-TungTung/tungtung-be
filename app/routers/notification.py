@@ -32,6 +32,16 @@ def get_unread_count(
     count = notification_repo.count_unread(db, user_id=current_user.id)
     return {"unread_count": count}
 
+@router.put("/read-all")
+async def mark_all_notifications_read(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Mark ALL notifications as read for the current user
+    """
+    return await notification_service.mark_all_as_read(db, current_user.id)
+
 @router.put("/{notification_id}/read", response_model=NotificationResponse)
 def mark_notification_read(
     notification_id: UUID,
@@ -43,3 +53,4 @@ def mark_notification_read(
     if not noti:
         raise HTTPException(status_code=404, detail="Notification not found")
     return noti
+

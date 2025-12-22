@@ -737,6 +737,7 @@ class MessageService:
                 'role': m.role.value,
                 'joined_at': m.joined_at,
                 'nickname': m.nickname,
+                'email': getattr(user, 'email', None) if user else None,
                 'is_online': manager.is_user_online(m.user_id)
             })
         
