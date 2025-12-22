@@ -6,6 +6,7 @@ from app.schemas.notification import NotificationCreate
 from app.services.websocket import manager as websocket_manager # Import websocket manager hiện có
 from app.services.email import email_service # Giả định function gửi mail có sẵn
 from fastapi import BackgroundTasks
+from uuid import UUID
 
 class NotificationService:
     async def send_notification(
@@ -68,5 +69,14 @@ class NotificationService:
             db.commit()
             db.refresh(noti)
         return noti
+    
+    async def mark_all_as_read(self, db: Session, user_id: UUID) -> dict:
+        """Service mark all notifications as read"""
+        updated_count = self.notification_repo.mark_all_as_read(db, user_id)
+        return {
+            "success": True, 
+            "message": f"Marked {updated_count} notifications as read",
+            "updated_count": updated_count
+        }
 
 notification_service = NotificationService()

@@ -6,8 +6,11 @@ from typing import List
 from pydantic import Field
 
 class MessageCreate(BaseModel):
-    receiver_id: UUID
-    content: str
+    room_id: Optional[UUID] = None
+    receiver_id: Optional[UUID] = None
+    
+    content: str = Field(..., min_length=1)
+    # attachment_ids: Optional[List[UUID]] = Field(default_factory=list)
 
 class LastMessageResponse(BaseModel):
     message_id: Optional[UUID]
@@ -45,6 +48,7 @@ class MemberResponse(BaseModel):
     nickname: Optional[str]
     full_name: Optional[str]
     avatar_url: Optional[str]
+    email: Optional[str] = None
     is_online: Optional[bool] = None
     
     class Config:

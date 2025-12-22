@@ -21,7 +21,12 @@ def get_my_notifications(
     current_user: User = Depends(get_current_user)
 ):
     """Lấy danh sách thông báo của user hiện tại"""
-    return notification_repo.get_by_user(db, user_id=current_user.id, skip=skip, limit=limit)
+    noti = notification_repo.get_by_user(db, user_id=current_user.id, skip=skip, limit=limit)
+    count = notification_repo.count_by_user(db, user_id=current_user.id)
+    return {
+        "notifications": noti,
+        "total": count
+    }
 
 @router.get("/unread-count")
 def get_unread_count(
@@ -31,6 +36,16 @@ def get_unread_count(
     """Đếm số thông báo chưa đọc"""
     count = notification_repo.count_unread(db, user_id=current_user.id)
     return {"unread_count": count}
+
+@router.put("/read-all")
+async def mark_all_notifications_read(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Mark ALL notifications as read for the current user
+    """
+    return await notification_service.mark_all_as_read(db, current_user.id)
 
 @router.put("/{notification_id}/read", response_model=NotificationResponse)
 def mark_notification_read(
@@ -43,3 +58,4 @@ def mark_notification_read(
     if not noti:
         raise HTTPException(status_code=404, detail="Notification not found")
     return noti
+

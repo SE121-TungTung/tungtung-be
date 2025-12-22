@@ -139,6 +139,7 @@ async def get_group_details(
             nickname=m.get('nickname'),
             full_name=m.get('full_name'),
             avatar_url=m.get('avatar_url'),
+            email=m.get('email'),
             is_online=m.get('is_online')
         ) for m in members_data]
     )
