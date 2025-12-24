@@ -81,225 +81,229 @@ class AttemptService:
         payload: SubmitAttemptRequest,
         attempt_id: UUID
     ):
-        # =========================
-        # 1. Load attempt
-        # =========================
-        attempt = (
-            db.query(TestAttempt)
-            .filter(
-                TestAttempt.id == attempt_id,
-                TestAttempt.deleted_at.is_(None)
-            )
-            .first()
-        )
-
-        if not attempt:
-            raise HTTPException(404, "Attempt not found")
-
-        if attempt.status != AttemptStatus.IN_PROGRESS:
-            raise HTTPException(
-                400,
-                f"Attempt status is {attempt.status}, cannot submit"
-            )
-
-        # =========================
-        # 2. Load test & questions
-        # =========================
-        test = db.query(Test).filter(Test.id == attempt.test_id).first()
-        if not test:
-            raise HTTPException(404, "Test not found")
-
-        test_questions = (
-            db.query(TestQuestion)
-            .filter(TestQuestion.test_id == test.id)
-            .order_by(TestQuestion.order_number.asc())
-            .all()
-        )
-
-        resp_map = {str(r.question_id): r for r in payload.responses}
-
-        total_score = 0.0
-        question_results: list[QuestionResult] = []
-        any_manual = False
-
-        ai_service = AIGradeService()
-
-        # =========================
-        # 3. Loop questions
-        # =========================
-        for tq in test_questions:
-            qb: QuestionBank = (
-                db.query(QuestionBank)
-                .filter(QuestionBank.id == tq.question_id)
+        try:
+            # =========================
+            # 1. Load attempt
+            # =========================
+            attempt = (
+                db.query(TestAttempt)
+                .filter(
+                    TestAttempt.id == attempt_id,
+                    TestAttempt.deleted_at.is_(None)
+                )
                 .first()
             )
 
-            qid = str(tq.question_id)
-            max_points = float(tq.points or qb.points or 0)
+            if not attempt:
+                raise HTTPException(404, "Attempt not found")
 
-            # normalize enum
-            qt = qb.question_type
-            if isinstance(qt, enum.Enum):
-                qt = qt.value
+            if attempt.status != AttemptStatus.IN_PROGRESS:
+                raise HTTPException(
+                    400,
+                    f"Attempt status is {attempt.status}, cannot submit"
+                )
 
             # =========================
-            # CASE 1 — answered
+            # 2. Load test & questions
             # =========================
-            if qid in resp_map:
-                r = resp_map[qid]
+            test = db.query(Test).filter(Test.id == attempt.test_id).first()
+            if not test:
+                raise HTTPException(404, "Test not found")
 
-                student_text = r.response_text
-                student_data = r.response_data
-                time_spent = r.time_spent_seconds
+            test_questions = (
+                db.query(TestQuestion)
+                .filter(TestQuestion.test_id == test.id)
+                .order_by(TestQuestion.order_number.asc())
+                .all()
+            )
 
-                is_correct = None
-                points_earned = 0.0
-                auto_graded = False
-                feedback = None
+            resp_map = {str(r.question_id): r for r in payload.responses}
 
-                # -------------------------
-                # AUTO GRADE
-                # -------------------------
-                if qt in {
-                    QuestionType.MULTIPLE_CHOICE.value,
-                    QuestionType.TRUE_FALSE.value,
-                    QuestionType.SHORT_ANSWER.value,
-                    QuestionType.FILL_IN_BLANK.value,
-                    QuestionType.LISTENING.value,
-                    QuestionType.READING.value,
-                    QuestionType.MATCHING.value,
-                    QuestionType.ORDERING.value,
-                    QuestionType.DRAG_AND_DROP.value,
-                }:
-                    auto_graded = True
+            total_score = 0.0
+            question_results: list[QuestionResult] = []
+            any_manual = False
 
-                    if qb.correct_answer:
-                        is_correct = (
-                            student_text is not None
-                            and student_text.strip().lower()
-                            == qb.correct_answer.strip().lower()
-                        )
-                    else:
-                        is_correct = False
+            ai_service = AIGradeService()
 
-                    points_earned = max_points if is_correct else 0.0
+            # =========================
+            # 3. Loop questions
+            # =========================
+            for tq in test_questions:
+                qb: QuestionBank = (
+                    db.query(QuestionBank)
+                    .filter(QuestionBank.id == tq.question_id)
+                    .first()
+                )
 
-                # -------------------------
-                # AI GRADE — WRITING
-                # -------------------------
-                elif qt == QuestionType.ESSAY.value:
-                    auto_graded = True
+                qid = str(tq.question_id)
+                max_points = float(tq.points or qb.points or 0)
 
-                    task_type = 1
-                    if qb.extra_metadata and isinstance(qb.extra_metadata, dict):
-                        task_type = qb.extra_metadata.get("writing_task", 1)
+                # normalize enum
+                qt = qb.question_type
+                if isinstance(qt, enum.Enum):
+                    qt = qt.value
 
-                    ai_result = await ai_service.ai_grade_writing(
-                        question=qb,
-                        task_type=task_type,
-                        answer=student_text
-                    )
+                # =========================
+                # CASE 1 — answered
+                # =========================
+                if qid in resp_map:
+                    r = resp_map[qid]
 
-                    raw = ai_result["raw"]
+                    student_text = r.response_text
+                    student_data = r.response_data
+                    time_spent = r.time_spent_seconds
 
-                    feedback = raw.get("detailedFeedback")
-
-                # -------------------------
-                # MANUAL — SPEAKING
-                # -------------------------
-                elif qt == QuestionType.SPEAKING.value:
+                    is_correct = None
+                    points_earned = 0.0
                     auto_graded = False
-                    any_manual = True
-                    feedback = "Awaiting speaking submission"
+                    feedback = None
 
+                    # -------------------------
+                    # AUTO GRADE
+                    # -------------------------
+                    if qt in {
+                        QuestionType.MULTIPLE_CHOICE.value,
+                        QuestionType.TRUE_FALSE.value,
+                        QuestionType.SHORT_ANSWER.value,
+                        QuestionType.FILL_IN_BLANK.value,
+                        QuestionType.LISTENING.value,
+                        QuestionType.READING.value,
+                        QuestionType.MATCHING.value,
+                        QuestionType.ORDERING.value,
+                        QuestionType.DRAG_AND_DROP.value,
+                    }:
+                        auto_graded = True
+
+                        if qb.correct_answer:
+                            is_correct = (
+                                student_text is not None
+                                and student_text.strip().lower()
+                                == qb.correct_answer.strip().lower()
+                            )
+                        else:
+                            is_correct = False
+
+                        points_earned = max_points if is_correct else 0.0
+
+                    # -------------------------
+                    # AI GRADE — WRITING
+                    # -------------------------
+                    elif qt == QuestionType.ESSAY.value:
+                        auto_graded = True
+
+                        task_type = 1
+                        if qb.extra_metadata and isinstance(qb.extra_metadata, dict):
+                            task_type = qb.extra_metadata.get("writing_task", 1)
+
+                        ai_result = await ai_service.ai_grade_writing(
+                            question=qb,
+                            task_type=task_type,
+                            answer=student_text
+                        )
+
+                        raw = ai_result["raw"]
+
+                        feedback = raw.get("detailedFeedback")
+
+                    # -------------------------
+                    # MANUAL — SPEAKING
+                    # -------------------------
+                    elif qt == QuestionType.SPEAKING.value:
+                        auto_graded = False
+                        any_manual = True
+                        feedback = "Awaiting speaking submission"
+
+                    else:
+                        raise HTTPException(
+                            400,
+                            f"Unsupported question type: {qt}"
+                        )
+
+                    # Save response
+                    db.add(
+                        TestResponse(
+                            attempt_id=attempt.id,
+                            question_id=tq.question_id,
+                            response_text=student_text,
+                            response_data=student_data,
+                            time_spent_seconds=time_spent,
+                            is_correct=is_correct,
+                            points_earned=points_earned,
+                            auto_graded=auto_graded,
+                            feedback=feedback
+                        )
+                    )
+
+                    question_results.append(
+                        QuestionResult(
+                            question_id=tq.question_id,
+                            answered=True,
+                            is_correct=is_correct,
+                            points_earned=points_earned,
+                            max_points=max_points,
+                            auto_graded=auto_graded,
+                            feedback=feedback
+                        )
+                    )
+
+                    total_score += points_earned
+
+                # =========================
+                # CASE 2 — not answered
+                # =========================
                 else:
-                    raise HTTPException(
-                        400,
-                        f"Unsupported question type: {qt}"
-                    )
+                    auto_graded = qt != QuestionType.SPEAKING.value
+                    if qt == QuestionType.SPEAKING.value:
+                        any_manual = True
 
-                # Save response
-                db.add(
-                    TestResponse(
-                        attempt_id=attempt.id,
-                        question_id=tq.question_id,
-                        response_text=student_text,
-                        response_data=student_data,
-                        time_spent_seconds=time_spent,
-                        is_correct=is_correct,
-                        points_earned=points_earned,
-                        auto_graded=auto_graded,
-                        feedback=feedback
+                    question_results.append(
+                        QuestionResult(
+                            question_id=tq.question_id,
+                            answered=False,
+                            is_correct=None,
+                            points_earned=0.0,
+                            max_points=max_points,
+                            auto_graded=auto_graded,
+                            feedback="no response"
+                        )
                     )
-                )
-
-                question_results.append(
-                    QuestionResult(
-                        question_id=tq.question_id,
-                        answered=True,
-                        is_correct=is_correct,
-                        points_earned=points_earned,
-                        max_points=max_points,
-                        auto_graded=auto_graded,
-                        feedback=feedback
-                    )
-                )
-
-                total_score += points_earned
 
             # =========================
-            # CASE 2 — not answered
+            # 4. Finalize attempt
             # =========================
+            max_total = sum(float(tq.points or 0) for tq in test_questions)
+
+            attempt.total_score = total_score
+            attempt.percentage_score = (
+                round((total_score / max_total) * 100, 2)
+                if max_total > 0
+                else 0
+            )
+            attempt.passed = (
+                attempt.percentage_score >= float(test.passing_score)
+            )
+
+            if any_manual:
+                attempt.status = AttemptStatus.SUBMITTED
             else:
-                auto_graded = qt != QuestionType.SPEAKING.value
-                if qt == QuestionType.SPEAKING.value:
-                    any_manual = True
+                attempt.status = AttemptStatus.GRADED
+                attempt.graded_at = func.now()
 
-                question_results.append(
-                    QuestionResult(
-                        question_id=tq.question_id,
-                        answered=False,
-                        is_correct=None,
-                        points_earned=0.0,
-                        max_points=max_points,
-                        auto_graded=auto_graded,
-                        feedback="no response"
-                    )
-                )
+            db.commit()
+            db.refresh(attempt)
 
-        # =========================
-        # 4. Finalize attempt
-        # =========================
-        max_total = sum(float(tq.points or 0) for tq in test_questions)
-
-        attempt.total_score = total_score
-        attempt.percentage_score = (
-            round((total_score / max_total) * 100, 2)
-            if max_total > 0
-            else 0
-        )
-        attempt.passed = (
-            attempt.percentage_score >= float(test.passing_score)
-        )
-
-        if any_manual:
-            attempt.status = AttemptStatus.SUBMITTED
-        else:
-            attempt.status = AttemptStatus.GRADED
-            attempt.graded_at = func.now()
-
-        db.commit()
-        db.refresh(attempt)
-
-        return SubmitAttemptResponse(
-            attempt_id=attempt.id,
-            status=attempt.status,
-            total_score=float(attempt.total_score or 0),
-            percentage_score=float(attempt.percentage_score or 0),
-            passed=attempt.passed,
-            graded_at=attempt.graded_at,
-            question_results=question_results
-        )
+            return SubmitAttemptResponse(
+                attempt_id=attempt.id,
+                status=attempt.status,
+                total_score=float(attempt.total_score or 0),
+                percentage_score=float(attempt.percentage_score or 0),
+                passed=attempt.passed,
+                graded_at=attempt.graded_at,
+                question_results=question_results
+            )
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Submission failed: {str(e)}")
     
     async def submit_speaking(
         self,
@@ -404,6 +408,50 @@ class AttemptService:
             "ai_score": ai_score,
             "transcript": raw.get("transcript"),
             "feedback": raw.get("shortFeedback")
+        }
+    
+    def get_attempt_detail(self, db: Session, attempt_id: UUID, user_id: UUID):
+        # 1. Lấy Attempt + Join Test để lấy title
+        attempt = db.query(TestAttempt).join(Test).filter(
+            TestAttempt.id == attempt_id
+        ).first()
+        
+        if not attempt:
+            raise HTTPException(404, "Attempt not found")
+        
+        # 2. Check quyền xem (User chính chủ hoặc Admin/Teacher)
+        if attempt.student_id != user_id:
+            # Có thể check thêm role teacher ở đây nếu cần
+            raise HTTPException(403, "Not authorized to view this attempt")
+
+        # 3. Lấy kết quả chi tiết (QuestionResult)
+        # Giả định có model QuestionResult lưu kết quả từng câu
+        results = db.query(QuestionResult).join(QuestionBank).filter(
+            QuestionResult.attempt_id == attempt_id
+        ).all()
+        
+        # 4. Map dữ liệu sang Schema
+        details_list = []
+        for r in results:
+            details_list.append({
+                "question_id": r.question_id,
+                "question_text": r.question.question_text, # Nhờ lazy load hoặc join
+                "user_answer": r.student_answer,
+                "ai_score": r.score,
+                "ai_feedback": r.ai_feedback, # Hoặc lấy từ JSON metadata
+                "max_points": r.question.points
+            })
+
+        return {
+            "id": attempt.id,
+            "test_id": attempt.test_id,
+            "test_title": attempt.test.title,
+            "student_id": attempt.student_id,
+            "start_time": attempt.start_time,
+            "end_time": attempt.end_time,
+            "total_score": attempt.total_score,
+            "status": attempt.status.value,
+            "details": details_list
         }
 
 

@@ -4,10 +4,12 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies import get_current_admin_user
 from app.schemas.test.test_create import TestCreate
-from app.schemas.test.test_read import TestResponse, TestTeacherResponse
+from app.schemas.test.test_read import TestResponse, TestTeacherResponse, TestListResponse, TestAttemptDetailResponse
 from app.dependencies import get_current_user
 from uuid import UUID
 from app.models.user import UserRole
+from typing import List, Optional
+from app.models.test import TestAttempt
 from app.schemas.test.test_attempt import (
     StartAttemptResponse,
     SubmitAttemptRequest,
@@ -20,6 +22,21 @@ from app.services.test.test import test_service
 from app.services.test.test_attempt_service import attempt_service
 
 router = APIRouter(tags=["Tests"], prefix="/tests")
+
+@router.get("/", response_model=List[TestListResponse])
+def list_tests(
+    skip: int = 0,
+    limit: int = 20,
+    class_id: Optional[UUID] = None,
+    status: Optional[str] = None,
+    skill: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """List all available tests
+    Nếu bài test tổng hợp nhiều skill, logic này lấy skill đầu tiên
+    """
+    return test_service.list_tests(db, skip, limit, class_id, status, skill=skill)
 
 @router.post("/create")
 async def create_test(
@@ -63,14 +80,21 @@ def start_test_attempt(test_id: UUID, db: Session = Depends(get_db), current_use
 
 
 @router.post("/{attempt_id}/submit", response_model=SubmitAttemptResponse)
-def submit_test_attempt(attempt_id: UUID, payload: SubmitAttemptRequest, db: Session = Depends(get_db), current_user=Depends(get_current_user)):
+def submit_test_attempt(
+    attempt_id: UUID,
+    payload: SubmitAttemptRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+    ):
     """
     Submit full attempt. Body must include attempt_id and list of responses.
     """
-    # small validation: attempt_id belongs to the test_id
-    # (service will check again but quick fail fast)
-    # attempt = db.query(TestAttempt).filter(TestAttempt.id==payload.attempt_id).first()
-    # if attempt and attempt.test_id != test_id: raise HTTPException(400)
+    attempt = db.query(TestAttempt).filter(TestAttempt.id == attempt_id).first()
+    if not attempt:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    
+    if attempt.student_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not your attempt")
 
     return attempt_service.submit_attempt(db, payload, attempt_id)
 
@@ -80,10 +104,20 @@ async def submit_speaking_answer(
     question_id: UUID = Form(...),
     audio: UploadFile = File(...),
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
 ):
     return await attempt_service.submit_speaking(
         db=db,
         attempt_id=attempt_id,
         question_id=question_id,
-        audio_file=audio
+        audio_file=audio,
+        student_id=current_user.id
     )
+
+@router.get("/attempts/{attempt_id}", response_model=TestAttemptDetailResponse)
+def get_attempt_detail(
+    attempt_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    return attempt_service.get_attempt_detail(db, attempt_id, current_user.id)

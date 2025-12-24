@@ -49,21 +49,6 @@ async def send_message_rest(
         message_data=message_data
     )
 
-@router.websocket("/ws/{user_id}")
-async def websocket_endpoint_insecure(websocket: WebSocket, user_id: UUID):
-    """WebSocket connection for real-time messaging (Insecure/Deprecated)"""
-    await manager.connect(websocket, user_id)
-    try:
-        while True:
-            data = await websocket.receive_json()
-            if data.get('type') == 'ping':
-                # Sử dụng user_id để xác định kết nối (cần định danh rõ ràng)
-                # Đây là một giải pháp tạm thời, nên tập trung vào endpoint /ws có token.
-                pass 
-    except WebSocketDisconnect:
-        # Nếu chỉ dùng user_id, cần tìm connection_id để disconnect
-        pass
-
 @router.get("/rooms/{room_id}/history")
 async def get_history(
     room_id: UUID,
@@ -98,6 +83,18 @@ async def get_conversations(
     return await message_service.get_user_conversations(
         db, current_user.id
     )
+
+@router.post("/conversations/{room_id}/read")
+async def mark_conversation_read(
+    room_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Mark all messages in a conversation as read.
+    Frontend should call this when user opens a chat room.
+    """
+    return await message_service.mark_conversation_as_read(db, room_id, current_user.id)
 
 @router.post("/groups", status_code=status.HTTP_201_CREATED)
 async def create_group(
@@ -202,6 +199,56 @@ async def update_group(
     db.refresh(room)
     
     return room
+
+@router.post("/edit_message/{message_id}")
+async def edit_message(
+    message_id: UUID,
+    new_content: str = Query(..., description="New content for the message"),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Edit a previously sent message"""
+    return await message_service.edit_message(
+        db, message_id, new_content, current_user.id,
+    )
+
+@router.get("/search_messages")
+async def search_messages(
+    query: str = Query(..., description="Search query string"),
+    room_id: UUID = Query(None, description="Optional room ID to filter messages"),
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """Search messages containing the query string, optionally within a specific room"""
+    return await message_service.search_messages(
+        db, query, current_user.id, room_id, skip, limit
+    )
+
+@router.get("/unread-count")
+async def get_total_unread_count(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    count = message_service.get_total_unread_count(db, current_user.id)
+    return {"unread_count": count}
+
+@router.post("/rooms/{room_id}/mute")
+async def mute_conversation(
+    room_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    return await message_service.toggle_mute(db, room_id, current_user.id, True)
+
+@router.post("/rooms/{room_id}/unmute")
+async def unmute_conversation(
+    room_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    return await message_service.toggle_mute(db, room_id, current_user.id, False)
 
 @router.websocket("/ws")
 async def websocket_endpoint(
