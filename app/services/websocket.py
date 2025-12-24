@@ -2,7 +2,7 @@ import asyncio
 from typing import Dict, Set, Any, List, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict, deque
 import json
 import logging
@@ -46,7 +46,7 @@ class ConnectionManager:
     
     async def _check_stale_connections(self):
         """Remove connections without ping in last 90 seconds"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         stale_threshold = timedelta(seconds=90)
         
         async with self.lock:
@@ -85,8 +85,8 @@ class ConnectionManager:
             # Store metadata
             self.connection_metadata[connection_id] = {
                 'user_id': user_id,
-                'connected_at': datetime.utcnow(),
-                'last_ping': datetime.utcnow()
+                'connected_at': datetime.now(timezone.utc),
+                'last_ping': datetime.now(timezone.utc)
             }
         
         logger.info(
@@ -164,7 +164,7 @@ class ConnectionManager:
     async def handle_ping(self, connection_id: str):
         """Update last ping time for connection"""
         if connection_id in self.connection_metadata:
-            self.connection_metadata[connection_id]['last_ping'] = datetime.utcnow()
+            self.connection_metadata[connection_id]['last_ping'] = datetime.now(timezone.utc)
     
     async def send_to_user(
         self, 
@@ -332,7 +332,7 @@ class ConnectionManager:
             'user_id': str(user_id),
             'room_id': str(room_id),
             'is_typing': is_typing,
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
         # Broadcast to room, excluding the typing user
@@ -356,7 +356,7 @@ class ConnectionManager:
             'room_title': room_title,
             'added_user_ids': [str(uid) for uid in added_user_ids],
             'added_by': str(added_by_user_id),
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
         await self.broadcast_to_room(room_id, message)
@@ -375,7 +375,7 @@ class ConnectionManager:
             'room_title': room_title,
             'removed_user_id': str(removed_user_id),
             'removed_by': str(removed_by_user_id),
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
         await self.broadcast_to_room(room_id, message)
@@ -398,7 +398,7 @@ class ConnectionManager:
             'room_id': str(room_id),
             'updated_by': str(updated_by_user_id),
             'updates': updates,
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
         
         await self.broadcast_to_room(room_id, message)

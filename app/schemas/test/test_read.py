@@ -1,6 +1,7 @@
 from pydantic import BaseModel, UUID4
 from typing import List, Optional, Any
 from datetime import datetime
+from app.models.test import SkillArea, DifficultyLevel
 
 # ---------------------------
 # Base / Student-facing schemas
@@ -118,3 +119,45 @@ class TestTeacherResponse(TestResponse):
     model_config = {
         "from_attributes": True
     }
+
+# ---------------------------
+# Additional schemas for listing tests
+# ---------------------------
+
+class TestListResponse(BaseModel):
+    id: UUID4
+    title: str
+    description: Optional[str]
+    skill: SkillArea
+    difficulty: DifficultyLevel
+    test_type: str
+    duration_minutes: int
+    total_questions: int
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+# --- 2. Schema cho Attempt Detail ---
+class QuestionResultResponse(BaseModel):
+    question_id: UUID4
+    question_text: str
+    user_answer: Optional[str]
+    ai_score: Optional[float]
+    ai_feedback: Optional[str]
+    max_points: float
+
+class TestAttemptDetailResponse(BaseModel):
+    id: UUID4
+    test_id: UUID4
+    test_title: str
+    student_id: UUID4
+    start_time: datetime
+    end_time: Optional[datetime]
+    total_score: Optional[float]
+    status: str
+    # Danh sách kết quả từng câu
+    details: List[QuestionResultResponse] 
+
+    class Config:
+        from_attributes = True

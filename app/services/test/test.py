@@ -6,11 +6,14 @@ from app.models.test import (
     TestSection,
     TestSectionPart,
     QuestionBank,
-    TestQuestion
+    TestQuestion,
+    SkillArea,
+    DifficultyLevel
 )
 from app.schemas.test.test_read import TestResponse, TestTeacherResponse
 from fastapi import HTTPException, status
 from sqlalchemy.orm import joinedload
+from typing import Optional
 
 class TestService:
     async def create_test(self, db: Session, data: TestCreate, created_by: UUID):
@@ -141,6 +144,69 @@ class TestService:
         test = self._load_test_structure(db, test_id)
         test = self.build_test_response(test)
         return TestTeacherResponse.model_validate(test)
+    
+    def list_tests(
+        self, 
+        db: Session, 
+        skip: int = 0, 
+        limit: int = 20, 
+        class_id: Optional[UUID] = None, 
+        status: Optional[str] = None,
+        skill: Optional[str] = None 
+    ):
+        """
+        List tests with filters and manual mapping for calculated fields.
+        """
+        try:
+            query = db.query(Test)
+            
+            # Filter
+            if class_id:
+                query = query.filter(Test.class_id == class_id)
+            if status:
+                query = query.filter(Test.status == status)
+            if skill:
+                query = query.join(TestSection).filter(TestSection.skill_area == skill).distinct()
+                
+            # Eager load để lấy dữ liệu tính toán
+            query = query.options(
+                joinedload(Test.sections),
+                joinedload(Test.questions)
+            )
+            
+            # Query DB
+            items = query.order_by(Test.created_at.desc()).offset(skip).limit(limit).all()
+            
+            # Map dữ liệu thủ công từ Model sang Dict (khớp với TestListResponse)
+            results = []
+            for test in items:
+                # 1. Xác định Skill (Lấy skill của section đầu tiên hoặc Default)
+                # Lưu ý: Nếu bài test tổng hợp nhiều skill, logic này lấy cái đầu tiên
+                current_skill = None
+                if test.sections:
+                    current_skill = test.sections[0].skill_area
+                else:
+                    current_skill = SkillArea.READING # Default fallback nếu chưa có section
+                
+                # 2. Xác định Difficulty (Hiện DB Test chưa có cột này -> Default Medium)
+                # Bạn có thể phát triển logic tính dựa trên độ khó trung bình câu hỏi sau
+                current_difficulty = DifficultyLevel.MEDIUM 
+
+                results.append({
+                    "id": test.id,
+                    "title": test.title,
+                    "description": test.description,
+                    "test_type": test.test_type,
+                    "skill": current_skill,                 # Map vào field 'skill'
+                    "difficulty": current_difficulty,       # Map vào field 'difficulty'
+                    "duration_minutes": test.time_limit_minutes or 0, # Map từ time_limit_minutes
+                    "total_questions": len(test.questions), # Đếm số lượng câu hỏi
+                    "created_at": test.created_at
+                })
+                
+            return results
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     # Internal helper methods
     def _load_test_structure(self, db: Session, test_id: UUID):

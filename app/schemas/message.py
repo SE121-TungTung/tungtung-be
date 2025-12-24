@@ -24,6 +24,9 @@ class ConversationResponse(BaseModel):
     last_message: Optional[LastMessageResponse]
     last_message_at: Optional[datetime]
     unread_count: int
+    avatar_url: Optional[str]
+    description: Optional[str] = None
+    member_count: int = 0
     
 
 #  Group Chat Schemas
