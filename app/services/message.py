@@ -5,7 +5,7 @@ from app.repositories.message import (
 )
 from app.repositories.user import user_repository
 from app.services.websocket import manager
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_
 from uuid import UUID
 from typing import Dict, Any, List, Optional
@@ -17,7 +17,6 @@ from app.schemas.notification import NotificationCreate
 from app.models.notification import NotificationType, NotificationPriority
 from app.services.notification import notification_service
 from app.models.user import User
-
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +152,11 @@ class MessageService:
         room.last_message_at = new_message.created_at
         
         db.commit()
-        db.refresh(new_message)
+
+        new_message = db.query(Message).options(
+            joinedload(Message.sender),
+            joinedload(Message.chat_room)
+        ).filter(Message.id == new_message.id).first()
         
         # Prepare WebSocket payload
         payload = {
@@ -417,10 +420,6 @@ class MessageService:
     ) -> List[Dict[str, Any]]:
         """
         Get chat history with sparse status
-        
-        CRITICAL FIX:
-        - Verify user has access to room (either participant or member)
-        - Include sender info
         """
         # Verify access
         room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
@@ -443,7 +442,9 @@ class MessageService:
             raise HTTPException(status_code=403, detail="Access denied")
         
         # Get messages
-        messages_db = db.query(Message).filter(
+        messages_db = db.query(Message).options(
+            joinedload(Message.sender)
+        ).filter(
             Message.chat_room_id == room_id
         ).order_by(Message.created_at.desc()).offset(skip).limit(limit).all()
         
@@ -463,12 +464,14 @@ class MessageService:
                 continue
             
             # Get sender info
-            sender = self.user_repo.get(db, id=msg.sender_id) if msg.sender_id else None
+            sender_name = "System"
+            if msg.sender: # Đã có sẵn do joinedload
+                sender_name = f"{msg.sender.first_name} {msg.sender.last_name}"
             
             history.append({
                 "message_id": str(msg.id),
                 "sender_id": str(msg.sender_id) if msg.sender_id else None,
-                "sender_name": (sender.first_name + " " + sender.last_name) if sender else "System",
+                "sender_name": sender_name,
                 "content": msg.content,
                 "message_type": msg.message_type.value,
                 "timestamp": msg.created_at.isoformat(),
@@ -502,82 +505,74 @@ class MessageService:
         group_data: GroupCreateRequest
     ):
         """Create a new group chat"""
-        # Validate: creator must be in member list or add automatically
-        member_ids = set(group_data.member_ids)
-        member_ids.add(creator_id)  # Ensure creator is included
-        
-        # Validate: at least 2 members (including creator) for a group
-        if len(member_ids) < 2:
-            raise HTTPException(
-                status_code=400, 
-                detail="Group must have at least 2 members"
-            )
-        
-        # Validate: all users exist
-        for user_id in member_ids:
-            user = self.user_repo.get(db, id=user_id)
-            if not user:
+        try:
+            # Validate: creator must be in member list or add automatically
+            member_ids = set(group_data.member_ids)
+            member_ids.add(creator_id)  # Ensure creator is included
+            
+            # Validate: at least 2 members (including creator) for a group
+            if len(member_ids) < 2:
                 raise HTTPException(
-                    status_code=404, 
-                    detail=f"User {user_id} not found"
+                    status_code=400, 
+                    detail="Group must have at least 2 members"
                 )
+            
+            # Validate: all users exist
+            for user_id in member_ids:
+                user = self.user_repo.get(db, id=user_id)
+                if not user:
+                    raise HTTPException(
+                        status_code=404, 
+                        detail=f"User {user_id} not found"
+                    )
+            
+            # Create chat room
+            chat_room = ChatRoom(
+                room_type=MessageType.GROUP,
+                title=group_data.title,
+                description=group_data.description,
+                avatar_url=group_data.avatar_url,
+                created_by=creator_id,
+                is_active=True
+            )
+            db.add(chat_room)
+            db.flush()
+            
+            # Add creator as admin
+            creator_member = ChatRoomMember(
+                chat_room_id=chat_room.id,
+                user_id=creator_id,
+                role=MemberRole.ADMIN
+            )
+            db.add(creator_member)
+            
+            # Add other members
+            for user_id in member_ids:
+                if user_id != creator_id:
+                    member = ChatRoomMember(
+                        chat_room_id=chat_room.id,
+                        user_id=user_id,
+                        role=MemberRole.MEMBER
+                    )
+                    db.add(member)
         
-        # Create chat room
-        chat_room = ChatRoom(
-            room_type=MessageType.GROUP,
-            title=group_data.title,
-            description=group_data.description,
-            avatar_url=group_data.avatar_url,
-            created_by=creator_id,
-            is_active=True
-        )
-        db.add(chat_room)
-        db.flush()
-        
-        # Add creator as admin
-        creator_member = ChatRoomMember(
-            chat_room_id=chat_room.id,
-            user_id=creator_id,
-            role=MemberRole.ADMIN
-        )
-        db.add(creator_member)
-        
-        # Add other members
-        for user_id in member_ids:
-            if user_id != creator_id:
-                member = ChatRoomMember(
-                    chat_room_id=chat_room.id,
-                    user_id=user_id,
-                    role=MemberRole.MEMBER
-                )
-                db.add(member)
-        
-        db.commit()
-        db.refresh(chat_room)
-        
-        creator = self.user_repo.get(db, id=creator_id)
-        creator_name = (creator.first_name + " " + creator.last_name) if creator else "Someone"
-        # Send system message
-        await self._send_system_message(
-            db, 
-            chat_room.id, 
-            f"Group '{chat_room.title}' was created by {creator_name}"
-        )
-        
-        # Notify all members
-        await manager.broadcast_to_room(
-            room_id=chat_room.id,
-            message={
-                'type': 'group_created',
-                'room_id': str(chat_room.id),
-                'title': chat_room.title,
-                'created_by': str(creator_id),
-                'member_count': len(member_ids)
-            },
-            db_session=db
-        )
-        
-        return chat_room
+            creator = self.user_repo.get(db, id=creator_id)
+            creator_name = (creator.first_name + " " + creator.last_name) if creator else "Someone"
+            # Send system message
+            await self._send_system_message(
+                db, 
+                chat_room.id, 
+                f"Group '{chat_room.title}' was created by {creator_name}"
+            )
+
+            db.commit()
+            db.refresh(chat_room)
+            
+            return chat_room
+        except Exception as e:
+                db.rollback()
+                logger.error(f"Error creating group chat: {e}")
+                raise e
     
     async def add_members_to_group(
         self,
