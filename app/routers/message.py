@@ -253,109 +253,87 @@ async def unmute_conversation(
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    token: str = Query(..., description="JWT token for authentication")
+    token: str = Query(..., description="JWT token")
 ):
-    """
-    WebSocket endpoint with authentication
-    
-    Client usage:
-    ws://localhost:8000/api/v1/ws?token=<jwt_token>
-    """
     connection_id = None
     user_id = None
-    
+
     try:
-        # 1. AUTHENTICATE (trước khi chấp nhận kết nối)
-        user = await get_current_user_from_token(token)
-        user_id = user.id
-        
-        # 2. CHẤP NHẬN KẾT NỐI VÀ THÊM VÀO MANAGER
-        # Accept connection
+        # 1. ACCEPT
+        await websocket.accept()
+
+        # 2. AUTH
+        try:
+            user = await get_current_user_from_token(token)
+            user_id = user.id
+        except HTTPException as e:
+            await websocket.send_json({
+                "type": "error",
+                "code": "AUTH_FAILED",
+                "message": "Authentication failed",
+                "detail": e.detail,
+            })
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
+        # 3. CONNECT
         connection_id = await manager.connect(websocket, user_id)
-        
-        # Send welcome message
+
         await websocket.send_json({
-            'type': 'connected',
-            'message': 'WebSocket connection established',
-            'user_id': str(user_id),
-            'connection_id': connection_id
+            "type": "connected",
+            "user_id": str(user_id),
+            "connection_id": connection_id,
         })
-        
-        # Message loop
+
+        # 4. LOOP
         while True:
             data = await websocket.receive_json()
-            
-            # Handle different message types
-            msg_type = data.get('type')
-            
-            if msg_type == 'ping':
-                # Heartbeat
+            msg_type = data.get("type")
+
+            if msg_type == "ping":
                 await manager.handle_ping(connection_id)
-                await websocket.send_json({'type': 'pong'})
-            
-            elif msg_type == 'typing':
-                # Typing indicator
-                room_id = data.get('room_id')
-                is_typing = data.get('is_typing', False)
-                await manager.send_typing_indicator(user_id, UUID(room_id), is_typing)
-            
-            elif msg_type == 'message':
-                # New message - delegate to MessageService
-                db = SessionLocal() # Khởi tạo session thủ công
+                await websocket.send_json({"type": "pong"})
+
+            elif msg_type == "typing":
+                room_id = data.get("room_id")
+                if room_id:
+                    await manager.send_typing_indicator(
+                        user_id=user_id,
+                        room_id=UUID(room_id),
+                        is_typing=bool(data.get("is_typing", False)),
+                    )
+
+            elif msg_type == "message":
+                db = SessionLocal()
                 try:
                     await message_service.handle_new_message(
-                        db=db, 
-                        sender_id=user_id, 
-                        message_data=data
+                        db=db,
+                        sender_id=user_id,
+                        message_data=data,
                     )
-                except Exception as e:
-                    logger.error(f"Error handling new message: {e}", exc_info=True)
+                except Exception:
+                    logger.exception("Failed to handle WS message")
                     await websocket.send_json({
-                        'type': 'error',
-                        'message': f'Failed to send message: {str(e)}'
+                        "type": "error",
+                        "code": "MESSAGE_FAILED",
+                        "message": "Failed to send message",
                     })
                 finally:
                     db.close()
-            
+
             else:
-                logger.warning(f"Unknown message type: {msg_type}")
-    
-    except HTTPException as e:
-        # Xử lý LỖI XÁC THỰC: Ngay lập tức đóng kết nối
-        # KHÔNG GỌI websocket.accept() nếu auth thất bại.
-        # Nếu exception xảy ra trước accept(), chỉ cần return.
-        # Nếu exception xảy ra sau accept(), nó sẽ được bắt ở khối Exception chung.
-        if websocket.client_state.name == 'CONNECTING':
-             # Tùy chọn: Gửi lỗi trước khi đóng nếu có thể
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        logger.warning(f"WebSocket authentication failed for token. Status: {e.status_code}")
-        # Kết thúc request
-        return 
-        
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "UNKNOWN_TYPE",
+                    "message": f"Unknown type: {msg_type}",
+                })
+
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for user {user_id}")
-    except Exception as e:
-        # Bắt các lỗi chung khác xảy ra SAU KHI kết nối đã được chấp nhận
-        logger.error(f"WebSocket error: {e}", exc_info=True)
+        logger.info("WS disconnected user=%s", user_id)
+
+    except Exception:
+        logger.exception("WebSocket fatal error")
+
     finally:
-        # Dọn dẹp chỉ khi connection_id đã được thiết lập (tức là connection đã được chấp nhận)
         if connection_id and user_id:
             await manager.disconnect(connection_id, user_id)
-
-
-@router.get("/ws/stats")
-async def get_websocket_stats(
-    current_user = Depends(get_current_user)
-):
-    """Get WebSocket connection statistics (admin only)"""
-    return await manager.get_stats()
-
-@router.get("/ws/online-users")
-async def get_online_users(
-    current_user = Depends(get_current_user)
-):
-    """Get list of online users"""
-    return {
-        'online_users': [str(uid) for uid in manager.get_online_users()],
-        'total': len(manager.get_online_users())
-    }
