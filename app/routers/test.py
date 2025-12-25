@@ -79,7 +79,7 @@ def start_test_attempt(test_id: UUID, db: Session = Depends(get_db), current_use
     return attempt_service.start_attempt(db, test_id, current_user.id)
 
 
-@router.post("/{attempt_id}/submit", response_model=SubmitAttemptResponse)
+@router.post("/attempts/{attempt_id}/submit", response_model=SubmitAttemptResponse)
 def submit_test_attempt(
     attempt_id: UUID,
     payload: SubmitAttemptRequest,
