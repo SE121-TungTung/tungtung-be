@@ -39,6 +39,7 @@ class SubmitAttemptResponse(BaseModel):
     status: str
     total_score: float
     percentage_score: float
+    band_score: Optional[float] = None
     passed: Optional[bool] = None
     graded_at: Optional[datetime] = None
     question_results: List[QuestionResult]

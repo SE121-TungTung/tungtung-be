@@ -1,6 +1,7 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from app.core.database import get_db
 from app.dependencies import get_current_active_user, get_current_admin_user, CommonQueryParams
 from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest, UserUpdateForm, ClassWithMembersResponse
@@ -84,13 +85,19 @@ async def list_users(
     """List users with filters (admin only)"""
     if search:
         users = await user_service.search_users(db, search, commons.skip, commons.limit)
+        search_filter = or_(
+            User.first_name.ilike(f"%{search}%"),
+            User.last_name.ilike(f"%{search}%"),
+            User.email.ilike(f"%{search}%")
+        )
+        total = db.query(User).filter(search_filter, User.deleted_at.is_(None)).count()
     elif role:
         users = await user_service.get_users_by_role(db, role, commons.skip, commons.limit)
+        total = db.query(User).filter(User.role == role, User.deleted_at.is_(None)).count()
     else:
         users = await user_service.get_all(db, commons.skip, commons.limit)
-    
-    # Count total for pagination
-    total = db.query(User).count()
+        total = db.query(User).filter(User.deleted_at.is_(None)).count()
+
     pages = (total + commons.limit - 1) // commons.limit
 
     users_schema = [UserResponse.model_validate(u) for u in users]
