@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Enum, Boolean, Date, Text, Integer, TIMESTAMP
+from sqlalchemy import Column, String, Enum, Boolean, Date, Text, Integer, TIMESTAMP, Index, text
 from sqlalchemy.dialects.postgresql import JSONB
 from app.models.base import BaseModel
 import enum
@@ -18,9 +18,13 @@ class UserStatus(enum.Enum):
 
 class User(BaseModel):
     __tablename__ = "users"
-    
+    __table_args__ = (
+        # Enforce email uniqueness only for non-deleted users (deleted_at IS NULL)
+        Index('uq_users_email_not_deleted', 'email', unique=True, postgresql_where=text('deleted_at IS NULL')),
+    )
+
     # Basic info
-    email = Column(String(255), unique=True, nullable=False, index=True)
+    email = Column(String(255), nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(Enum(UserRole, values_callable=lambda obj: [e.value for e in obj], 
         native_enum=False, name='user_role'), default=UserRole.STUDENT, nullable=False)

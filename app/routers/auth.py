@@ -1,3 +1,4 @@
+from typing import Optional
 from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -5,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import create_access_token
-from app.schemas.token import Token, LoginRequest, PasswordResetRequest
+from app.schemas.token import Token, LoginRequest, LoginResponse, PasswordResetRequest
 from app.services.user import user_service
 from app.models.user import UserStatus
 from app.schemas.token import PasswordResetConfirm, PasswordResetResponse
@@ -16,11 +17,13 @@ from datetime import datetime
 
 router = APIRouter()
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=LoginResponse)
 async def login(
     db: Session = Depends(get_db),
-    form_data: OAuth2PasswordRequestForm = Depends()
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    remember_me: bool = False
 ):
+    """Form-based login (OAuth2 password form)"""
     
     user = await user_service.authenticate_user(db, form_data.username, form_data.password)
     if not user:
@@ -40,9 +43,18 @@ async def login(
     access_token = create_access_token(
         subject=user.email, expires_delta=access_token_expires
     )
-    return {"access_token": access_token, "token_type": "bearer"}
 
-@router.post("/login-json", response_model=Token)
+    
+    refresh_token = create_refresh_token(subject=user.email)
+
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "is_first_login": user.is_first_login
+    }
+
+@router.post("/login-json", response_model=LoginResponse)
 async def login_json(
     login_data: LoginRequest,
     db: Session = Depends(get_db)
@@ -60,16 +72,19 @@ async def login_json(
         subject=user.email, expires_delta=access_token_expires
     )
 
-    refresh_token = None
-    if login_data.remember_me:
-        refresh_token = create_refresh_token(subject=user.email)
+    refresh_token = create_refresh_token(subject=user.email)
     
     # Update last login
     user.last_login = datetime.utcnow()
     user.failed_login_attempts = 0
     db.commit()
 
-    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "is_first_login": user.is_first_login
+    }
 
 @router.post("/refresh", response_model=Token)
 async def refresh_token(
@@ -78,6 +93,7 @@ async def refresh_token(
 ):
     """Refresh access token using refresh token"""
     from jose import jwt, JWTError
+    from app.core.security import is_refresh_token_revoked
     
     try:
         payload = jwt.decode(
@@ -90,6 +106,14 @@ async def refresh_token(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token type"
+            )
+        
+        # Check revocation
+        jti = payload.get("jti")
+        if jti and is_refresh_token_revoked(jti):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked"
             )
         
         email: str = payload.get("sub")
@@ -173,4 +197,10 @@ async def validate_reset_token(token: str, db: Session = Depends(get_db)):
         )
     
     return {"valid": True, "email": email}
+
+@router.post("/logout")
+async def logout(refresh_data: Optional[RefreshTokenRequest] = None):
+    """Logout endpoint - revokes refresh token if provided"""
+    await user_service.logout(refresh_token=refresh_data.refresh_token if refresh_data else None)
+    return {"message": "Logout successful"}
 

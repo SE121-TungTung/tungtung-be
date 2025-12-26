@@ -30,6 +30,41 @@ def create_refresh_token(subject: Union[str, Any]) -> str:
     encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
     return encoded_jwt
 
+
+# In-memory set of revoked refresh token JTIs. This keeps the implementation simple
+# and avoids a DB migration; in production you should persist revocations (e.g. Redis or DB).
+revoked_refresh_jtis = set()
+
+
+def revoke_refresh_token(token: str) -> bool:
+    """Revoke a refresh token by decoding its JTI and storing it in the revoked set.
+    Returns True if the token was successfully revoked, False otherwise (invalid token)."""
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        jti = payload.get("jti")
+        if not jti:
+            return False
+        revoked_refresh_jtis.add(jti)
+        return True
+    except JWTError:
+        return False
+
+
+def is_refresh_token_revoked(jti: str) -> bool:
+    """Return True if the given JTI has been revoked."""
+    if not jti:
+        return False
+    return jti in revoked_refresh_jtis
+
+
+def get_jti_from_token(token: str) -> Optional[str]:
+    """Extract the JTI from a token without checking revocation; returns None if invalid."""
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        return payload.get("jti")
+    except JWTError:
+        return None
+
 def create_password_reset_token(email: str, db: Session) -> str:
     # """Create password reset token"""
     # expire = datetime.now() + timedelta(minutes=settings.RESET_TOKEN_EXPIRE_MINUTES)
