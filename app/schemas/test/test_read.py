@@ -26,6 +26,19 @@ class QuestionResponse(BaseModel):
         "from_attributes": True
     }
 
+class QuestionGroupResponse(BaseModel):
+    id: UUID4
+    name: str
+    order_number: int
+
+    question_type: str
+    instructions: Optional[str]
+
+    image_url: Optional[str]
+
+    questions: List[QuestionResponse]
+
+    model_config = {"from_attributes": True}
 
 class PartResponse(BaseModel):
     id: UUID4
@@ -36,7 +49,7 @@ class PartResponse(BaseModel):
     image_url: Optional[str] = None
     audio_url: Optional[str] = None
     instructions: Optional[str] = None
-    questions: List[QuestionResponse]
+    question_groups: List[QuestionGroupResponse]
 
     model_config = {
         "from_attributes": True
@@ -91,8 +104,11 @@ class QuestionTeacherResponse(QuestionResponse):
         "from_attributes": True
     }
 
-class PartTeacherResponse(PartResponse):
+class QuestionGroupTeacherResponse(QuestionGroupResponse):
     questions: List[QuestionTeacherResponse]
+
+class PartTeacherResponse(PartResponse):
+    question_groups: List[QuestionGroupTeacherResponse]
 
     model_config = {
         "from_attributes": True

@@ -4,8 +4,11 @@ from fastapi import HTTPException, UploadFile
 from uuid import UUID
 from datetime import datetime, timezone
 
-from app.models.test import Test, TestAttempt, TestQuestion, TestResponse as ORMTestResponse
-from app.models.test import QuestionBank, AttemptStatus, TestResponse, QuestionType
+from app.models.test import (
+    Test, TestAttempt, TestQuestion, 
+    TestResponse,
+    QuestionBank, AttemptStatus, QuestionType
+)
 from app.services.test.ai_grade import AIGradeService
 from sqlalchemy import func
 from app.schemas.test.test_attempt import (
@@ -424,32 +427,33 @@ class AttemptService:
             # Có thể check thêm role teacher ở đây nếu cần
             raise HTTPException(403, "Not authorized to view this attempt")
 
-        # 3. Lấy kết quả chi tiết (QuestionResult)
-        # Giả định có model QuestionResult lưu kết quả từng câu
-        results = db.query(QuestionResult).join(QuestionBank).filter(
-            QuestionResult.attempt_id == attempt_id
-        ).all()
-        
-        # 4. Map dữ liệu sang Schema
-        details_list = []
-        for r in results:
-            details_list.append({
-                "question_id": r.question_id,
-                "question_text": r.question.question_text, # Nhờ lazy load hoặc join
-                "user_answer": r.student_answer,
-                "ai_score": r.score,
-                "ai_feedback": r.ai_feedback, # Hoặc lấy từ JSON metadata
-                "max_points": r.question.points
-            })
+        responses = (
+            db.query(TestResponse)
+            .join(QuestionBank)
+            .filter(TestResponse.attempt_id == attempt_id)
+            .all()
+        )
 
+        # 4. Build response
+        details_list = []
+        for resp in responses:
+            details_list.append({
+                "question_id": resp.question_id,
+                "question_text": resp.question.question_text,
+                "user_answer": resp.response_text,
+                "ai_score": float(resp.ai_score or 0),
+                "ai_feedback": resp.ai_feedback,
+                "max_points": float(resp.question.points or 0)
+            })
+        
         return {
             "id": attempt.id,
             "test_id": attempt.test_id,
             "test_title": attempt.test.title,
             "student_id": attempt.student_id,
-            "start_time": attempt.start_time,
-            "end_time": attempt.end_time,
-            "total_score": attempt.total_score,
+            "start_time": attempt.started_at,  # ✅ Sửa field name
+            "end_time": attempt.submitted_at,   # ✅ Sửa field name
+            "total_score": float(attempt.total_score or 0),
             "status": attempt.status.value,
             "details": details_list
         }

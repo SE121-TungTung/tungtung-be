@@ -26,17 +26,33 @@ class QuestionCreate(BaseModel):
     # Metadata: source, page, multiple answers allowed…
     extra_metadata: Optional[dict[str, Any]] = None
 
+class QuestionGroupCreate(BaseModel):
+    id: Optional[UUID] = None  # reuse group if needed
+
+    name: str  # e.g. "Questions 1-5"
+    order_number: int
+
+    question_type: QuestionType  # TFNG, FILL_BLANK, MATCHING
+    instructions: Optional[str] = None  # markdown
+    image_url: Optional[str] = None
+
+    min_questions: Optional[int] = None
+    max_questions: Optional[int] = None
+
+    questions: List[QuestionCreate]
+
 class TestSectionPartCreate(BaseModel):
     structure_part_id: Optional[UUID]  # Link to ExamStructurePart if applicable
     name: str
     order_number: int
+    content: Optional[str] = None  
     min_questions: Optional[int] = None
     max_questions: Optional[int] = None
     audio_url: Optional[str] = None
     image_url: Optional[str] = None
     instructions: Optional[str] = None
 
-    questions: List[QuestionCreate]
+    question_groups: List[QuestionGroupCreate]
 
 class TestSectionCreate(BaseModel):
     structure_section_id: Optional[UUID]  # Link to ExamStructureSection if applicable
