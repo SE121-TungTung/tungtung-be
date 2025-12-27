@@ -21,6 +21,8 @@ class QuestionResponse(BaseModel):
     tags: Optional[List[str]] = None
     # rename internal -> visible metadata for safety
     visible_metadata: Optional[Any] = None
+    order_number: int 
+    status: str
 
     model_config = {
         "from_attributes": True
@@ -44,6 +46,7 @@ class PartResponse(BaseModel):
     id: UUID4
     name: str
     order_number: int
+    content: Optional[str] = None
     min_questions: Optional[int] = None
     max_questions: Optional[int] = None
     image_url: Optional[str] = None
@@ -79,6 +82,18 @@ class TestResponse(BaseModel):
     time_limit_minutes: Optional[int]
     sections: List[SectionResponse]
 
+    total_points: float
+    passing_score: float
+    max_attempts: int 
+    randomize_questions: bool
+    show_results_immediately: bool
+
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+
+    status: str
+    ai_grading_enabled: bool
+
     model_config = {
         "from_attributes": True
     }
@@ -108,6 +123,7 @@ class QuestionGroupTeacherResponse(QuestionGroupResponse):
     questions: List[QuestionTeacherResponse]
 
 class PartTeacherResponse(PartResponse):
+    structure_part_id: Optional[UUID4] = None
     question_groups: List[QuestionGroupTeacherResponse]
 
     model_config = {
@@ -131,6 +147,12 @@ class TestTeacherResponse(TestResponse):
     updated_at: Optional[datetime] = None
     exam_type_id: Optional[UUID4] = None
     structure_id: Optional[UUID4] = None
+
+    course_id: Optional[UUID4] = None
+    class_id: Optional[UUID4] = None
+
+    reviewed_by: Optional[UUID4] = None
+    reviewed_at: Optional[datetime] = None
 
     model_config = {
         "from_attributes": True
@@ -159,9 +181,20 @@ class QuestionResultResponse(BaseModel):
     question_id: UUID4
     question_text: str
     user_answer: Optional[str]
+    audio_response_url: Optional[str] = None
+    
     ai_score: Optional[float]
     ai_feedback: Optional[str]
+    
+    points_earned: float
     max_points: float
+
+    teacher_score: Optional[float] = None
+    teacher_feedback: Optional[str] = None
+    
+    time_spent_seconds: Optional[int] = None 
+    flagged_for_review: bool = False
+    
 
 class TestAttemptDetailResponse(BaseModel):
     id: UUID4

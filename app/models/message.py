@@ -2,7 +2,7 @@ import enum
 from sqlalchemy import Column, String, Text, Boolean, Integer, ForeignKey, CheckConstraint, UniqueConstraint, Index, func, Enum
 from sqlalchemy.dialects.postgresql import UUID, JSONB, ENUM as PgEnum, TIMESTAMP
 from sqlalchemy.orm import relationship
-from app.models.base import Base
+from app.models.base import Base, BaseModel
 
 class MessageType(enum.Enum):
     DIRECT = 'direct'
@@ -36,10 +36,9 @@ class MemberRole(enum.Enum):
     MEMBER = 'member'
 
 # ChatRoom Model
-class ChatRoom(Base):
+class ChatRoom(BaseModel):
     __tablename__ = "chat_rooms"
     
-    id = Column(UUID(as_uuid=True), primary_key=True, default=func.gen_random_uuid())
     room_type = Column(Enum(MessageType, values_callable=lambda obj: [e.value for e in obj], 
         native_enum=False, name='message_type'), nullable=False)
     title = Column(String(255), nullable=True)
@@ -49,12 +48,10 @@ class ChatRoom(Base):
     
     is_active = Column(Boolean, default=True)
     last_message_at = Column(TIMESTAMP(timezone=True), default=func.now())
-    created_at = Column(TIMESTAMP(timezone=True), default=func.now())
     
     # Relationships
     messages = relationship("Message", back_populates="chat_room")
     members = relationship("ChatRoomMember", back_populates="chat_room", cascade="all, delete-orphan")
-    created_by = Column(UUID(as_uuid=True), ForeignKey('users.id'), nullable=True)
     avatar_url = Column(String(500))  # Group avatar
     description = Column(Text)
     

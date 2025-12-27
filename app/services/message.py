@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_
 from uuid import UUID
 from typing import Dict, Any, List, Optional
-from app.schemas.message import MessageCreate, ConversationResponse, GroupCreateRequest
+from app.schemas.message import MessageCreate, ConversationResponse, GroupCreateRequest, GroupUpdateRequest
 from app.models.message import Message, ChatRoom, ChatRoomMember, MessageType, MessageStatus, MemberRole, MessageRecipient
 from fastapi import HTTPException
 import logging
@@ -17,6 +17,10 @@ from app.schemas.notification import NotificationCreate
 from app.models.notification import NotificationType, NotificationPriority
 from app.services.notification import notification_service
 from app.models.user import User
+from fastapi import UploadFile
+from datetime import datetime, timezone
+
+from app.services.cloudinary import upload_and_save_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +82,12 @@ class MessageService:
         # Determine chat type and get/create room
         if real_room_id:
             # GROUP/CLASS/EXISTING DIRECT CHAT - Room already exists
-            room = db.query(ChatRoom).filter(ChatRoom.id == real_room_id).first()
+            room = db.query(ChatRoom).filter(
+                ChatRoom.id == real_room_id,
+                ChatRoom.deleted_at.is_(None),
+                ChatRoom.is_active.is_(True)
+            ).first()
+
             if not room:
                 raise HTTPException(status_code=404, detail="Chat room not found")
             
@@ -185,7 +194,6 @@ class MessageService:
             await manager.broadcast_to_room(
                 room_id=room.id,
                 message=payload,
-                exclude_user=None, 
                 db_session=db
             )
         # -------------------------------
@@ -313,6 +321,8 @@ class MessageService:
             .outerjoin(User1, ChatRoom.participant1_id == User1.id)
             .outerjoin(User2, ChatRoom.participant2_id == User2.id)
             .filter(
+                ChatRoom.deleted_at.is_(None),
+                ChatRoom.is_active.is_(True),
                 or_(
                     # Điều kiện 1: Là Direct chat và user nằm trong participant1 hoặc participant2
                     and_(
@@ -389,7 +399,14 @@ class MessageService:
         other_user_id: UUID
     ) -> Dict[str, Any]:
         """Get or create a direct conversation between two users"""
-        room = self._get_or_create_direct_room(db, user_id, other_user_id)
+        ids = sorted([str(user_id), str(other_user_id)])
+        room = db.query(ChatRoom).filter(
+            ChatRoom.room_type == MessageType.DIRECT,
+            ChatRoom.participant1_id == UUID(ids[0]),
+            ChatRoom.participant2_id == UUID(ids[1]),
+            ChatRoom.deleted_at.is_(None),
+            ChatRoom.is_active.is_(True)
+        ).first()
         
         # Get other user info
         other_user = self.user_repo.get(db, id=other_user_id)
@@ -418,56 +435,79 @@ class MessageService:
         skip: int = 0, 
         limit: int = 50
     ) -> List[Dict[str, Any]]:
-        """
-        Get chat history with sparse status
-        """
-        # Verify access
-        room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        room = db.query(ChatRoom).filter(
+            ChatRoom.id == room_id,
+            ChatRoom.deleted_at.is_(None),
+            ChatRoom.is_active.is_(True)
+        ).first()
+
         if not room:
             raise HTTPException(status_code=404, detail="Room not found")
-        
-        # Check if user has access
-        has_access = False
+
+        # =====================
+        # CHECK ACCESS
+        # =====================
+        member = None
         if room.room_type == MessageType.DIRECT:
-            has_access = (room.participant1_id == current_user_id or 
-                         room.participant2_id == current_user_id)
+            if current_user_id not in [room.participant1_id, room.participant2_id]:
+                raise HTTPException(403, "Access denied")
+
+            member = db.query(ChatRoomMember).filter(
+                ChatRoomMember.chat_room_id == room_id,
+                ChatRoomMember.user_id == current_user_id
+            ).first()
         else:
             member = db.query(ChatRoomMember).filter(
                 ChatRoomMember.chat_room_id == room_id,
                 ChatRoomMember.user_id == current_user_id
             ).first()
-            has_access = member is not None
-        
-        if not has_access:
-            raise HTTPException(status_code=403, detail="Access denied")
-        
-        # Get messages
-        messages_db = db.query(Message).options(
+
+            if not member:
+                raise HTTPException(403, "Access denied")
+
+        # =====================
+        # BUILD MESSAGE QUERY
+        # =====================
+        query = db.query(Message).options(
             joinedload(Message.sender)
         ).filter(
             Message.chat_room_id == room_id
-        ).order_by(Message.created_at.desc()).offset(skip).limit(limit).all()
-        
+        )
+
+        # ⬅️ CORE LOGIC: chỉ lấy message sau mốc clear/read
+        if member and member.last_read_at:
+            query = query.filter(
+                Message.created_at > member.last_read_at
+            )
+
+        messages_db = (
+            query
+            .order_by(Message.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
         if not messages_db:
             return []
-        
+
         message_ids = [msg.id for msg in messages_db]
+
         sparse_statuses = self.recipient_repo.get_statuses_for_user(
             db, current_user_id, message_ids
         )
-        
+
         history = []
         for msg in messages_db:
             status = sparse_statuses.get(msg.id, {})
-            
-            if status.get('deleted'):
+
+            if status.get("deleted"):
                 continue
-            
-            # Get sender info
+
             sender_name = "System"
-            if msg.sender: # Đã có sẵn do joinedload
+            if msg.sender:
                 sender_name = f"{msg.sender.first_name} {msg.sender.last_name}"
-            
+
             history.append({
                 "message_id": str(msg.id),
                 "sender_id": str(msg.sender_id) if msg.sender_id else None,
@@ -476,14 +516,13 @@ class MessageService:
                 "message_type": msg.message_type.value,
                 "timestamp": msg.created_at.isoformat(),
                 "attachments": msg.attachments or [],
-                "is_read": status.get('read_at') is not None,
-                "is_starred": status.get('starred', False)
+                "is_read": status.get("read_at") is not None,
+                "is_starred": status.get("starred", False)
             })
-        
-        # Reverse to get chronological order (oldest first)
+
         history.reverse()
-        
         return history
+
     
     async def mark_conversation_as_read(self, db: Session, room_id: UUID, user_id: UUID):
         """Mark all messages in a conversation as read"""
@@ -502,7 +541,8 @@ class MessageService:
         self, 
         db: Session, 
         creator_id: UUID, 
-        group_data: GroupCreateRequest
+        group_data: GroupCreateRequest,
+        avatar: Optional[UploadFile] = None
     ):
         """Create a new group chat"""
         try:
@@ -525,13 +565,23 @@ class MessageService:
                         status_code=404, 
                         detail=f"User {user_id} not found"
                     )
+                
+            # Handle avatar upload if provided
+            if avatar:
+                upload_result = await upload_and_save_metadata(
+                    uploaded_file=avatar,
+                    db=db,
+                    user_id=creator_id,
+                    folder="group_avatars"
+                )
+                avatar_url = upload_result.file_path
             
             # Create chat room
             chat_room = ChatRoom(
                 room_type=MessageType.GROUP,
                 title=group_data.title,
                 description=group_data.description,
-                avatar_url=group_data.avatar_url,
+                avatar_url=avatar_url,
                 created_by=creator_id,
                 is_active=True
             )
@@ -716,49 +766,141 @@ class MessageService:
         db: Session,
         room_id: UUID,
         updater_id: UUID,
-        updates: Dict[str, Any]
+        update_data: GroupUpdateRequest,
+        avatar: Optional[UploadFile] = None
     ):
         """Update group information (title, description, avatar)"""
-        # Get room
-        room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+
+        # --- Get room (KHÔNG lấy room đã bị delete) ---
+        room = db.query(ChatRoom).filter(
+            ChatRoom.id == room_id,
+            ChatRoom.is_active.is_(True),
+            ChatRoom.deleted_at.is_(None)
+        ).first()
+
         if not room:
             raise HTTPException(status_code=404, detail="Group not found")
-        
-        # Check if updater is admin
+
+        # --- Check admin ---
         member = db.query(ChatRoomMember).filter(
             ChatRoomMember.chat_room_id == room_id,
             ChatRoomMember.user_id == updater_id
         ).first()
-        
+
         if not member or member.role != MemberRole.ADMIN:
             raise HTTPException(status_code=403, detail="Only admins can update group info")
-        
-        # Apply updates
+
         changed_fields = []
-        if 'title' in updates and updates['title']:
-            room.title = updates['title']
-            changed_fields.append('title')
-        
-        if 'description' in updates:
-            room.description = updates['description']
-            changed_fields.append('description')
-        
-        if 'avatar_url' in updates:
-            room.avatar_url = updates['avatar_url']
-            changed_fields.append('avatar')
-        
+
+        # --- Update title ---
+        if update_data.title is not None:
+            room.title = update_data.title
+            changed_fields.append("title")
+
+        # --- Update description ---
+        if update_data.description is not None:
+            room.description = update_data.description
+            changed_fields.append("description")
+
+        # --- Upload avatar giống create ---
+        if avatar:
+            upload_result = await upload_and_save_metadata(
+                db=db,
+                uploaded_file=avatar,
+                user_id=updater_id,
+                folder="group_avatars"
+            )
+            room.avatar_url = upload_result.file_path
+            changed_fields.append("avatar")
+
         db.commit()
         db.refresh(room)
-        
-        # Notify members
+
+        # --- Notify members ---
         if changed_fields:
             await manager.notify_group_updated(
                 room_id=room_id,
                 updated_by_user_id=updater_id,
-                updates={'changed_fields': changed_fields, **updates}
+                updates={
+                    "changed_fields": changed_fields,
+                    "title": room.title,
+                    "description": room.description,
+                    "avatar_url": room.avatar_url
+                }
             )
-        
+
         return room
+
+    
+    async def delete_chat_room(
+        self,
+        db: Session,
+        room_id: UUID,
+        current_user_id: UUID
+    ):
+        room = db.query(ChatRoom).filter(
+            ChatRoom.id == room_id,
+            ChatRoom.deleted_at.is_(None)
+        ).first()
+
+        if not room:
+            raise HTTPException(status_code=404, detail="Chat room not found")
+
+        # --- DIRECT CHAT ---
+        if room.room_type == MessageType.DIRECT:
+            if current_user_id not in [room.participant1_id, room.participant2_id]:
+                raise HTTPException(403, "You are not a participant")
+
+            # Lưu mốc "xóa chat" cho user hiện tại
+            member = db.query(ChatRoomMember).filter(
+                ChatRoomMember.chat_room_id == room_id,
+                ChatRoomMember.user_id == current_user_id
+            ).first()
+
+            # Direct chat chưa có member → tạo record
+            if not member:
+                member = ChatRoomMember(
+                    chat_room_id=room_id,
+                    user_id=current_user_id
+                )
+                db.add(member)
+
+            member.last_read_at = datetime.now(timezone.utc)  # ⬅️ mốc clear chat
+            db.commit()
+
+            return {
+                "success": True,
+                "room_id": str(room_id),
+                "scope": "self",
+                "message": "Chat cleared for you"
+            }
+
+        # --- GROUP / CLASS ---
+        else:
+            member = db.query(ChatRoomMember).filter(
+                ChatRoomMember.chat_room_id == room_id,
+                ChatRoomMember.user_id == current_user_id
+            ).first()
+
+            if not member:
+                raise HTTPException(status_code=403, detail="You are not a member of this chat")
+
+            if member.role != MemberRole.ADMIN:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only admins can delete this chat room"
+                )
+
+        # --- SOFT DELETE ---
+        room.is_active = False
+        room.deleted_at = func.now()
+        db.commit()
+
+        return {
+            "success": True,
+            "room_id": str(room_id),
+            "message": "Chat room deleted successfully"
+        }
     
     async def get_group_members(self, db: Session, room_id: UUID, user_id: UUID):
         """Get all members of a group with their details"""
@@ -882,7 +1024,9 @@ class MessageService:
         
         # Lấy danh sách room user đang tham gia
         user_room_ids = db.query(ChatRoomMember.chat_room_id).filter(
-            ChatRoomMember.user_id == user_id
+            ChatRoomMember.user_id == user_id,
+            ChatRoomMember.chat_room.has(ChatRoom.deleted_at.is_(None)),
+            ChatRoomMember.chat_room.has(ChatRoom.is_active.is_(True))
         ).subquery()
         
         direct_room_ids = db.query(ChatRoom.id).filter(

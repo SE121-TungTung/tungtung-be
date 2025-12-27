@@ -28,7 +28,7 @@ router = APIRouter(tags=["Tests"], prefix="/tests")
 # ============================================================
 # LIST TESTS
 # ============================================================
-@router.get("/", response_model=List[TestListResponse])
+@router.get("/")
 def list_tests(
     skip: int = 0,
     limit: int = 20,
@@ -38,6 +38,14 @@ def list_tests(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
+    if current_user.role not in (
+        UserRole.TEACHER,
+        UserRole.OFFICE_ADMIN,
+        UserRole.CENTER_ADMIN,
+        UserRole.SYSTEM_ADMIN,
+    ):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
     return test_service.list_tests(
         db=db,
         skip=skip,
@@ -45,6 +53,24 @@ def list_tests(
         class_id=class_id,
         status=status,
         skill=skill
+    )
+
+@router.get("/student")
+def list_tests(
+    skip: int = 0,
+    limit: int = 20,
+    class_id: Optional[UUID] = None,
+    skill: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    return test_service.list_tests_for_student(
+        db=db,
+        student_id=current_user.id,
+        class_id=class_id,
+        skill=skill,
+        skip=skip,
+        limit=limit
     )
 
 # ============================================================
