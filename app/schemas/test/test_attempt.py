@@ -20,6 +20,9 @@ class QuestionSubmitItem(BaseModel):
     response_text: Optional[str] = None
     response_data: Optional[Any] = None
     time_spent_seconds: Optional[int] = None
+    
+    flagged_for_review: Optional[bool] = False
+
 
 class SubmitAttemptRequest(BaseModel):
     responses: List[QuestionSubmitItem]
@@ -32,16 +35,22 @@ class QuestionResult(BaseModel):
     points_earned: float
     max_points: float
     auto_graded: bool
-    feedback: Optional[str] = None
+
+    ai_score: Optional[float] = None
+    ai_feedback: Optional[str] = None
 
 class SubmitAttemptResponse(BaseModel):
     attempt_id: UUID
+    submitted_at: datetime
+    time_taken_seconds: int
+
     status: str
     total_score: float
     percentage_score: float
     band_score: Optional[float] = None
     passed: Optional[bool] = None
     graded_at: Optional[datetime] = None
+    graded_by: Optional[UUID] = None
     question_results: List[QuestionResult]
 
     model_config = {

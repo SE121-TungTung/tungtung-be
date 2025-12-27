@@ -8,7 +8,10 @@ from sqlalchemy.orm import Session, joinedload
 from uuid import UUID
 from typing import List, Optional
 
+from app.models.user import UserRole, User
 
+from app.repositories.class_session import class_repository
+from app.dependencies import get_current_user
 
 # Generate base CRUD
 base_router = create_crud_router(
@@ -101,3 +104,26 @@ def get_class(class_id: UUID, db: Session = Depends(get_db)):
             "room_name": c.room.name if c.room else None,
         }
     )
+
+@router.get("/teacher/classes", response_model=List[ClassResponse])
+def get_classes_by_teacher(
+    current_user = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if current_user.role != UserRole.TEACHER:
+        raise HTTPException(status_code=403, detail="Access forbidden: Only teachers can access their classes.")
+
+    """Lấy danh sách lớp học theo ID giáo viên"""
+    classes = class_repository.get_classes_by_teacher(db, teacher_id=current_user.id)
+
+    return [
+        ClassResponse.model_validate(c).model_copy(
+            update={
+                "course_name": c.course.name if c.course else None,
+                "teacher_name": c.teacher.full_name if c.teacher else None,
+                "substitute_teacher_name": c.substitute_teacher.full_name if c.substitute_teacher else None,
+                "room_name": c.room.name if c.room else None,
+            }
+        )
+        for c in classes
+    ]

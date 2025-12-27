@@ -34,12 +34,10 @@ class GroupCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     member_ids: List[UUID] = Field(..., min_items=1)  # At least 1 member
-    avatar_url: Optional[str] = None
 
 class GroupUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
-    avatar_url: Optional[str] = None
 
 class AddMembersRequest(BaseModel):
     user_ids: List[UUID] = Field(..., min_items=1)

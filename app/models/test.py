@@ -259,6 +259,7 @@ class QuestionBank(BaseModel):
 
     options = Column(JSONB)
     correct_answer = Column(Text)
+    explanation = Column(Text)
     rubric = Column(JSONB)
 
     audio_url = Column(String)
@@ -329,6 +330,7 @@ class TestAttempt(BaseModel):
     time_taken_seconds = Column(Integer)
     total_score = Column(Numeric(6, 2))
     percentage_score = Column(Numeric(5, 2))
+    band_score = Column(Numeric(4, 2))
     passed = Column(Boolean)
 
     status = Column(

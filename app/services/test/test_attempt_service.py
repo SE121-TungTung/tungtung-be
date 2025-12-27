@@ -155,6 +155,7 @@ class AttemptService:
                     student_text = r.response_text
                     student_data = r.response_data
                     time_spent = r.time_spent_seconds
+                    flagged = r.flagged_for_review
 
                     is_correct = None
                     points_earned = 0.0
@@ -205,6 +206,7 @@ class AttemptService:
                         )
 
                         raw = ai_result["raw"]
+                        ai_score = float(raw.get("overallScore", 0))
 
                         feedback = raw.get("detailedFeedback")
 
@@ -233,7 +235,8 @@ class AttemptService:
                             is_correct=is_correct,
                             points_earned=points_earned,
                             auto_graded=auto_graded,
-                            feedback=feedback
+                            feedback=feedback,
+                            flagged_for_review=flagged
                         )
                     )
 
@@ -245,7 +248,8 @@ class AttemptService:
                             points_earned=points_earned,
                             max_points=max_points,
                             auto_graded=auto_graded,
-                            feedback=feedback
+                            ai_feedback=feedback,
+                            ai_score=float(ai_score) if ai_score else None
                         )
                     )
 
@@ -267,7 +271,8 @@ class AttemptService:
                             points_earned=0.0,
                             max_points=max_points,
                             auto_graded=auto_graded,
-                            feedback="no response"
+                            ai_feedback="no response",
+                            ai_score=None
                         )
                     )
 
@@ -302,7 +307,10 @@ class AttemptService:
                 percentage_score=float(attempt.percentage_score or 0),
                 passed=attempt.passed,
                 graded_at=attempt.graded_at,
-                question_results=question_results
+                question_results=question_results,
+                submitted_at=attempt.submitted_at,
+                time_taken_seconds=int((attempt.submitted_at - attempt.started_at)).total_seconds(),
+                graded_by=attempt.graded_by if attempt.graded_by else None
             )
         except Exception as e:
             db.rollback()

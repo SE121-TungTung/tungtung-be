@@ -24,6 +24,7 @@ from app.core import config
 
 import math
 import random
+import json
 
 DEFAULT_MAX_SLOT_PER_SESSION = config.settings.DEFAULT_MAX_SLOT_PER_SESSION
 
@@ -560,9 +561,30 @@ class ScheduleService:
         """Selects a scheduling rule (fixed or random) and validates against max_slots_limit."""
         
         day_name = current_date.strftime('%A').lower()
-        is_rules_empty = not class_obj.schedule or len(class_obj.schedule) == 0
-        rules_to_use = DEFAULT_SLOTS_TO_TRY if is_rules_empty else class_obj.schedule
+        schedule = class_obj.schedule
+
+        if isinstance(schedule, str):
+            try:
+                schedule = json.loads(schedule)
+            except json.JSONDecodeError:
+                schedule = []
+
+        # Hard validation
+        if not isinstance(schedule, list):
+            schedule = []
+
+        # Ensure each rule is dict with required keys
+        validated_rules = []
+        for r in schedule:
+            if isinstance(r, dict) and 'day' in r and 'slots' in r:
+                if isinstance(r['slots'], list):
+                    validated_rules.append(r)
+
+        schedule = validated_rules
         
+        is_rules_empty = not schedule or len(schedule) == 0
+        rules_to_use = DEFAULT_SLOTS_TO_TRY if is_rules_empty else schedule
+            
         rule = None
         conflict_info = None
 

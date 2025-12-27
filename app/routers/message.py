@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import APIRouter, HTTPException, status, Query # Thêm HTTPException và status
+from fastapi import APIRouter, HTTPException, status, File, UploadFile, Form, Query # Thêm HTTPException và status
 from app.core.database import get_db, SessionLocal
 from app.dependencies import get_current_active_user, get_current_user, get_current_user_from_token
 import logging
@@ -11,8 +11,11 @@ from app.services.websocket import manager
 from fastapi import WebSocket, WebSocketDisconnect, Depends
 from sqlalchemy.orm import Session
 from uuid import UUID
-from typing import List
+from typing import List, Optional
 from app.models.message import ChatRoom
+from app.schemas.message import ConversationResponse, GroupDetailResponse, MemberResponse
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -98,13 +101,31 @@ async def mark_conversation_read(
 
 @router.post("/groups", status_code=status.HTTP_201_CREATED)
 async def create_group(
-    group_data: GroupCreateRequest,
+    title: str = Form(...),
+    description: Optional[str] = Form(None),
+    member_ids: str = Form(...),
+    avatar: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user=Depends(get_current_user),
 ):
     """Create a new group chat"""
+
+    try:
+        parsed_member_ids = [UUID(m_id.strip()) for m_id in member_ids.split(",") if m_id.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid UUID format in member_ids")
+
+    data = GroupCreateRequest(
+        title=title,
+        description=description,
+        member_ids=parsed_member_ids
+    )
+
     return await message_service.create_group_chat(
-        db, current_user.id, group_data
+        db=db,
+        group_data=data,
+        avatar=avatar,
+        creator_id=current_user.id
     )
 
 @router.get("/groups/{room_id}")
@@ -168,37 +189,43 @@ async def remove_group_member(
 @router.put("/groups/{room_id}")
 async def update_group(
     room_id: UUID,
-    update_data: GroupUpdateRequest,
+    title: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    avatar: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(get_current_user),
 ):
-    """Update group information (admin only)"""
-    # Check if user is admin
-    from app.models.message import ChatRoomMember, MemberRole
-    
-    member = db.query(ChatRoomMember).filter(
-        ChatRoomMember.chat_room_id == room_id,
-        ChatRoomMember.user_id == current_user.id
-    ).first()
-    
-    if not member or member.role != MemberRole.ADMIN:
-        raise HTTPException(status_code=403, detail="Only admins can update group")
-    
-    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
-    if not room:
-        raise HTTPException(status_code=404, detail="Group not found")
-    
-    if update_data.title:
-        room.title = update_data.title
-    if update_data.description is not None:
-        room.description = update_data.description
-    if update_data.avatar_url is not None:
-        room.avatar_url = update_data.avatar_url
-    
-    db.commit()
-    db.refresh(room)
-    
-    return room
+    """Update group information (admin only, support avatar upload)"""
+
+    update_data = GroupUpdateRequest(
+        title=title,
+        description=description
+    )
+
+    return await message_service.update_group_info(
+        db=db,
+        room_id=room_id,
+        updater_id=current_user.id,
+        update_data=update_data,
+        avatar=avatar
+    )
+
+
+@router.delete(
+    "/rooms/{room_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete a chat room"
+)
+async def delete_chat_room(
+    room_id: UUID,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user),
+):
+    return await message_service.delete_chat_room(
+        db=db,
+        room_id=room_id,
+        current_user_id=current_user.id
+    )
 
 @router.post("/edit_message/{message_id}")
 async def edit_message(

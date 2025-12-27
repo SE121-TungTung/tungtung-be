@@ -1,6 +1,8 @@
 from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import func
 from uuid import UUID
 from fastapi import HTTPException
+from typing import Optional
 
 from app.schemas.test.test_create import TestCreate
 from app.schemas.test.test_read import TestResponse, TestTeacherResponse
@@ -12,7 +14,11 @@ from app.models.test import (
     QuestionGroup,
     QuestionBank,
     TestQuestion,
-    TestStatus
+    TestStatus,
+    TestAttempt,
+    AttemptStatus,
+    DifficultyLevel,
+    SkillArea
 )
 
 
@@ -49,9 +55,6 @@ class TestService:
 
         global_order = 1
 
-        # =========================
-        # Sections
-        # =========================
         for sec in data.sections:
             section = TestSection(
                 test_id=test.id,
@@ -65,9 +68,6 @@ class TestService:
             db.add(section)
             db.flush()
 
-            # =========================
-            # Parts
-            # =========================
             for part in sec.parts:
                 part_obj = TestSectionPart(
                     test_section_id=section.id,
@@ -84,9 +84,6 @@ class TestService:
                 db.add(part_obj)
                 db.flush()
 
-                # =========================
-                # Question Groups (NEW)
-                # =========================
                 for group_data in part.question_groups:
                     group = QuestionGroup(
                         part_id=part_obj.id,
@@ -99,28 +96,15 @@ class TestService:
                     db.add(group)
                     db.flush()
 
-                    # =========================
-                    # Questions
-                    # =========================
                     for q in group_data.questions:
-
-                        # Reuse question
+                        # Logic reuse/create question (Giữ nguyên)
                         if q.id:
                             question = db.query(QuestionBank).filter(
                                 QuestionBank.id == q.id,
                                 QuestionBank.deleted_at.is_(None)
                             ).first()
-
                             if not question:
                                 raise HTTPException(400, f"Question {q.id} not found")
-
-                            if question.question_type != q.question_type:
-                                raise HTTPException(
-                                    400,
-                                    "Question type mismatch when reusing question"
-                                )
-
-                        # Create new question
                         else:
                             question = QuestionBank(
                                 title=q.title,
@@ -141,13 +125,12 @@ class TestService:
                             db.add(question)
                             db.flush()
 
-                        # Link question to test
                         test_question = TestQuestion(
                             test_id=test.id,
                             group_id=group.id,
                             question_id=question.id,
                             order_number=global_order,
-                            points=q.points,
+                            points=q.points, # Override points in link table
                             required=True
                         )
                         db.add(test_question)
@@ -194,11 +177,362 @@ class TestService:
             raise HTTPException(404, "Test not found")
 
         return test
+    
+    # ============================================================
+    # LIST TESTS
+    # ============================================================
+    def list_tests(
+        self, 
+        db: Session, 
+        skip: int = 0, 
+        limit: int = 20, 
+        class_id: Optional[UUID] = None, 
+        status: Optional[str] = None,
+        skill: Optional[str] = None 
+    ):
+        """
+        List tests with filters and manual mapping for calculated fields.
+        """
+        try:
+            query = db.query(Test)
+            
+            # Filter
+            if class_id:
+                query = query.filter(Test.class_id == class_id)
+            if status:
+                query = query.filter(Test.status == status)
+            if skill:
+                query = query.join(TestSection).filter(TestSection.skill_area == skill).distinct()
+                
+            # Eager load để lấy dữ liệu tính toán
+            query = query.options(
+                joinedload(Test.sections),
+                joinedload(Test.questions)
+            )
+            
+            # Query DB
+            items = query.order_by(Test.created_at.desc()).offset(skip).limit(limit).all()
+            
+            # Map dữ liệu thủ công từ Model sang Dict (khớp với TestListResponse)
+            results = []
+            for test in items:
+                # 1. Xác định Skill (Lấy skill của section đầu tiên hoặc Default)
+                # Lưu ý: Nếu bài test tổng hợp nhiều skill, logic này lấy cái đầu tiên
+                current_skill = None
+                if test.sections:
+                    current_skill = test.sections[0].skill_area
+                else:
+                    current_skill = SkillArea.READING # Default fallback nếu chưa có section
+                
+                # 2. Xác định Difficulty (Hiện DB Test chưa có cột này -> Default Medium)
+                # Bạn có thể phát triển logic tính dựa trên độ khó trung bình câu hỏi sau
+                current_difficulty = DifficultyLevel.MEDIUM 
+
+                results.append({
+                    "id": test.id,
+                    "title": test.title,
+                    "description": test.description,
+                    "test_type": test.test_type,
+                    "skill": current_skill,                 # Map vào field 'skill'
+                    "difficulty": current_difficulty,       # Map vào field 'difficulty'
+                    "duration_minutes": test.time_limit_minutes or 0, # Map từ time_limit_minutes
+                    "total_questions": len(test.questions), # Đếm số lượng câu hỏi
+                    "created_at": test.created_at,
+                    "status": test.status
+                })
+                
+            return {
+                "total": query.count(),
+                "skip": skip,
+                "limit": limit,
+                "tests": results
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+    def list_tests_for_student(
+        self,
+        db: Session,
+        student_id: UUID,
+        class_id: Optional[UUID] = None,
+        skill: Optional[SkillArea] = None,
+        skip: int = 0,
+        limit: int = 20
+    ):
+        """
+        List PUBLISHED tests available for students with optimized eager loading
+        """
+        from datetime import datetime, timezone
+        from sqlalchemy import func, case
+        
+        now = datetime.now(timezone.utc)
+        
+        # ============================================================
+        # Base query với eager loading
+        # ============================================================
+        query = (
+            db.query(Test)
+            .options(
+                joinedload(Test.sections),
+                joinedload(Test.questions)
+            )
+            .filter(
+                Test.deleted_at.is_(None),
+                Test.status == TestStatus.PUBLISHED
+            )
+        )
+        
+        # ============================================================
+        # Time-based filters
+        # ============================================================
+        query = query.filter(
+            (Test.start_time.is_(None)) | (Test.start_time <= now),
+            (Test.end_time.is_(None)) | (Test.end_time >= now)
+        )
+        
+        # ============================================================
+        # Optional filters
+        # ============================================================
+        if class_id:
+            query = query.filter(Test.class_id == class_id)
+        
+        if skill:
+            # Join với TestSection để filter theo skill_area
+            query = query.join(TestSection).filter(
+                TestSection.skill_area == skill
+            ).distinct()
+        
+        # ============================================================
+        # Count total trước khi pagination
+        # ============================================================
+        total = query.count()
+        
+        # ============================================================
+        # Pagination và ordering
+        # ============================================================
+        query = query.order_by(
+            Test.start_time.desc().nullslast(),
+            Test.created_at.desc()
+        )
+        
+        tests = query.offset(skip).limit(limit).all()
+        
+        # ============================================================
+        # Batch load attempts cho tất cả tests trong 1 query
+        # ============================================================
+        test_ids = [test.id for test in tests]
+        
+        # Subquery để đếm attempts per test
+        attempts_subq = (
+            db.query(
+                TestAttempt.test_id,
+                func.count(TestAttempt.id).label('count'),
+                func.max(TestAttempt.attempt_number).label('max_attempt')
+            )
+            .filter(
+                TestAttempt.test_id.in_(test_ids),
+                TestAttempt.student_id == student_id
+            )
+            .group_by(TestAttempt.test_id)
+            .subquery()
+        )
+        
+        # Query attempts data trong 1 lần
+        attempts_data = (
+            db.query(
+                attempts_subq.c.test_id,
+                attempts_subq.c.count,
+                attempts_subq.c.max_attempt
+            )
+            .all()
+        )
+        
+        # Map attempts data theo test_id
+        attempts_map = {
+            str(row.test_id): {
+                'count': row.count,
+                'max_attempt': row.max_attempt
+            }
+            for row in attempts_data
+        }
+        
+        # ============================================================
+        # Batch load latest attempts
+        # ============================================================
+        latest_attempts_subq = (
+            db.query(
+                TestAttempt.test_id,
+                TestAttempt.id,
+                TestAttempt.status,
+                TestAttempt.total_score,
+                func.row_number().over(
+                    partition_by=TestAttempt.test_id,
+                    order_by=TestAttempt.attempt_number.desc()
+                ).label('rn')
+            )
+            .filter(
+                TestAttempt.test_id.in_(test_ids),
+                TestAttempt.student_id == student_id
+            )
+            .subquery()
+        )
+        
+        latest_attempts = (
+            db.query(
+                latest_attempts_subq.c.test_id,
+                latest_attempts_subq.c.status,
+                latest_attempts_subq.c.total_score
+            )
+            .filter(latest_attempts_subq.c.rn == 1)
+            .all()
+        )
+        
+        # Map latest attempts
+        latest_map = {
+            str(row.test_id): {
+                'status': row.status,
+                'score': row.total_score
+            }
+            for row in latest_attempts
+        }
+        
+        # ============================================================
+        # Build response
+        # ============================================================
+        results = []
+        for test in tests:
+            test_id_str = str(test.id)
+            
+            # Get attempts info từ map
+            attempt_info = attempts_map.get(test_id_str, {'count': 0, 'max_attempt': 0})
+            attempts_count = attempt_info['count']
+            
+            # Get latest attempt info
+            latest = latest_map.get(test_id_str, {'status': None, 'score': None})
+            
+            # Calculate can_attempt
+            can_attempt = attempts_count < (test.max_attempts or 1)
+            
+            # Count questions (đã eager load)
+            total_questions = len(test.questions)
+            
+            results.append({
+                "id": test.id,
+                "title": test.title,
+                "description": test.description,
+                "test_type": test.test_type.value if test.test_type else None,
+                "time_limit_minutes": test.time_limit_minutes,
+                "total_questions": total_questions,
+                "total_points": float(test.total_points or 0),
+                "passing_score": float(test.passing_score or 0),
+                "start_time": test.start_time,
+                "end_time": test.end_time,
+                "attempts_count": attempts_count,
+                "max_attempts": test.max_attempts,
+                "can_attempt": can_attempt,
+                "latest_attempt_status": latest['status'],
+                "latest_attempt_score": float(latest['score'] or 0) if latest['score'] else None,
+                "status": test.status
+            })
+        
+        return {
+            "total": total,
+            "skip": skip,
+            "limit": limit,
+            "tests": results
+        }
+
+    def get_test_summary(self, db: Session, test_id: UUID):
+        """
+        Get test summary with statistics
+        """
+        
+        test = db.query(Test).filter(
+            Test.id == test_id,
+            Test.deleted_at.is_(None)
+        ).first()
+        
+        if not test:
+            raise HTTPException(404, "Test not found")
+        
+        # Count questions
+        total_questions = (
+            db.query(TestQuestion)
+            .filter(TestQuestion.test_id == test_id)
+            .count()
+        )
+        
+        # Count attempts
+        total_attempts = (
+            db.query(TestAttempt)
+            .filter(TestAttempt.test_id == test_id)
+            .count()
+        )
+        
+        # Count completed attempts
+        completed_attempts = (
+            db.query(TestAttempt)
+            .filter(
+                TestAttempt.test_id == test_id,
+                TestAttempt.status.in_([AttemptStatus.GRADED, AttemptStatus.SUBMITTED])
+            )
+            .count()
+        )
+        
+        # Calculate average score
+        avg_score = (
+            db.query(func.avg(TestAttempt.total_score))
+            .filter(
+                TestAttempt.test_id == test_id,
+                TestAttempt.status == AttemptStatus.GRADED
+            )
+            .scalar()
+        )
+        
+        # Calculate pass rate
+        passed_count = (
+            db.query(TestAttempt)
+            .filter(
+                TestAttempt.test_id == test_id,
+                TestAttempt.passed == True
+            )
+            .count()
+        )
+        
+        pass_rate = (
+            round((passed_count / completed_attempts) * 100, 2)
+            if completed_attempts > 0
+            else 0
+        )
+        
+        return {
+            "id": test.id,
+            "title": test.title,
+            "description": test.description,
+            "test_type": test.test_type.value if test.test_type else None,
+            "status": test.status.value,
+            "total_questions": total_questions,
+            "total_points": float(test.total_points or 0),
+            "time_limit_minutes": test.time_limit_minutes,
+            "total_attempts": total_attempts,
+            "completed_attempts": completed_attempts,
+            "average_score": round(float(avg_score or 0), 2),
+            "pass_rate": pass_rate,
+            "created_at": test.created_at,
+            "start_time": test.start_time,
+            "end_time": test.end_time,
+        }
 
     # ============================================================
     # BUILD RESPONSE
     # ============================================================
     def build_test_response(self, test: Test):
+        """
+        Hàm này xây dựng một Dictionary chứa đầy đủ thông tin (Superset).
+        Pydantic (TestResponse hoặc TestTeacherResponse) sẽ tự động filter 
+        các field cần thiết dựa trên Schema definition.
+        """
         sections = []
 
         for section in test.sections:
@@ -211,8 +545,12 @@ class TestService:
                     questions = []
 
                     for tq in group.test_questions:
+                        # tq là TestQuestion (bảng trung gian)
+                        # qb là QuestionBank (bảng gốc)
                         qb = tq.question
+                        
                         questions.append({
+                            # Base fields
                             "id": qb.id,
                             "title": qb.title,
                             "question_text": qb.question_text,
@@ -222,9 +560,19 @@ class TestService:
                             "options": qb.options,
                             "image_url": qb.image_url,
                             "audio_url": qb.audio_url,
-                            "points": float(tq.points),
                             "tags": qb.tags,
-                            "visible_metadata": qb.extra_metadata,
+                            
+                            # Updated fields from Link Table & Schema changes
+                            "points": int(tq.points or 0), # Lấy points từ TestQuestion (override), ép kiểu int theo schema
+                            "order_number": tq.order_number, # Lấy từ TestQuestion
+                            "status": qb.status.value if hasattr(qb.status, 'value') else str(qb.status),
+                            "visible_metadata": qb.extra_metadata, # Rename extra -> visible
+
+                            # Teacher fields (Student schema sẽ ignore cái này)
+                            "correct_answer": qb.correct_answer,
+                            "rubric": qb.rubric,
+                            "explanation": qb.explanation if hasattr(qb, 'explanation') else None,
+                            "internal_metadata": qb.extra_metadata, # Teacher thấy full metadata
                         })
 
                     groups.append({
@@ -247,6 +595,7 @@ class TestService:
                     "image_url": part.image_url,
                     "audio_url": part.audio_url,
                     "instructions": part.instructions,
+                    "structure_part_id": part.structure_part_id, # For teacher
                     "question_groups": groups
                 })
 
@@ -254,19 +603,42 @@ class TestService:
                 "id": section.id,
                 "name": section.name,
                 "order_number": section.order_number,
-                "skill_area": section.skill_area.value,
+                "skill_area": section.skill_area.value if section.skill_area else None,
                 "time_limit_minutes": section.time_limit_minutes,
                 "instructions": section.instructions,
+                "structure_section_id": section.structure_section_id, # For teacher
                 "parts": parts
             })
 
+        # Test Root Response
         return {
             "id": test.id,
             "title": test.title,
             "description": test.description,
             "instructions": test.instructions,
-            "test_type": test.test_type.value if test.test_type else None,
+            "test_type": test.test_type.value if test.test_type else "standard",
             "time_limit_minutes": test.time_limit_minutes,
+            
+            # New Config Fields (Required by updated Schema)
+            "total_points": float(test.total_points or 0),
+            "passing_score": float(test.passing_score or 0),
+            "max_attempts": test.max_attempts or 1,
+            "randomize_questions": test.randomize_questions or False,
+            "show_results_immediately": test.show_results_immediately or False,
+            "start_time": test.start_time,
+            "end_time": test.end_time,
+            "status": test.status.value if hasattr(test.status, 'value') else str(test.status),
+            "ai_grading_enabled": test.ai_grading_enabled or False,
+
+            # Teacher/Admin Fields
+            "created_by": test.created_by,
+            "created_at": test.created_at,
+            "updated_at": test.updated_at,
+            "class_id": test.class_id,
+            "course_id": test.course_id,
+            "exam_type_id": test.exam_type_id,
+            "structure_id": test.structure_id,
+
             "sections": sections
         }
 

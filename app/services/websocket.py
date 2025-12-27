@@ -7,6 +7,9 @@ from collections import defaultdict, deque
 import logging
 import secrets
 
+from sqlalchemy.orm import Session
+from app.models.message import ChatRoom, ChatRoomMember, MessageType
+
 logger = logging.getLogger(__name__)
 
 
@@ -215,6 +218,48 @@ class ConnectionManager:
             "queued_users": sum(1 for r in results if isinstance(r, dict) and r.get("queued")),
             "total_users": len(user_ids),
         }
+    
+    async def broadcast_to_room(
+        self,
+        room_id: UUID,
+        message: dict,
+        db_session: Session,
+        exclude_user_id: UUID | None = None
+    ):
+        """
+        Broadcast message to all ONLINE users in a room (Group / Class)
+        - Room membership is loaded from DB (source of truth)
+        - Only sends to connected users
+        """
+
+        # 1️⃣ Lấy room
+        room = db_session.query(ChatRoom).filter(ChatRoom.id == room_id).first()
+        if not room:
+            return
+
+        recipient_user_ids: list[UUID] = []
+
+        # 2️⃣ Xác định danh sách user theo room type
+        if room.room_type == MessageType.DIRECT:
+            # Direct chat: chỉ 2 người
+            if room.participant1_id:
+                recipient_user_ids.append(room.participant1_id)
+            if room.participant2_id:
+                recipient_user_ids.append(room.participant2_id)
+
+        elif room.room_type in [MessageType.GROUP, MessageType.CLASS]:
+            members = db_session.query(ChatRoomMember.user_id).filter(
+                ChatRoomMember.chat_room_id == room_id
+            ).all()
+            recipient_user_ids = [m.user_id for m in members]
+
+        # 3️⃣ Broadcast cho từng user online
+        for user_id in recipient_user_ids:
+            if exclude_user_id and user_id == exclude_user_id:
+                continue
+
+            if user_id in self.active_connections:
+                await self.send_to_user(user_id, message)
 
     # =====================================================
     # STATS
