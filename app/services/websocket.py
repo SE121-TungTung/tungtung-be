@@ -276,6 +276,10 @@ class ConnectionManager:
                     if self.active_connections else 0
                 ),
             }
+        
+    async def is_user_online(self, user_id: UUID) -> bool:
+        async with self.lock:
+            return user_id in self.active_connections and len(self.active_connections[user_id]) > 0
 
 
 manager = ConnectionManager()

@@ -145,7 +145,8 @@ class MessageService:
         self.recipient_repo.create(db, obj_in={
             "message_id": new_message.id,
             "recipient_id": sender_id,
-            "recipient_type": "user"
+            "recipient_type": "user",
+            "read_at": datetime.now(timezone.utc)  # Mark as read for sender
         })
 
         # 2. Add for Recipients (FIXED: dùng danh sách đã tính toán ở trên)
