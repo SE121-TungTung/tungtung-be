@@ -124,6 +124,7 @@ class SessionResponse(BaseModel):
 
 class WeeklySession(BaseModel):
     session_id: UUID
+    session_date: date
     class_name: str
     teacher_name: str
     room_name: str

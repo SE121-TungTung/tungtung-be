@@ -387,6 +387,7 @@ class ScheduleService:
             
             schedule_data.append(WeeklySession(
                 session_id=session.id,
+                session_date=session.session_date,
                 class_name=class_obj.name,
                 teacher_name=f"{teacher.first_name} {teacher.last_name}",
                 room_name=room.name if room else "N/A",
