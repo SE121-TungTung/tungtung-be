@@ -60,8 +60,9 @@ class AttemptService:
         if existing:
             return StartAttemptResponse(
                 attempt_id=existing.id,
-                start_time=existing.started_at,
-                remaining_seconds=self._calculate_remaining_time(existing, test)
+                test_id=existing.test_id,
+                started_at=existing.started_at,
+                attempt_number=existing.attempt_number
             )
 
         # Create new attempt
@@ -78,16 +79,10 @@ class AttemptService:
 
         return StartAttemptResponse(
             attempt_id=attempt.id,
-            start_time=attempt.started_at,
-            remaining_seconds=test.time_limit_minutes * 60 if test.time_limit_minutes else None
+            test_id=attempt.test_id,
+            started_at=attempt.started_at,
+            attempt_number=attempt.attempt_number
         )
-
-    def _calculate_remaining_time(self, attempt: TestAttempt, test: Test) -> Optional[int]:
-        if not test.time_limit_minutes:
-            return None
-        elapsed = (datetime.now(timezone.utc) - attempt.started_at).total_seconds()
-        remaining = (test.time_limit_minutes * 60) - elapsed
-        return max(0, int(remaining))
 
     # ============================================================
     # 2. SUBMIT ATTEMPT (Reading, Listening, Writing)
@@ -125,7 +120,7 @@ class AttemptService:
         q_map = {q.id: (q, float(pts)) for q, pts in questions_query}
         
         # Map: user submission dict
-        answers_map = {item.question_id: item for item in data.answers}
+        answers_map = {item.question_id: item for item in data.responses}
 
         total_points_earned = 0.0
         max_total_points = 0.0
@@ -148,15 +143,10 @@ class AttemptService:
             ai_feedback = None
             
             flagged = submission.flagged_for_review if submission else False
-            student_data = submission.answer_data if submission else None
+            student_data = submission.response_data if submission else None
             
             # Extract text answer if applicable (for AI grading/Feedback)
-            student_text = ""
-            if student_data:
-                if isinstance(student_data, dict):
-                    student_text = str(student_data.get("text", "") or student_data.get("selected", ""))
-                else:
-                    student_text = str(student_data)
+            student_text = submission.response_text if submission else ""
 
             # --- A. AUTO GRADING (Reading / Listening) ---
             if QuestionType.is_auto_gradable(qb.question_type):
@@ -268,6 +258,7 @@ class AttemptService:
                     
                     points_earned=points_earned,
                     max_points=max_points,
+                    band_score=None,
                     
                     # AI info
                     ai_points_earned=ai_points_earned,
@@ -301,6 +292,11 @@ class AttemptService:
         db.commit()
         db.refresh(attempt)
 
+        graded_by = attempt.graded_by if isinstance(attempt.graded_by, UUID) else None
+        ai_feedback = attempt.ai_feedback if isinstance(attempt.ai_feedback, dict) else None
+        teacher_feedback = attempt.teacher_feedback if isinstance(attempt.teacher_feedback, str) else None
+
+
         return SubmitAttemptResponse(
             attempt_id=attempt.id,
             submitted_at=attempt.submitted_at,
@@ -313,11 +309,11 @@ class AttemptService:
             passed=attempt.passed,
             
             graded_at=attempt.graded_at,
-            graded_by=attempt.graded_by,
+            graded_by=graded_by,
             
             # Feedback (Teacher feedback will be null initially)
-            ai_feedback=attempt.ai_feedback, 
-            teacher_feedback=attempt.teacher_feedback,
+            ai_feedback=ai_feedback, 
+            teacher_feedback=teacher_feedback,
             
             question_results=question_results
         )

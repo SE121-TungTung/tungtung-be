@@ -2,10 +2,13 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func
 from uuid import UUID
 from fastapi import HTTPException
-from typing import Optional
+from typing import Optional, List
 
 from app.schemas.test.test_create import TestCreate
 from app.schemas.test.test_read import TestResponse, TestTeacherResponse
+
+from fastapi import UploadFile
+from app.services.cloudinary import upload_and_save_metadata
 
 from app.models.test import (
     Test,
@@ -27,8 +30,51 @@ class TestService:
     # ============================================================
     # CREATE TEST
     # ============================================================
-    async def create_test(self, db: Session, data: TestCreate, created_by: UUID):
+    from app.services.cloudinary import upload_and_save_metadata
+from app.models.file_upload import UploadType, AccessLevel
 
+class TestService:
+    # ...
+
+    async def create_test(
+        self, 
+        db: Session, 
+        data: TestCreate, 
+        created_by: UUID,
+        files: Optional[List[UploadFile]] = None 
+    ):
+        # =================================================
+        # 1. HANDLE FILE UPLOADS & MAPPING
+        # =================================================
+        uploaded_map = {} # { "filename": "https://cloudinary..." }
+        
+        if files:
+            for file in files:
+                # Upload lên Cloudinary
+                file_meta = await upload_and_save_metadata(
+                    db=db,
+                    file=file,
+                    uploader_id=created_by,
+                    upload_type=UploadType.AUDIO,
+                    access_level=AccessLevel.PUBLIC # Test content thường public để học sinh access
+                )
+                # Lưu vào map với key là tên file gốc
+                uploaded_map[file.filename] = file_meta.file_path
+
+        # Helper function để thay thế placeholder bằng URL thật
+        def resolve_url(url: Optional[str]) -> Optional[str]:
+            if not url: return None
+            # Quy ước: Nếu url bắt đầu bằng "file:", đó là placeholder trỏ tới file upload
+            # Ví dụ: "file:audio_part1.mp3"
+            prefix = "file:"
+            if url.startswith(prefix):
+                filename = url[len(prefix):]
+                return uploaded_map.get(filename, url) # Nếu không tìm thấy file, giữ nguyên (có thể là external url)
+            return url
+
+        # =================================================
+        # 2. CREATE TEST OBJECT
+        # =================================================
         test = Test(
             title=data.title,
             description=data.description,
@@ -69,7 +115,7 @@ class TestService:
             db.flush()
 
             for part in sec.parts:
-                # ================= FIX #1 =================
+                # ================= FIX #1 & Resolve URL =================
                 part_obj = TestSectionPart(
                     test_section_id=section.id,
                     structure_part_id=part.structure_part_id,
@@ -78,8 +124,11 @@ class TestService:
                     passage_id=part.passage_id,  # ✅ FIX
                     min_questions=part.min_questions,
                     max_questions=part.max_questions,
-                    audio_url=part.audio_url,
-                    image_url=part.image_url,
+                    
+                    # ✅ RESOLVE URL HERE (Part audio/image)
+                    audio_url=resolve_url(part.audio_url),
+                    image_url=resolve_url(part.image_url),
+                    
                     instructions=part.instructions
                 )
                 db.add(part_obj)
@@ -92,7 +141,9 @@ class TestService:
                         order_number=group_data.order_number,
                         question_type=group_data.question_type,
                         instructions=group_data.instructions,
-                        image_url=group_data.image_url
+                        
+                        # ✅ RESOLVE URL HERE (Group image/audio if any)
+                        image_url=resolve_url(group_data.image_url)
                     )
                     db.add(group)
                     db.flush()
@@ -101,6 +152,7 @@ class TestService:
                     group_order = 1
 
                     for q in group_data.questions:
+                        # 2a. REUSE EXISTING QUESTION
                         if q.id:
                             question = db.query(QuestionBank).filter(
                                 QuestionBank.id == q.id,
@@ -108,6 +160,8 @@ class TestService:
                             ).first()
                             if not question:
                                 raise HTTPException(400, f"Question {q.id} not found")
+                        
+                        # 2b. CREATE NEW QUESTION
                         else:
                             question = QuestionBank(
                                 title=q.title,
@@ -118,8 +172,11 @@ class TestService:
                                 options=q.options,
                                 correct_answer=q.correct_answer,
                                 rubric=q.rubric,
-                                audio_url=q.audio_url,
-                                image_url=q.image_url,
+                                
+                                # ✅ RESOLVE URL HERE (Question audio/image)
+                                audio_url=resolve_url(q.audio_url),
+                                image_url=resolve_url(q.image_url),
+                                
                                 points=q.points,
                                 tags=q.tags,
                                 extra_metadata=q.extra_metadata,
@@ -128,6 +185,7 @@ class TestService:
                             db.add(question)
                             db.flush()
 
+                        # Link to Test
                         test_question = TestQuestion(
                             test_id=test.id,
                             group_id=group.id,
