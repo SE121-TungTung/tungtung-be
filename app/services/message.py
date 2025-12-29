@@ -906,18 +906,44 @@ class MessageService:
     async def get_group_members(self, db: Session, room_id: UUID, user_id: UUID):
         """Get all members of a group with their details"""
         # Check if user is member
-        member = db.query(ChatRoomMember).filter(
-            ChatRoomMember.chat_room_id == room_id,
-            ChatRoomMember.user_id == user_id
+        room = db.query(ChatRoom).filter(
+            ChatRoom.id == room_id,
+            ChatRoom.deleted_at.is_(None),
+            ChatRoom.is_active.is_(True)
         ).first()
+        if not room:
+            raise HTTPException(status_code=404, detail="Group not found")
         
-        if not member:
-            raise HTTPException(status_code=403, detail="Not a member of this group")
-        
-        # Get all members with user info
-        members = db.query(ChatRoomMember).filter(
-            ChatRoomMember.chat_room_id == room_id
-        ).all()
+        members = []
+
+        if room.room_type is MessageType.DIRECT:
+            other_user_id = room.participant2_id if room.participant1_id == user_id else room.participant1_id
+            other_user = self.user_repo.get(db, id=other_user_id)
+            if other_user:
+                is_online = await manager.is_user_online(other_user_id)
+                members.append({
+                    'user_id': str(other_user.id),
+                    'full_name': other_user.first_name + " " + other_user.last_name,
+                    'avatar_url': getattr(other_user, 'avatar_url', None),
+                    'role': 'participant',
+                    'joined_at': None,
+                    'nickname': None,
+                    'email': getattr(other_user, 'email', None),
+                    'is_online': is_online
+                })
+        else:
+            member = db.query(ChatRoomMember).filter(
+                ChatRoomMember.chat_room_id == room_id,
+                ChatRoomMember.user_id == user_id
+            ).first()
+            
+            if not member:
+                raise HTTPException(status_code=403, detail="Not a member of this group")
+            
+            # Get all members with user info
+            members = db.query(ChatRoomMember).filter(
+                ChatRoomMember.chat_room_id == room_id
+            ).all()
         
         result = []
         for m in members:

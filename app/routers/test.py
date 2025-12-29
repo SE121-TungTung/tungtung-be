@@ -7,6 +7,9 @@ from app.core.database import get_db
 from app.dependencies import get_current_user, get_current_admin_user
 from app.models.user import UserRole
 
+import json
+from pydantic import ValidationError
+
 from app.schemas.test.test_create import TestCreate
 from app.schemas.test.test_read import (
     TestResponse,
@@ -78,15 +81,29 @@ def list_tests(
 # ============================================================
 @router.post("/create", response_model=TestTeacherResponse)
 async def create_test(
-    data: TestCreate,
+    # Nhận JSON string và parse thủ công
+    test_data_str: str = Form(..., description="JSON string of TestCreate schema"),
+    # Nhận list files (optional)
+    files: List[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_admin_user)
 ):
+    try:
+        # 1. Parse JSON string thành Dict
+        test_data_dict = json.loads(test_data_str)
+        # 2. Validate bằng Pydantic
+        data = TestCreate(**test_data_dict)
+    except (json.JSONDecodeError, ValidationError) as e:
+        raise HTTPException(status_code=422, detail=f"Invalid test data format: {str(e)}")
+
+    # 3. Gọi Service
     test = await test_service.create_test(
         db=db,
         data=data,
+        files=files, # Truyền thêm files
         created_by=current_user.id
     )
+    
     return test_service.get_test_for_teacher(db, test.id)
 
 # ============================================================

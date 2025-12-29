@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     DEFAULT_MAX_SLOT_PER_SESSION: int
 
     AI_BASE_URL: str
+
+    CHATBOT_SERVICE_URL: str
+    CHATBOT_API_KEY: str
     
     class Config:
         env_file = ".env"
