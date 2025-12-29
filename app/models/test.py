@@ -14,18 +14,228 @@ import enum
 # ENUMS
 # =========================
 
+# File: app/models/test.py
+import enum
+# Giả định SkillArea đã được import từ cùng module hoặc module khác
+# from .somewhere import SkillArea 
+
 class QuestionType(enum.Enum):
+    """Các dạng câu hỏi THỰC TẾ trong IELTS"""
+    # === READING & LISTENING (dùng chung) ===
     MULTIPLE_CHOICE = "multiple_choice"
-    TRUE_FALSE = "true_false"
+    TRUE_FALSE_NOT_GIVEN = "true_false_not_given"
+    YES_NO_NOT_GIVEN = "yes_no_not_given"
+    MATCHING_HEADINGS = "matching_headings"
+    MATCHING_INFORMATION = "matching_information"
+    MATCHING_FEATURES = "matching_features"
+    SENTENCE_COMPLETION = "sentence_completion"
+    SUMMARY_COMPLETION = "summary_completion"
+    NOTE_COMPLETION = "note_completion"
     SHORT_ANSWER = "short_answer"
-    ESSAY = "essay"
-    LISTENING = "listening"
-    SPEAKING = "speaking"
-    READING = "reading_comprehension"
-    FILL_IN_BLANK = "fill_in_blank"
-    MATCHING = "matching"
-    ORDERING = "ordering"
-    DRAG_AND_DROP = "drag_and_drop"
+    DIAGRAM_LABELING = "diagram_labeling"
+    
+    # === WRITING ===
+    WRITING_TASK_1 = "writing_task_1"
+    WRITING_TASK_2 = "writing_task_2"
+    
+    # === SPEAKING ===
+    SPEAKING_PART_1 = "speaking_part_1"
+    SPEAKING_PART_2 = "speaking_part_2"
+    SPEAKING_PART_3 = "speaking_part_3"
+    
+    @staticmethod
+    def get_by_skill(skill_area: 'SkillArea') -> list['QuestionType']:
+        """Trả về list QuestionType theo skill area"""
+        mapping = {
+            SkillArea.READING: [
+                QuestionType.MULTIPLE_CHOICE,
+                QuestionType.TRUE_FALSE_NOT_GIVEN,
+                QuestionType.YES_NO_NOT_GIVEN,
+                QuestionType.MATCHING_HEADINGS,
+                QuestionType.MATCHING_INFORMATION,
+                QuestionType.MATCHING_FEATURES,
+                QuestionType.SENTENCE_COMPLETION,
+                QuestionType.SUMMARY_COMPLETION,
+                QuestionType.NOTE_COMPLETION,
+                QuestionType.SHORT_ANSWER,
+                QuestionType.DIAGRAM_LABELING,
+            ],
+            SkillArea.LISTENING: [
+                QuestionType.MULTIPLE_CHOICE,
+                QuestionType.SENTENCE_COMPLETION,
+                QuestionType.SUMMARY_COMPLETION,
+                QuestionType.NOTE_COMPLETION,
+                QuestionType.SHORT_ANSWER,
+                QuestionType.DIAGRAM_LABELING,
+                QuestionType.MATCHING_FEATURES,
+            ],
+            SkillArea.WRITING: [
+                QuestionType.WRITING_TASK_1,
+                QuestionType.WRITING_TASK_2,
+            ],
+            SkillArea.SPEAKING: [
+                QuestionType.SPEAKING_PART_1,
+                QuestionType.SPEAKING_PART_2,
+                QuestionType.SPEAKING_PART_3,
+            ],
+        }
+        return mapping.get(skill_area, [])
+    
+    @staticmethod
+    def get_metadata(question_type: 'QuestionType') -> dict:
+        """Trả về metadata cho FE render"""
+        metadata = {
+            # === READING & LISTENING ===
+            QuestionType.MULTIPLE_CHOICE: {
+                "label": "Multiple Choice",
+                "description": "Choose the correct letter.",
+                "allows_multiple": True,  # Có thể "Choose TWO letters"
+                "requires_options": True,
+                "auto_gradable": True,
+            },
+            QuestionType.TRUE_FALSE_NOT_GIVEN: {
+                "label": "True / False / Not Given",
+                "description": "Identify if the statement agrees with the information.",
+                "allows_multiple": False,
+                "requires_options": False, # Options cố định [True, False, Not Given]
+                "auto_gradable": True,
+            },
+            QuestionType.YES_NO_NOT_GIVEN: {
+                "label": "Yes / No / Not Given",
+                "description": "Identify if the statement agrees with the views of the writer.",
+                "allows_multiple": False,
+                "requires_options": False, # Options cố định [Yes, No, Not Given]
+                "auto_gradable": True,
+            },
+            QuestionType.MATCHING_HEADINGS: {
+                "label": "Matching Headings",
+                "description": "Choose the correct heading for each paragraph.",
+                "allows_multiple": False,
+                "requires_options": True, # List of headings (i, ii, iii...)
+                "auto_gradable": True,
+            },
+            QuestionType.MATCHING_INFORMATION: {
+                "label": "Matching Information",
+                "description": "Which paragraph contains the following information?",
+                "allows_multiple": False, # Một câu hỏi chỉ map vào 1 đoạn (dù 1 đoạn có thể dùng nhiều lần)
+                "requires_options": True, # List of paragraphs (A, B, C...)
+                "auto_gradable": True,
+            },
+            QuestionType.MATCHING_FEATURES: {
+                "label": "Matching Features",
+                "description": "Match items with a list of options (e.g., researchers, dates).",
+                "allows_multiple": False,
+                "requires_options": True, # List of features/names box
+                "auto_gradable": True,
+            },
+            QuestionType.SENTENCE_COMPLETION: {
+                "label": "Sentence Completion",
+                "description": "Complete the sentences using words from the text.",
+                "allows_multiple": False,
+                "requires_options": False,
+                "auto_gradable": False, # Text input cần fuzzy match/normalization
+                "word_limit_required": True,
+            },
+            QuestionType.SUMMARY_COMPLETION: {
+                "label": "Summary Completion",
+                "description": "Complete the summary.",
+                "allows_multiple": False,
+                # Summary có 2 dạng: Điền từ (No options) hoặc Chọn từ box (Has options)
+                # Logic FE cần check field options có data không để render input text hay dropdown/drag-drop
+                "requires_options": False, 
+                "auto_gradable": False, 
+                "word_limit_required": True,
+            },
+            QuestionType.NOTE_COMPLETION: {
+                "label": "Note/Table/Flow-chart Completion",
+                "description": "Complete the notes/table/flow-chart.",
+                "allows_multiple": False,
+                "requires_options": False,
+                "auto_gradable": False,
+                "word_limit_required": True,
+            },
+            QuestionType.SHORT_ANSWER: {
+                "label": "Short Answer",
+                "description": "Answer the questions with words from the text.",
+                "allows_multiple": False,
+                "requires_options": False,
+                "auto_gradable": False,
+                "word_limit_required": True,
+            },
+            QuestionType.DIAGRAM_LABELING: {
+                "label": "Diagram Labeling",
+                "description": "Label the parts of the diagram.",
+                "allows_multiple": False,
+                "requires_options": False,
+                "requires_image": True, # Bắt buộc phải có hình ảnh diagram
+                "auto_gradable": False,
+                "word_limit_required": True,
+            },
+            
+            # === WRITING ===
+            QuestionType.WRITING_TASK_1: {
+                "label": "Writing Task 1",
+                "description": "Describe graph/chart/process/map (min 150 words).",
+                "allows_multiple": False,
+                "requires_options": False,
+                "auto_gradable": False,
+                "requires_rubric": True,
+                "requires_image": True, # Thường Task 1 phải có hình đề bài
+                "min_words": 150,
+            },
+            QuestionType.WRITING_TASK_2: {
+                "label": "Writing Task 2",
+                "description": "Write an essay in response to a point of view/argument (min 250 words).",
+                "allows_multiple": False,
+                "requires_options": False,
+                "auto_gradable": False,
+                "requires_rubric": True,
+                "min_words": 250,
+            },
+            
+            # === SPEAKING ===
+            QuestionType.SPEAKING_PART_1: {
+                "label": "Speaking Part 1",
+                "description": "Introduction & Interview (4-5 minutes).",
+                "allows_multiple": False,
+                "requires_options": False,
+                "auto_gradable": False,
+                "requires_rubric": True,
+                "requires_audio_response": True, # Học sinh phải ghi âm
+            },
+            QuestionType.SPEAKING_PART_2: {
+                "label": "Speaking Part 2",
+                "description": "Individual Long Turn (Cue Card). 1 min preparation, 2 min talk.",
+                "allows_multiple": False,
+                "requires_options": False,
+                "auto_gradable": False,
+                "requires_rubric": True,
+                "requires_audio_response": True,
+                "has_preparation_time": True, # Metadata riêng cho Part 2 để FE hiện timer chuẩn bị
+            },
+            QuestionType.SPEAKING_PART_3: {
+                "label": "Speaking Part 3",
+                "description": "Two-way Discussion based on Part 2 topic (4-5 minutes).",
+                "allows_multiple": False,
+                "requires_options": False,
+                "auto_gradable": False,
+                "requires_rubric": True,
+                "requires_audio_response": True,
+            },
+        }
+        return metadata.get(question_type, {})
+    
+    @staticmethod
+    def is_auto_gradable(question_type: 'QuestionType') -> bool:
+        """Check if question type can be auto-graded"""
+        metadata = QuestionType.get_metadata(question_type)
+        return metadata.get("auto_gradable", False)
+    
+    @staticmethod
+    def requires_rubric(question_type: 'QuestionType') -> bool:
+        """Check if question type requires rubric scoring"""
+        metadata = QuestionType.get_metadata(question_type)
+        return metadata.get("requires_rubric", False)
 
 
 class SkillArea(enum.Enum):
@@ -169,7 +379,11 @@ class TestSectionPart(BaseModel):
     name = Column(String(255), nullable=False)
     order_number = Column(Integer, nullable=False)
 
-    content = Column(Text)
+    passage_id = Column(
+        UUID(as_uuid=True), 
+        ForeignKey("content_passages.id"),
+        nullable=True  # Vì Speaking Part 1 không cần passage
+    )
     instructions = Column(Text)
 
     audio_url = Column(String)
@@ -179,7 +393,7 @@ class TestSectionPart(BaseModel):
     max_questions = Column(Integer)
 
     test_section = relationship("TestSection", back_populates="parts")
-
+    passage = relationship("ContentPassage", back_populates="section_parts")
     question_groups = relationship(
         "QuestionGroup",
         back_populates="part",
@@ -299,6 +513,7 @@ class TestQuestion(BaseModel):
     group_id = Column(UUID(as_uuid=True), ForeignKey("question_groups.id", ondelete="CASCADE"), nullable=False)
 
     order_number = Column(Integer, nullable=False)
+    group_order_number = Column(Integer, nullable=False)
     points = Column(Numeric(4, 2), default=1, nullable=False)
     required = Column(Boolean, default=True, nullable=False)
 
@@ -309,6 +524,8 @@ class TestQuestion(BaseModel):
     __table_args__ = (
         UniqueConstraint("test_id", "order_number"),
         UniqueConstraint("test_id", "question_id"),
+        UniqueConstraint("group_id", "group_order_number"),
+        CheckConstraint("group_order_number > 0"),
         CheckConstraint("order_number > 0"),
     )
 
@@ -354,6 +571,8 @@ class TestAttempt(BaseModel):
     __table_args__ = (
         UniqueConstraint("test_id", "student_id", "attempt_number"),
         CheckConstraint("attempt_number > 0"),
+        Index("idx_test_attempts_test_id_status", "test_id", "status"),
+        Index("idx_test_attempts_student_id", "student_id"),
     )
 
 
@@ -366,17 +585,27 @@ class TestResponse(BaseModel):
     response_text = Column(Text)
     response_data = Column(JSONB)
     audio_response_url = Column(String)
-
-    is_correct = Column(Boolean)
-    points_earned = Column(Numeric(4, 2), default=0, nullable=False)
-
+    
     auto_graded = Column(Boolean, default=True, nullable=False)
-    feedback = Column(Text)
 
-    ai_score = Column(Numeric(4, 2))
+    # AUTO grading (Reading/Listening)
+    is_correct = Column(Boolean)
+    points_earned = Column(Numeric(4, 2), default=0)
+    
+    # MANUAL grading (Writing/Speaking)
+    rubric_scores = Column(JSONB)  # {"task_achievement": 7, "coherence": 6.5, ...}
+    band_score = Column(Numeric(3, 1))     # Band score (0-9, step 0.5)
+
+    # AI grading (for manual gradable)
+    ai_points_earned = Column(Numeric(4, 2), default=0)
+    ai_band_score = Column(Numeric(3, 1))
+    ai_rubric_scores = Column(JSONB)
     ai_feedback = Column(Text)
 
-    teacher_score = Column(Numeric(4, 2))
+    # TEACHER OVERRIDE (for manual gradable)
+    teacher_points_earned = Column(Numeric(4, 2), default=0)
+    teacher_band_score = Column(Numeric(3, 1))
+    teacher_rubric_scores = Column(JSONB)
     teacher_feedback = Column(Text)
 
     time_spent_seconds = Column(Integer)
@@ -388,4 +617,42 @@ class TestResponse(BaseModel):
     __table_args__ = (
         UniqueConstraint("attempt_id", "question_id"),
         CheckConstraint("points_earned >= 0"),
+        CheckConstraint("band_score IS NULL OR (band_score >= 0 AND band_score <= 9)"),
+        CheckConstraint("ai_band_score IS NULL OR (ai_band_score >= 0 AND ai_band_score <= 9)"),
+        CheckConstraint("teacher_band_score IS NULL OR (teacher_band_score >= 0 AND teacher_band_score <= 9)"),
+        Index("idx_test_responses_attempt_id", "attempt_id"),
     )
+
+class ContentPassage(BaseModel):
+    """Lưu reading passage, listening audio script, context chung"""
+    __tablename__ = "content_passages"
+    
+    title = Column(String(255), nullable=False)
+    content_type = Column(
+        Enum("reading_passage", "listening_audio", "speaking_cue_card", name="content_type"),
+        nullable=False
+    )
+    
+    # Content
+    text_content = Column(Text)  # Reading passage text
+    audio_url = Column(String)   # Listening audio URL
+    image_url = Column(String)   # Diagram, map, chart...
+    
+    # Metadata
+    topic = Column(String(100))  # VD: "Environment", "Technology"
+    difficulty_level = Column(Enum(DifficultyLevel, values_callable=lambda x: [e.value for e in x], name="difficulty_level"))
+    word_count = Column(Integer)
+    duration_seconds = Column(Integer)  # Cho listening
+    
+    # Reusability
+    status = Column(
+        Enum(ContentStatus, values_callable=lambda x: [e.value for e in x], name="content_status"),
+        default=ContentStatus.ACTIVE,
+        nullable=False
+    )
+    usage_count = Column(Integer, default=0)
+    
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    
+    # Relationships
+    section_parts = relationship("TestSectionPart", back_populates="passage")

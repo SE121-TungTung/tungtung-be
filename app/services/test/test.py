@@ -69,12 +69,13 @@ class TestService:
             db.flush()
 
             for part in sec.parts:
+                # ================= FIX #1 =================
                 part_obj = TestSectionPart(
                     test_section_id=section.id,
                     structure_part_id=part.structure_part_id,
                     name=part.name,
                     order_number=part.order_number,
-                    content=part.content,
+                    passage_id=part.passage_id,  # ✅ FIX
                     min_questions=part.min_questions,
                     max_questions=part.max_questions,
                     audio_url=part.audio_url,
@@ -96,8 +97,10 @@ class TestService:
                     db.add(group)
                     db.flush()
 
+                    # ================= FIX #2 =================
+                    group_order = 1
+
                     for q in group_data.questions:
-                        # Logic reuse/create question (Giữ nguyên)
                         if q.id:
                             question = db.query(QuestionBank).filter(
                                 QuestionBank.id == q.id,
@@ -130,16 +133,18 @@ class TestService:
                             group_id=group.id,
                             question_id=question.id,
                             order_number=global_order,
-                            points=q.points, # Override points in link table
+                            group_order_number=group_order,  # ✅ FIX
+                            points=q.points,
                             required=True
                         )
                         db.add(test_question)
+
                         global_order += 1
+                        group_order += 1
 
         db.commit()
         db.refresh(test)
         return test
-
 
     # ============================================================
     # READ TEST
@@ -152,32 +157,6 @@ class TestService:
         test = self._load_test_structure(db, test_id, for_student=False)
         return TestTeacherResponse.model_validate(self.build_test_response(test))
 
-    # ============================================================
-    # LOAD STRUCTURE
-    # ============================================================
-    def _load_test_structure(self, db: Session, test_id: UUID, for_student: bool):
-
-        query = (
-            db.query(Test)
-            .options(
-                joinedload(Test.sections)
-                .joinedload(TestSection.parts)
-                .joinedload(TestSectionPart.question_groups)
-                .joinedload(QuestionGroup.test_questions)
-                .joinedload(TestQuestion.question)
-            )
-            .filter(Test.id == test_id, Test.deleted_at.is_(None))
-        )
-
-        if for_student:
-            query = query.filter(Test.status == TestStatus.PUBLISHED)
-
-        test = query.first()
-        if not test:
-            raise HTTPException(404, "Test not found")
-
-        return test
-    
     # ============================================================
     # LIST TESTS
     # ============================================================
@@ -523,16 +502,44 @@ class TestService:
             "start_time": test.start_time,
             "end_time": test.end_time,
         }
+    
+    # ============================================================
+    # LOAD STRUCTURE
+    # ============================================================
+    def _load_test_structure(self, db: Session, test_id: UUID, for_student: bool):
+        """
+        Load test structure với eager loading đầy đủ
+        """
+        query = (
+            db.query(Test)
+            .options(
+                joinedload(Test.sections)
+                .joinedload(TestSection.parts)
+                .joinedload(TestSectionPart.passage),  # ✅ FIX
+
+                joinedload(Test.sections)
+                .joinedload(TestSection.parts)
+                .joinedload(TestSectionPart.question_groups)
+                .joinedload(QuestionGroup.test_questions)
+                .joinedload(TestQuestion.question)
+            )
+            .filter(Test.id == test_id, Test.deleted_at.is_(None))
+        )
+
+        if for_student:
+            query = query.filter(Test.status == TestStatus.PUBLISHED)
+
+        test = query.first()
+        if not test:
+            raise HTTPException(404, "Test not found")
+
+        return test
 
     # ============================================================
     # BUILD RESPONSE
     # ============================================================
     def build_test_response(self, test: Test):
-        """
-        Hàm này xây dựng một Dictionary chứa đầy đủ thông tin (Superset).
-        Pydantic (TestResponse hoặc TestTeacherResponse) sẽ tự động filter 
-        các field cần thiết dựa trên Schema definition.
-        """
+
         sections = []
 
         for section in test.sections:
@@ -544,13 +551,16 @@ class TestService:
                 for group in part.question_groups:
                     questions = []
 
-                    for tq in group.test_questions:
-                        # tq là TestQuestion (bảng trung gian)
-                        # qb là QuestionBank (bảng gốc)
+                    # ================= OPTIONAL SORT =================
+                    sorted_questions = sorted(
+                        group.test_questions,
+                        key=lambda tq: tq.group_order_number
+                    )
+
+                    for tq in sorted_questions:
                         qb = tq.question
-                        
+
                         questions.append({
-                            # Base fields
                             "id": qb.id,
                             "title": qb.title,
                             "question_text": qb.question_text,
@@ -561,18 +571,17 @@ class TestService:
                             "image_url": qb.image_url,
                             "audio_url": qb.audio_url,
                             "tags": qb.tags,
-                            
-                            # Updated fields from Link Table & Schema changes
-                            "points": int(tq.points or 0), # Lấy points từ TestQuestion (override), ép kiểu int theo schema
-                            "order_number": tq.order_number, # Lấy từ TestQuestion
-                            "status": qb.status.value if hasattr(qb.status, 'value') else str(qb.status),
-                            "visible_metadata": qb.extra_metadata, # Rename extra -> visible
 
-                            # Teacher fields (Student schema sẽ ignore cái này)
+                            "points": int(tq.points or 0),
+                            "order_number": tq.order_number,
+                            "group_order_number": tq.group_order_number,  # ✅ FIX
+                            "status": qb.status.value if hasattr(qb.status, 'value') else str(qb.status),
+                            "visible_metadata": qb.extra_metadata,
+
                             "correct_answer": qb.correct_answer,
                             "rubric": qb.rubric,
                             "explanation": qb.explanation if hasattr(qb, 'explanation') else None,
-                            "internal_metadata": qb.extra_metadata, # Teacher thấy full metadata
+                            "internal_metadata": qb.extra_metadata,
                         })
 
                     groups.append({
@@ -585,17 +594,29 @@ class TestService:
                         "questions": questions
                     })
 
+                # ================= FIX PASSAGE =================
+                passage_data = None
+                if part.passage:
+                    passage_data = {
+                        "id": part.passage.id,
+                        "title": part.passage.title,
+                        "text_content": part.passage.text_content,
+                        "audio_url": part.passage.audio_url,
+                        "image_url": part.passage.image_url,
+                        "duration_seconds": part.passage.duration_seconds
+                    }
+
                 parts.append({
                     "id": part.id,
                     "name": part.name,
                     "order_number": part.order_number,
-                    "content": part.content,
+                    "passage": passage_data,  # ✅ FIX
                     "min_questions": part.min_questions,
                     "max_questions": part.max_questions,
                     "image_url": part.image_url,
                     "audio_url": part.audio_url,
                     "instructions": part.instructions,
-                    "structure_part_id": part.structure_part_id, # For teacher
+                    "structure_part_id": part.structure_part_id,
                     "question_groups": groups
                 })
 
@@ -606,11 +627,10 @@ class TestService:
                 "skill_area": section.skill_area.value if section.skill_area else None,
                 "time_limit_minutes": section.time_limit_minutes,
                 "instructions": section.instructions,
-                "structure_section_id": section.structure_section_id, # For teacher
+                "structure_section_id": section.structure_section_id,
                 "parts": parts
             })
 
-        # Test Root Response
         return {
             "id": test.id,
             "title": test.title,
@@ -618,8 +638,6 @@ class TestService:
             "instructions": test.instructions,
             "test_type": test.test_type.value if test.test_type else "standard",
             "time_limit_minutes": test.time_limit_minutes,
-            
-            # New Config Fields (Required by updated Schema)
             "total_points": float(test.total_points or 0),
             "passing_score": float(test.passing_score or 0),
             "max_attempts": test.max_attempts or 1,
@@ -629,8 +647,6 @@ class TestService:
             "end_time": test.end_time,
             "status": test.status.value if hasattr(test.status, 'value') else str(test.status),
             "ai_grading_enabled": test.ai_grading_enabled or False,
-
-            # Teacher/Admin Fields
             "created_by": test.created_by,
             "created_at": test.created_at,
             "updated_at": test.updated_at,
@@ -638,7 +654,6 @@ class TestService:
             "course_id": test.course_id,
             "exam_type_id": test.exam_type_id,
             "structure_id": test.structure_id,
-
             "sections": sections
         }
 
