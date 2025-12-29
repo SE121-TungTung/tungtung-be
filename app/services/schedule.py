@@ -75,10 +75,12 @@ class ScheduleService:
         teacher_id: UUID,
         session_date: date,
         time_slots: List[int],
-        exclude_session_id: UUID = None
+        exclude_session_id: UUID = None,
+        proposed_sessions: List[SessionProposal] = None # <--- FIX 1: Thêm tham số này
     ) -> bool:
         """Kiểm tra teacher có bận vào time slots này không (bằng cách so sánh time_slots)."""
         
+        # 1. Check trong DB (Lịch đã lưu)
         query = db.query(ClassSession).filter(
             ClassSession.teacher_id == teacher_id,
             ClassSession.session_date == session_date,
@@ -93,6 +95,15 @@ class ScheduleService:
         for session in existing_sessions:
             if set(session.time_slots) & set(time_slots):
                 return True
+
+        # 2. Check trong RAM (Lịch đang đề xuất - chưa lưu DB) <--- FIX 2: Check thêm ở đây
+        if proposed_sessions:
+            for p in proposed_sessions:
+                # Nếu cùng giáo viên và cùng ngày
+                if p.teacher_id == teacher_id and p.session_date == session_date:
+                    # Kiểm tra trùng giờ
+                    if set(p.time_slots) & set(time_slots):
+                        return True
                 
         return False
     
@@ -102,10 +113,12 @@ class ScheduleService:
         room_id: UUID,
         session_date: date,
         time_slots: List[int],
-        exclude_session_id: UUID = None
+        exclude_session_id: UUID = None,
+        proposed_sessions: List[SessionProposal] = None # <--- FIX 3: Thêm tham số này
     ) -> bool:
         """Kiểm tra phòng có trống không (bằng cách so sánh time_slots)."""
         
+        # 1. Check trong DB
         query = db.query(ClassSession).filter(
             ClassSession.room_id == room_id,
             ClassSession.session_date == session_date,
@@ -120,6 +133,13 @@ class ScheduleService:
         for session in existing_sessions:
             if set(session.time_slots) & set(time_slots):
                 return True
+        
+        # 2. Check trong RAM <--- FIX 4: Check thêm ở đây để tránh trùng phòng giữa các lớp đang xếp
+        if proposed_sessions:
+            for p in proposed_sessions:
+                if p.room_id == room_id and p.session_date == session_date:
+                    if set(p.time_slots) & set(time_slots):
+                        return True
                 
         return False
     
@@ -128,7 +148,8 @@ class ScheduleService:
         db: Session,
         session_date: date,
         time_slots: List[int],
-        min_capacity: int
+        min_capacity: int,
+        proposed_sessions: List[SessionProposal] = None # <--- FIX 5: Thêm tham số này
     ) -> Optional[UUID]:
         """Tìm phòng trống phù hợp (ưu tiên phòng nhỏ nhất)."""
         
@@ -139,7 +160,8 @@ class ScheduleService:
         ).order_by(Room.capacity).all()
         
         for room in rooms:
-            if not self._check_room_conflict(db, room.id, session_date, time_slots):
+            # Truyền proposed_sessions xuống để check conflict
+            if not self._check_room_conflict(db, room.id, session_date, time_slots, proposed_sessions=proposed_sessions):
                 return room.id
         
         return None
@@ -264,7 +286,7 @@ class ScheduleService:
                     continue
 
                 if rule:
-                    # 2. Thực hiện xếp lịch và kiểm tra tất cả xung đột (DB + Request)
+                    # 2. Thực hiện xếp lịch và kiểm tra tất cả xung đột (DB + Request + MEMORY)
                     result = self._attempt_to_schedule_session(
                         db=db,
                         class_obj=class_obj,
@@ -272,7 +294,8 @@ class ScheduleService:
                         rule=rule,
                         sessions_created_for_class=sessions_created_for_class,
                         request_conflicts=request.class_conflict,
-                        request_teacher_conflicts=request.teacher_conflict
+                        request_teacher_conflicts=request.teacher_conflict,
+                        successful_sessions=successful_sessions # <--- FIX 6: Truyền list đã tạo để check chéo
                     )
 
                     # 3. Xử lý kết quả
@@ -282,7 +305,7 @@ class ScheduleService:
                     else:
                         conflicts.append(result) # result là ConflictInfo
                 
-                # Chuyển sang ngày tiếp theo
+                # Chuyển sang ngày tiếp theo (FIX BUG: Move outside if block to prevent infinite loop)
                 current_date += timedelta(days=1)
             
             # --- B4: KIỂM TRA BẤT KHẢ THI ---
@@ -630,7 +653,8 @@ class ScheduleService:
         rule: Dict,
         sessions_created_for_class: int,
         request_conflicts: Optional[Dict[str, Dict[str, List[int]]]],
-        request_teacher_conflicts: Optional[Dict[str, Dict[str, List[int]]]]
+        request_teacher_conflicts: Optional[Dict[str, Dict[str, List[int]]]],
+        successful_sessions: List[SessionProposal] = [] # <--- FIX 7: Nhận list đã tạo
     ) -> Union[SessionProposal, ConflictInfo]:
         """Checks all conflicts for a given rule and creates a SessionProposal if successful."""
         
@@ -655,20 +679,20 @@ class ScheduleService:
                 reason="Teacher is manually marked as unavailable at this time (user input)."
             )
 
-        # 1. Check Teacher Conflict (from DB)
-        if self._check_teacher_conflict(db, teacher_id, current_date, time_slots):
+        # 1. Check Teacher Conflict (from DB AND Proposed Sessions)
+        if self._check_teacher_conflict(db, teacher_id, current_date, time_slots, proposed_sessions=successful_sessions):
             return ConflictInfo(
                 class_id=class_obj.id, class_name=class_obj.name, conflict_type="teacher_busy",
-                session_date=current_date, time_slots=time_slots, reason=f"Teacher {teacher_id} is busy (DB conflict)."
+                session_date=current_date, time_slots=time_slots, reason=f"Teacher {teacher_id} is busy (DB conflict or overlap with newly scheduled)."
             )
 
-        # 2. Find Available Room (Hard Constraint - includes DB conflict check)
-        room_id = self._find_available_room(db, current_date, time_slots, class_obj.max_students)
+        # 2. Find Available Room (Hard Constraint - includes DB AND Proposed Sessions check)
+        room_id = self._find_available_room(db, current_date, time_slots, class_obj.max_students, proposed_sessions=successful_sessions)
         
         if not room_id:
             return ConflictInfo(
                 class_id=class_obj.id, class_name=class_obj.name, conflict_type="room_unavailable",
-                session_date=current_date, time_slots=time_slots, reason="No available room found matching capacity."
+                session_date=current_date, time_slots=time_slots, reason="No available room found matching capacity or conflict."
             )
 
         # 3. SUCCESS: Create Session Proposal

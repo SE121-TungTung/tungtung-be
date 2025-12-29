@@ -5,7 +5,8 @@ from app.routers import (
     auth, users, 
     room, course, classes, enrollment, class_session,
     attendance, schedule, test, 
-    message, notification)
+    message, notification,
+    chatbot)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 from contextlib import asynccontextmanager
@@ -67,5 +68,6 @@ api_router.include_router(message.base_message_router, prefix="/messages", tags=
 api_router.include_router(message.base_recepient_router, prefix="/message-recipients", tags=["MessageRecipients (CRUD)"])
 api_router.include_router(test.router)
 api_router.include_router(notification.router)
+api_router.include_router(chatbot.router, prefix="/chatbot", tags=["AI Chat"])
 
 app.include_router(api_router, prefix="/api/v1")
