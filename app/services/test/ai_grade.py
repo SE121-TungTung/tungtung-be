@@ -72,3 +72,4 @@ class AIGradeService:
                 "raw": result
             }
 
+ai_grade_service = AIGradeService()

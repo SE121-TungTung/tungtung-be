@@ -41,11 +41,29 @@ class QuestionGroupCreate(BaseModel):
 
     questions: List[QuestionCreate]
 
+class PassageCreate(BaseModel):
+    """Schema for creating passage inline"""
+    title: str
+    content_type: str  # "reading_passage", "listening_audio", "speaking_cue_card"
+    text_content: Optional[str] = None
+    audio_url: Optional[str] = None
+    image_url: Optional[str] = None
+    topic: Optional[str] = None
+    difficulty_level: Optional[str] = None
+    word_count: Optional[int] = None
+    duration_seconds: Optional[int] = None
+
 class TestSectionPartCreate(BaseModel):
     structure_part_id: Optional[UUID]  # Link to ExamStructurePart if applicable
     name: str
     order_number: int
-    content: Optional[str] = None  
+
+     # Option 1: Link to existing passage
+    passage_id: Optional[UUID] = None
+    
+    # Option 2: Create new passage inline
+    passage: Optional[PassageCreate] = None
+
     min_questions: Optional[int] = None
     max_questions: Optional[int] = None
     audio_url: Optional[str] = None

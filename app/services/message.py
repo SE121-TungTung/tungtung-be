@@ -922,6 +922,7 @@ class MessageService:
         result = []
         for m in members:
             user = self.user_repo.get(db, id=m.user_id)
+            is_online = await manager.is_user_online(m.user_id)
             result.append({
                 'user_id': str(m.user_id),
                 'full_name': (user.first_name + " " + user.last_name) if user else "Unknown",
@@ -930,7 +931,7 @@ class MessageService:
                 'joined_at': m.joined_at,
                 'nickname': m.nickname,
                 'email': getattr(user, 'email', None) if user else None,
-                'is_online': manager.is_user_online(m.user_id)
+                'is_online': is_online
             })
         
         return result

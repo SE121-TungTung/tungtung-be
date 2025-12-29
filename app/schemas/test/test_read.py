@@ -46,7 +46,7 @@ class PartResponse(BaseModel):
     id: UUID4
     name: str
     order_number: int
-    content: Optional[str] = None
+    passage: Optional["PassageResponse"] = None
     min_questions: Optional[int] = None
     max_questions: Optional[int] = None
     image_url: Optional[str] = None
@@ -180,18 +180,37 @@ class TestListResponse(BaseModel):
 class QuestionResultResponse(BaseModel):
     question_id: UUID4
     question_text: str
+    question_type: str
+
     user_answer: Optional[str]
+    response_data: Optional[Any] = None
     audio_response_url: Optional[str] = None
     
-    ai_score: Optional[float]
-    ai_feedback: Optional[str]
+    # Auto-grading (Reading/Listening)
+    is_correct: Optional[bool] = None
+    auto_graded: bool
     
+    # Final scores
     points_earned: float
     max_points: float
-
-    teacher_score: Optional[float] = None
+    band_score: Optional[float] = None
+    
+    # Rubric details
+    rubric_scores: Optional[dict] = None
+    
+    # AI grading (đổi tên cho đúng)
+    ai_points_earned: Optional[float] = None
+    ai_band_score: Optional[float] = None
+    ai_rubric_scores: Optional[dict] = None
+    ai_feedback: Optional[str] = None
+    
+    # Teacher override (đổi tên cho đúng)
+    teacher_points_earned: Optional[float] = None
+    teacher_band_score: Optional[float] = None
+    teacher_rubric_scores: Optional[dict] = None
     teacher_feedback: Optional[str] = None
     
+    # Metadata
     time_spent_seconds: Optional[int] = None 
     flagged_for_review: bool = False
     
@@ -201,12 +220,38 @@ class TestAttemptDetailResponse(BaseModel):
     test_id: UUID4
     test_title: str
     student_id: UUID4
-    start_time: datetime
-    end_time: Optional[datetime]
-    total_score: Optional[float]
+
+    attempt_number: int
+    started_at: datetime
+    submitted_at: Optional[datetime] = None
+    time_taken_seconds: Optional[int] = None
+
+    total_score: Optional[float] = None
+    percentage_score: Optional[float] = None
+    band_score: Optional[float] = None
+    passed: Optional[bool] = None
+
     status: str
+
+    graded_by: Optional[UUID4] = None
+    graded_at: Optional[datetime] = None
+    
+    # Feedback
+    ai_feedback: Optional[dict] = None
+    teacher_feedback: Optional[str] = None
+
     # Danh sách kết quả từng câu
     details: List[QuestionResultResponse] 
 
     class Config:
         from_attributes = True
+
+class PassageResponse(BaseModel):
+    id: UUID4
+    title: str
+    text_content: Optional[str] = None
+    audio_url: Optional[str] = None
+    image_url: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    
+    model_config = {"from_attributes": True}
