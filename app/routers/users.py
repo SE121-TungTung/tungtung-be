@@ -204,3 +204,11 @@ async def update_user(
     """Update user (admin only)"""
     user_update = update_form.to_update_schema(UserUpdate)
     return await user_service.update_user(db, user_id, user_update, avatar_file, id_updated_by=current_user.id)
+
+@router.get("/overview", response_model=dict)
+async def get_user_overview(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """Get user overview statistics"""
+    return await user_service.get_user_overview(db, current_user=current_user)

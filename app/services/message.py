@@ -240,158 +240,195 @@ class MessageService:
         return new_message
     
     async def get_user_conversations(
-        self, 
-        db: Session, 
+        self,
+        db: Session,
         user_id: UUID
     ) -> List[ConversationResponse]:
         """
-        Get list of ALL conversations for a user (Direct + Group + Class)
-        OPTIMIZED: Solves N+1 Query problem using Joins and Subqueries.
+        Get all conversations of user (DIRECT + GROUP + CLASS)
+
+        Rules:
+        - GROUP/CLASS: show only if ChatRoomMember exists (hard delete)
+        - DIRECT: hide if user cleared chat (last_read_at),
+                show again only when new message arrives
         """
-        from sqlalchemy import func, or_, and_, distinct
+
+        from sqlalchemy import func, or_, and_
         from sqlalchemy.orm import aliased
         from app.models.message import MessageRecipient
-        
-        # 1. Subquery: Lấy tin nhắn cuối cùng của mỗi phòng (Dùng DISTINCT ON của Postgres)
+
+        # ======================================================
+        # 1. Last message per room (Postgres DISTINCT ON)
+        # ======================================================
         last_msg_sub = (
             db.query(
                 Message.chat_room_id,
-                Message.id,
-                Message.content,
-                Message.sender_id,
-                Message.created_at
+                Message.id.label("last_msg_id"),
+                Message.content.label("last_msg_content"),
+                Message.sender_id.label("last_msg_sender"),
+                Message.created_at.label("last_msg_time"),
             )
             .distinct(Message.chat_room_id)
-            .order_by(Message.chat_room_id, Message.created_at.desc())
+            .order_by(
+                Message.chat_room_id,
+                Message.created_at.desc(),
+            )
             .subquery()
         )
 
-        # 2. Subquery: Đếm số tin nhắn chưa đọc của user hiện tại trong mỗi phòng
+        # ======================================================
+        # 2. Unread count per room
+        # ======================================================
         unread_sub = (
             db.query(
                 Message.chat_room_id,
-                func.count(MessageRecipient.id).label("unread_count")
+                func.count(MessageRecipient.id).label("unread_count"),
             )
             .join(MessageRecipient, Message.id == MessageRecipient.message_id)
             .filter(
                 MessageRecipient.recipient_id == user_id,
-                MessageRecipient.read_at.is_(None)
+                MessageRecipient.read_at.is_(None),
             )
             .group_by(Message.chat_room_id)
             .subquery()
         )
 
-        # 3. Subquery: Đếm tổng thành viên trong mỗi phòng (cho Group/Class)
+        # ======================================================
+        # 3. Member count (GROUP / CLASS)
+        # ======================================================
         member_count_sub = (
             db.query(
                 ChatRoomMember.chat_room_id,
-                func.count(ChatRoomMember.user_id).label("member_count")
+                func.count(ChatRoomMember.user_id).label("member_count"),
             )
             .group_by(ChatRoomMember.chat_room_id)
             .subquery()
         )
 
-        # 4. Subquery: Lấy danh sách ID các phòng mà user là thành viên (Group membership)
-        user_membership_sub = (
-            db.query(ChatRoomMember.chat_room_id)
-            .filter(ChatRoomMember.user_id == user_id)
-            .subquery()
-        )
-
-        # 5. Alias cho User để join lấy thông tin người chat cùng (Direct Chat)
-        # Cần 2 alias vì trong Direct chat user có thể là participant1 hoặc participant2
+        # ======================================================
+        # 4. Alias
+        # ======================================================
         User1 = aliased(User, name="u1")
         User2 = aliased(User, name="u2")
 
-        # 6. MAIN QUERY: Join tất cả lại với nhau
-        results = (
+        # Alias member riêng cho user hiện tại
+        CRM = aliased(ChatRoomMember)
+
+        # ======================================================
+        # 5. MAIN QUERY
+        # ======================================================
+        rows = (
             db.query(
                 ChatRoom,
-                last_msg_sub.c.id.label("last_msg_id"),
-                last_msg_sub.c.content.label("last_msg_content"),
-                last_msg_sub.c.sender_id.label("last_msg_sender"),
-                last_msg_sub.c.created_at.label("last_msg_time"),
+                last_msg_sub.c.last_msg_id,
+                last_msg_sub.c.last_msg_content,
+                last_msg_sub.c.last_msg_sender,
+                last_msg_sub.c.last_msg_time,
                 func.coalesce(unread_sub.c.unread_count, 0).label("unread_count"),
                 func.coalesce(member_count_sub.c.member_count, 0).label("member_count"),
-                User1, # user ứng với participant1
-                User2  # user ứng với participant2
+                User1,
+                User2,
+                CRM.last_read_at.label("member_last_read_at"),
             )
             .outerjoin(last_msg_sub, ChatRoom.id == last_msg_sub.c.chat_room_id)
             .outerjoin(unread_sub, ChatRoom.id == unread_sub.c.chat_room_id)
             .outerjoin(member_count_sub, ChatRoom.id == member_count_sub.c.chat_room_id)
             .outerjoin(User1, ChatRoom.participant1_id == User1.id)
             .outerjoin(User2, ChatRoom.participant2_id == User2.id)
+            .outerjoin(
+                CRM,
+                and_(
+                    CRM.chat_room_id == ChatRoom.id,
+                    CRM.user_id == user_id,
+                ),
+            )
             .filter(
                 ChatRoom.deleted_at.is_(None),
                 ChatRoom.is_active.is_(True),
                 or_(
-                    # Điều kiện 1: Là Direct chat và user nằm trong participant1 hoặc participant2
+                    # ==========================
+                    # DIRECT
+                    # ==========================
                     and_(
                         ChatRoom.room_type == MessageType.DIRECT,
-                        or_(ChatRoom.participant1_id == user_id, ChatRoom.participant2_id == user_id)
+                        or_(
+                            ChatRoom.participant1_id == user_id,
+                            ChatRoom.participant2_id == user_id,
+                        ),
+                        or_(
+                            CRM.last_read_at.is_(None),
+                            last_msg_sub.c.last_msg_time > CRM.last_read_at,
+                        ),
                     ),
-                    # Điều kiện 2: Là Group chat và user là thành viên
-                    ChatRoom.id.in_(user_membership_sub)
-                )
+                    # ==========================
+                    # GROUP / CLASS
+                    # ==========================
+                    and_(
+                        ChatRoom.room_type != MessageType.DIRECT,
+                        CRM.id.isnot(None),
+                    ),
+                ),
             )
-            # Sắp xếp theo tin nhắn mới nhất, nếu không có thì lấy ngày tạo phòng
-            .order_by(ChatRoom.last_message_at.desc().nulls_last(), ChatRoom.created_at.desc())
+            .order_by(
+                ChatRoom.last_message_at.desc().nulls_last(),
+                ChatRoom.created_at.desc(),
+            )
             .all()
         )
 
-        # 7. Map kết quả từ DB ra Schema Response
-        conversations = []
-        for row in results:
+        # ======================================================
+        # 6. MAP RESULT → RESPONSE
+        # ======================================================
+        conversations: list[ConversationResponse] = []
+
+        for row in rows:
             room = row.ChatRoom
-            
-            # Mặc định lấy info từ room (cho Group/Class)
+
             title = room.title
             avatar_url = room.avatar_url
             description = room.description
-            member_count = row.member_count # Lấy từ subquery count
-            
-            # ✅ LOGIC MAPPING QUAN TRỌNG CHO DIRECT CHAT
+            member_count = row.member_count
+
+            # ---------- DIRECT ----------
             if room.room_type == MessageType.DIRECT:
-                # Direct chat: Title/Avatar phải là của người kia
                 other_user = row.u2 if room.participant1_id == user_id else row.u1
-                
+
                 if other_user:
                     title = f"{other_user.first_name} {other_user.last_name}"
                     avatar_url = other_user.avatar_url
-                    # Direct chat không có description, có thể để trống hoặc hiển thị trạng thái
-                    description = None 
+                    description = None
                 else:
-                    title = "Unknown User"
+                    title = "Unknown user"
                     avatar_url = None
-                
-                member_count = 2 # Direct luôn là 2 người
-            
-            # Map Last Message
-            last_message_obj = None
+
+                member_count = 2
+
+            # ---------- LAST MESSAGE ----------
+            last_message = None
             if row.last_msg_id:
-                last_message_obj = {
+                last_message = {
                     "message_id": str(row.last_msg_id),
                     "content": row.last_msg_content,
                     "sender_id": str(row.last_msg_sender),
-                    "timestamp": row.last_msg_time, # Pydantic tự serialize datetime
+                    "timestamp": row.last_msg_time,
                 }
 
-            conversations.append(ConversationResponse(
-                room_id=room.id,
-                room_type=room.room_type.value,
-                title=title or "No Title",
-                
-                # ✅ Các field mới đã được map
-                avatar_url=avatar_url,      
-                description=description,
-                member_count=member_count,
-                
-                last_message=last_message_obj,
-                last_message_at=room.last_message_at,
-                unread_count=row.unread_count
-            ))
-            
+            conversations.append(
+                ConversationResponse(
+                    room_id=room.id,
+                    room_type=room.room_type.value,
+                    title=title or "No title",
+                    avatar_url=avatar_url,
+                    description=description,
+                    member_count=member_count,
+                    last_message=last_message,
+                    last_message_at=room.last_message_at,
+                    unread_count=row.unread_count,
+                )
+            )
+
         return conversations
+
     
     async def get_or_create_direct_conversation(
         self, 
@@ -903,64 +940,82 @@ class MessageService:
             "message": "Chat room deleted successfully"
         }
     
-    async def get_group_members(self, db: Session, room_id: UUID, user_id: UUID):
-        """Get all members of a group with their details"""
-        # Check if user is member
+    async def get_group_members(
+        self,
+        db: Session,
+        room_id: UUID,
+        user_id: UUID
+    ):
+        """Get all members of a chat room (DIRECT or GROUP)"""
+
+        # 1️⃣ Validate room
         room = db.query(ChatRoom).filter(
             ChatRoom.id == room_id,
             ChatRoom.deleted_at.is_(None),
             ChatRoom.is_active.is_(True)
         ).first()
+
         if not room:
             raise HTTPException(status_code=404, detail="Group not found")
-        
-        members = []
 
-        if room.room_type is MessageType.DIRECT:
-            other_user_id = room.participant2_id if room.participant1_id == user_id else room.participant1_id
+        if room.room_type == MessageType.DIRECT:
+            other_user_id = (
+                room.participant2_id
+                if room.participant1_id == user_id
+                else room.participant1_id
+            )
+
             other_user = self.user_repo.get(db, id=other_user_id)
-            if other_user:
-                is_online = await manager.is_user_online(other_user_id)
-                members.append({
-                    'user_id': str(other_user.id),
-                    'full_name': other_user.first_name + " " + other_user.last_name,
-                    'avatar_url': getattr(other_user, 'avatar_url', None),
-                    'role': 'participant',
-                    'joined_at': None,
-                    'nickname': None,
-                    'email': getattr(other_user, 'email', None),
-                    'is_online': is_online
-                })
-        else:
-            member = db.query(ChatRoomMember).filter(
-                ChatRoomMember.chat_room_id == room_id,
-                ChatRoomMember.user_id == user_id
-            ).first()
-            
-            if not member:
-                raise HTTPException(status_code=403, detail="Not a member of this group")
-            
-            # Get all members with user info
-            members = db.query(ChatRoomMember).filter(
-                ChatRoomMember.chat_room_id == room_id
-            ).all()
-        
+            if not other_user:
+                return []
+
+            is_online = await manager.is_user_online(other_user_id)
+
+            return [{
+                "user_id": str(other_user.id),
+                "full_name": f"{other_user.first_name} {other_user.last_name}",
+                "avatar_url": getattr(other_user, "avatar_url", None),
+                "role": "participant",
+                "joined_at": None,
+                "nickname": None,
+                "email": getattr(other_user, "email", None),
+                "is_online": is_online
+            }]
+
+        member = db.query(ChatRoomMember).filter(
+            ChatRoomMember.chat_room_id == room_id,
+            ChatRoomMember.user_id == user_id
+        ).first()
+
+        if not member:
+            raise HTTPException(status_code=403, detail="Not a member of this group")
+
+        members = db.query(ChatRoomMember).filter(
+            ChatRoomMember.chat_room_id == room_id
+        ).all()
+
         result = []
+
         for m in members:
             user = self.user_repo.get(db, id=m.user_id)
             is_online = await manager.is_user_online(m.user_id)
+
             result.append({
-                'user_id': str(m.user_id),
-                'full_name': (user.first_name + " " + user.last_name) if user else "Unknown",
-                'avatar_url': getattr(user, 'avatar_url', None) if user else None,
-                'role': m.role.value,
-                'joined_at': m.joined_at,
-                'nickname': m.nickname,
-                'email': getattr(user, 'email', None) if user else None,
-                'is_online': is_online
+                "user_id": str(m.user_id),
+                "full_name": (
+                    f"{user.first_name} {user.last_name}"
+                    if user else "Unknown"
+                ),
+                "avatar_url": getattr(user, "avatar_url", None) if user else None,
+                "role": m.role.value,
+                "joined_at": m.joined_at,
+                "nickname": m.nickname,
+                "email": getattr(user, "email", None) if user else None,
+                "is_online": is_online
             })
-        
+
         return result
+
     
     async def _send_system_message(self, db: Session, room_id: UUID, content: str):
         """Send system message to group"""

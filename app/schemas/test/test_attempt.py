@@ -97,37 +97,3 @@ class QuestionResultDetail(BaseModel):
     # Metadata
     time_spent_seconds: Optional[int] = None
     flagged_for_review: bool = False
-
-# Schema chi tiết lịch sử làm bài (Dùng cho API get_attempt_detail)
-class TestAttemptDetailResponse(BaseModel):
-    id: UUID
-    test_id: UUID
-    test_title: str
-    student_id: UUID
-    
-    start_time: datetime
-    end_time: Optional[datetime] = None
-    submitted_at: Optional[datetime] = None
-    time_taken_seconds: Optional[int] = None
-    
-    total_score: Optional[float] = None
-    percentage_score: Optional[float] = None
-    band_score: Optional[float] = None
-    passed: Optional[bool] = None
-    status: str
-    
-    # Feedback Overall
-    ai_feedback: Optional[str] = None # JSON feedback
-    teacher_feedback: Optional[str] = None # String feedback
-    graded_by: Optional[UUID] = None
-    
-    # Security info
-    ip_address: Optional[str] = None
-    user_agent: Optional[str] = None
-    
-    # Danh sách kết quả từng câu
-    details: List[QuestionResultDetail]
-
-    model_config = {
-        "from_attributes": True
-    }
