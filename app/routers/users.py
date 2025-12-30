@@ -10,6 +10,7 @@ from app.models.user import User, UserRole, UserStatus
 from app.models.academic import ClassEnrollment, Class
 from uuid import UUID
 from app.routers.generator import create_crud_router
+from app.models.session_attendance import ClassSession
 
 delete_user_router = create_crud_router(
     model=User,
@@ -140,9 +141,8 @@ async def get_my_classes(
 ):
     """
     Lấy danh sách lớp mà user hiện tại đang tham gia (học sinh),
-    kèm giáo viên và danh sách học sinh cùng lớp.
+    kèm giáo viên, danh sách học sinh cùng lớp và các buổi học (sessions).
     """
-    # Lấy các class_id mà user này đang tham gia
     enrollments = (
         db.query(ClassEnrollment)
         .filter(
@@ -157,7 +157,6 @@ async def get_my_classes(
 
     class_ids = [enrollment.class_id for enrollment in enrollments]
 
-    # Lấy danh sách lớp + join giáo viên
     classes = (
         db.query(Class)
         .filter(
@@ -169,7 +168,6 @@ async def get_my_classes(
 
     result = []
     for class_ in classes:
-        # Lấy danh sách học sinh cùng lớp
         classmates = (
             db.query(User)
             .join(ClassEnrollment, ClassEnrollment.student_id == User.id)
@@ -178,6 +176,13 @@ async def get_my_classes(
                 User.deleted_at.is_(None),
                 ClassEnrollment.deleted_at.is_(None)
             )
+            .all()
+        )
+
+        sessions = (
+            db.query(ClassSession)
+            .filter(ClassSession.class_id == class_.id)
+            .order_by(ClassSession.session_date, ClassSession.start_time)
             .all()
         )
 
@@ -196,7 +201,8 @@ async def get_my_classes(
                     "email": student.email,
                     "avatar_url": student.avatar_url if student.avatar_url else None
                 } for student in classmates
-            ]
+            ],
+            "sessions": sessions 
         })
 
     return result

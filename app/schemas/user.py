@@ -1,9 +1,10 @@
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional, Dict, Any, List
-from datetime import datetime, date
+from datetime import datetime, date, time
 from app.models.user import UserRole, UserStatus
-import uuid
+from uuid import UUID
 from fastapi import Form
+
 
 # Base schemas
 class UserBase(BaseModel):
@@ -22,7 +23,7 @@ class UserBulkCreate(BaseModel):
     first_name: str
     last_name: str
     role: UserRole = UserRole.STUDENT
-    class_id: Optional[uuid.UUID] = None
+    class_id: Optional[UUID] = None
 
 class BulkImportRequest(BaseModel):
     """Schema đại diện cho toàn bộ request Bulk Import."""
@@ -65,7 +66,7 @@ class UserPasswordUpdate(BaseModel):
         return v
 
 class UserResponse(UserBase):
-    id: uuid.UUID
+    id: UUID
     role: UserRole
     status: UserStatus
     avatar_url: Optional[str] = None
@@ -76,12 +77,12 @@ class UserResponse(UserBase):
     model_config = {
         "from_attributes": True,
         "json_encoders": {
-            uuid.UUID: str   # ép UUID về string khi trả JSON
+            UUID: str   # ép UUID về string khi trả JSON
         }
     }
 
 class UserMiniResponse(BaseModel):
-    id: uuid.UUID
+    id: UUID
     full_name: str
     email: Optional[str] = None
     avatar_url: Optional[str] = None
@@ -89,23 +90,61 @@ class UserMiniResponse(BaseModel):
     model_config = {
         "from_attributes": True,
         "json_encoders": {
-            uuid.UUID: str   # ép UUID về string khi trả JSON
+            UUID: str   # ép UUID về string khi trả JSON
         }
     }
 
+class ClassSessionResponse(BaseModel):
+    id: UUID
+    class_id: UUID
+    
+    # Cho phép null vì room và substitute_teacher có thể null trong DB
+    room_id: Optional[UUID] = None
+    teacher_id: UUID
+    substitute_teacher_id: Optional[UUID] = None
+
+    # Time info
+    session_date: date
+    start_time: time
+    end_time: time
+    time_slots: List[int]
+
+    # Content
+    topic: Optional[str] = None
+    description: Optional[str] = None
+    
+    # JSONB fields: 
+    # materials default là list trong DB, homework có thể là dict hoặc list tùy logic
+    materials: List[Any] = [] 
+    homework: Optional[Any] = None
+
+    # Status
+    # Đảm bảo bạn đã import SessionStatus, nếu chưa thì thay bằng str tạm thời
+    status: Any # Thay Any bằng SessionStatus nếu đã import
+    attendance_taken: bool
+    notes: Optional[str] = None
+
+    # Actual times
+    actual_start_time: Optional[datetime] = None
+    actual_end_time: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
 class ClassWithMembersResponse(BaseModel):
-    id: uuid.UUID
+    id: UUID
     name: str
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     status: Optional[str] = None
     teacher: Optional[UserMiniResponse] = None
     students: List[UserMiniResponse] = []
+    sessions: List[ClassSessionResponse] = []
 
     model_config = {
         "from_attributes": True,
         "json_encoders": {
-            uuid.UUID: str   # ép UUID về string khi trả JSON
+            UUID: str   # ép UUID về string khi trả JSON
         }
     }
 
