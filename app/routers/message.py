@@ -178,12 +178,13 @@ async def add_group_members(
 async def remove_group_member(
     room_id: UUID,
     user_id: UUID,
+    new_admin_id: Optional[UUID],
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
     """Remove a member from group"""
     return await message_service.remove_member_from_group(
-        db, room_id, current_user.id, user_id
+        db, room_id, current_user.id, user_id, new_admin_id
     )
 
 @router.put("/groups/{room_id}")
@@ -195,7 +196,7 @@ async def update_group(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    """Update group information (admin only, support avatar upload)"""
+    """Update group information (room admin only, support avatar upload)"""
 
     update_data = GroupUpdateRequest(
         title=title,

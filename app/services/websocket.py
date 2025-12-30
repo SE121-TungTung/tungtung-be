@@ -261,6 +261,64 @@ class ConnectionManager:
             if user_id in self.active_connections:
                 await self.send_to_user(user_id, message)
 
+    async def notify_member_removed(
+        self,
+        room_id: UUID,
+        room_title: str,
+        removed_user_id: UUID,
+        remover_id: UUID
+    ):
+        """
+        Notify a user that they have been removed from a room.
+        """
+        message = {
+            "type": "member_removed",
+            "room_id": str(room_id),
+            "room_title": room_title,
+            "removed_by": str(remover_id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        await self.send_to_user(removed_user_id, message)
+
+    async def notify_member_added(
+        self,
+        room_id: UUID,
+        room_title: str,
+        added_user_ids: List[UUID],
+        added_by_user_id: UUID
+    ):
+        """
+        Notify users that they have been added to a room.
+        """
+        message = {
+            "type": "member_added",
+            "room_id": str(room_id),
+            "room_title": room_title,
+            "added_by": str(added_by_user_id),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        await self.broadcast_to_users(message, added_user_ids)
+
+    async def notify_group_updated(
+        self,
+        room_id: UUID,
+        updated_by_user_id: UUID,
+        updates: Dict[str, Any]
+    ):
+        """
+        Notify group members that the group has been updated.
+        """
+        
+        message = {
+            "type": "group_updated",
+            "room_id": str(room_id),
+            "updated_by": str(updated_by_user_id),
+            "updates": updates,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        
+        await self.broadcast_to_room(room_id, message, db_session=None)
+
     # =====================================================
     # STATS
     # =====================================================

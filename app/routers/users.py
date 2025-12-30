@@ -80,7 +80,7 @@ async def list_users(
     role: Optional[UserRole] = Query(None, description="Filter by user role"),
     search: Optional[str] = Query(None, description="Search in name and email"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """List users with filters (admin only)"""
     if search:
@@ -109,6 +109,14 @@ async def list_users(
         size=commons.limit,
         pages=pages
     )
+
+@router.get("/overview", response_model=dict)
+async def get_user_overview(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user)
+):
+    """Get user overview statistics"""
+    return user_service.get_user_overview(db, current_user=current_user)
 
 @router.get("/{user_id}", response_model=UserResponse)
 async def get_user(
@@ -204,11 +212,3 @@ async def update_user(
     """Update user (admin only)"""
     user_update = update_form.to_update_schema(UserUpdate)
     return await user_service.update_user(db, user_id, user_update, avatar_file, id_updated_by=current_user.id)
-
-@router.get("/overview", response_model=dict)
-async def get_user_overview(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
-):
-    """Get user overview statistics"""
-    return await user_service.get_user_overview(db, current_user=current_user)
