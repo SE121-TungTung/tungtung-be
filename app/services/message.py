@@ -6,7 +6,7 @@ from app.repositories.message import (
 from app.repositories.user import user_repository
 from app.services.websocket import manager
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, and_
 from uuid import UUID
 from typing import Dict, Any, List, Optional
 from app.schemas.message import MessageCreate, ConversationResponse, GroupCreateRequest, GroupUpdateRequest
@@ -201,42 +201,55 @@ class MessageService:
         
         # Handle Notifications (Background Task)
         if background_tasks and target_recipient_ids:
-            sender_user = db.query(User).filter(User.id == sender_id).first()
-            sender_name = (sender_user.first_name + " " + sender_user.last_name) if sender_user else "Someone"
+            # --- Check Mute status ---
+            muted_user_ids = db.query(ChatRoomMember.user_id).filter(
+                ChatRoomMember.chat_room_id == room.id,
+                ChatRoomMember.user_id.in_(target_recipient_ids),
+                ChatRoomMember.is_muted.is_(True)
+            ).all()
             
-            preview_content = content[:100] + "..." if len(content) > 100 else content
-
-            if room.room_type == MessageType.DIRECT:
-                noti_title = f"{sender_name} đã gửi tin nhắn cho bạn"
-                action_url = f"/messages/direct/{sender_id}" 
-            else:
-                group_name = getattr(room, 'title', 'Nhóm chat') or 'Nhóm chat'
-                noti_title = f"{sender_name} nhắn trong {group_name}"
-                action_url = f"/messages/group/{room.id}"
-
-            # Gửi noti cho danh sách target_recipient_ids (đã loại trừ sender)
-            for user_id_to_notify in target_recipient_ids:
-                noti_data = NotificationCreate(
-                    user_id=user_id_to_notify,
-                    title=noti_title,
-                    content=preview_content,
-                    notification_type=NotificationType.MESSAGE_RECEIVED,
-                    priority=NotificationPriority.NORMAL,
-                    action_url=action_url,
-                    data={
-                        "room_id": str(room.id),
-                        "message_id": str(new_message.id),
-                        "sender_id": str(sender_id)
-                    },
-                    channels=["in_app"]
-                )
+            # Convert list of tuples to set of UUIDs
+            muted_set = {m[0] for m in muted_user_ids}
+            
+            final_notify_ids = [uid for uid in target_recipient_ids if uid not in muted_set]
+            
+            if final_notify_ids:
+                sender_user = db.query(User).filter(User.id == sender_id).first()
+                sender_name = (sender_user.first_name + " " + sender_user.last_name) if sender_user else "Someone"
                 
-                background_tasks.add_task(
-                    notification_service.send_notification, 
-                    db, 
-                    noti_data
-                )
+                preview_content = content[:100] + "..." if len(content) > 100 else content
 
+                if room.room_type == MessageType.DIRECT:
+                    noti_title = f"{sender_name} đã gửi tin nhắn cho bạn"
+                    action_url = f"/messages/direct/{sender_id}" 
+                else:
+                    group_name = getattr(room, 'title', 'Nhóm chat') or 'Nhóm chat'
+                    noti_title = f"{sender_name} nhắn trong {group_name}"
+                    action_url = f"/messages/group/{room.id}"
+
+                # Chỉ gửi cho danh sách đã lọc (final_notify_ids)
+                for user_id_to_notify in final_notify_ids:
+                    noti_data = NotificationCreate(
+                        user_id=user_id_to_notify,
+                        title=noti_title,
+                        content=preview_content,
+                        notification_type=NotificationType.MESSAGE_RECEIVED,
+                        priority=NotificationPriority.NORMAL,
+                        action_url=action_url,
+                        data={
+                            "room_id": str(room.id),
+                            "message_id": str(new_message.id),
+                            "sender_id": str(sender_id)
+                        },
+                        channels=["in_app"]
+                    )
+                    
+                    background_tasks.add_task(
+                        notification_service.send_notification, 
+                        db, 
+                        noti_data
+                    )
+        
         return new_message
     
     async def get_user_conversations(
@@ -731,58 +744,74 @@ class MessageService:
         db: Session,
         room_id: UUID,
         remover_id: UUID,
-        user_id_to_remove: UUID
+        user_id_to_remove: UUID,
+        new_admin_id: Optional[UUID] = None
     ):
-        """Remove a member from group"""
-        # Get room
+        """
+        Remove a member from group.
+        If Admin leaves, they MUST provide `new_admin_id` if they are the last admin.
+        """
         room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
         if not room:
             raise HTTPException(status_code=404, detail="Group not found")
         
-        # Check permissions
         remover_member = db.query(ChatRoomMember).filter(
             ChatRoomMember.chat_room_id == room_id,
             ChatRoomMember.user_id == remover_id
         ).first()
         
-        # Allow if: (1) Admin removing anyone, or (2) User leaving themselves
         is_admin = remover_member and remover_member.role == MemberRole.ADMIN
         is_self_leave = remover_id == user_id_to_remove
         
         if not (is_admin or is_self_leave):
-            raise HTTPException(
-                status_code=403, 
-                detail="Only admins can remove members, or you can leave yourself"
-            )
+            raise HTTPException(403, "Only admins can remove members, or you can leave yourself")
         
-        # Remove member
         member_to_remove = db.query(ChatRoomMember).filter(
             ChatRoomMember.chat_room_id == room_id,
             ChatRoomMember.user_id == user_id_to_remove
         ).first()
         
         if not member_to_remove:
-            raise HTTPException(status_code=404, detail="Member not found in this group")
+            raise HTTPException(404, "Member not found")
         
-        # Prevent removing the last admin
         if member_to_remove.role == MemberRole.ADMIN:
-            admin_count = db.query(ChatRoomMember).filter(
+            remaining_admin_count = db.query(ChatRoomMember).filter(
                 ChatRoomMember.chat_room_id == room_id,
-                ChatRoomMember.role == MemberRole.ADMIN
+                ChatRoomMember.role == MemberRole.ADMIN,
+                ChatRoomMember.user_id != user_id_to_remove
             ).count()
             
-            if admin_count <= 1:
-                raise HTTPException(
-                    status_code=400, 
-                    detail="Cannot remove the last admin. Promote another member first."
+            if remaining_admin_count == 0:
+                if not new_admin_id:
+                     raise HTTPException(
+                        status_code=400, 
+                        detail="You are the last Admin. Please assign a new Admin before leaving."
+                    )
+                
+                new_admin_member = db.query(ChatRoomMember).filter(
+                    ChatRoomMember.chat_room_id == room_id,
+                    ChatRoomMember.user_id == new_admin_id
+                ).first()
+                
+                if not new_admin_member:
+                    raise HTTPException(404, "New admin candidate is not in this group")
+                
+                new_admin_member.role = MemberRole.ADMIN
+                db.add(new_admin_member)
+
+                new_admin_name = f"{new_admin_member.user.first_name} {new_admin_member.user.last_name}" if new_admin_member.user else "Someone"
+
+                await self._send_system_message(
+                    db, room_id, 
+                    f"Admin rights transferred to user {new_admin_name}"
                 )
+
         db.delete(member_to_remove)
         db.commit()
         
         deleted_user = self.user_repo.get(db, id=user_id_to_remove)
         deleted_user_name = (deleted_user.first_name + " " + deleted_user.last_name) if deleted_user else "Someone"
         
-        # Send notifications
         action = "left" if is_self_leave else "was removed from"
         await self._send_system_message(
             db,
@@ -793,7 +822,7 @@ class MessageService:
         await manager.notify_member_removed(
             room_id=room_id,
             removed_user_id=user_id_to_remove,
-            removed_by_user_id=remover_id,
+            remover_id=remover_id,
             room_title=room.title
         )
         
@@ -1044,13 +1073,34 @@ class MessageService:
         )
 
     def get_total_unread_count(self, db: Session, user_id: UUID):
-        """Get total unread message count across all conversations for a user"""
-        total_unread = db.query(func.count(MessageRecipient.id)).join(
-            Message, Message.id == MessageRecipient.message_id
-        ).filter(
-            MessageRecipient.recipient_id == user_id,
-            MessageRecipient.read_at.is_(None)
-        ).scalar()
+        """
+        Get total unread message count across all conversations, 
+        EXCLUDING muted conversations.
+        """
+        # Join MessageRecipient -> Message -> ChatRoomMember (để check mute)
+        # Sử dụng outerjoin với ChatRoomMember vì Direct Chat có thể chưa có record trong bảng Member
+        
+        total_unread = (
+            db.query(func.count(MessageRecipient.id))
+            .join(Message, Message.id == MessageRecipient.message_id)
+            .outerjoin(
+                ChatRoomMember,
+                and_(
+                    ChatRoomMember.chat_room_id == Message.chat_room_id,
+                    ChatRoomMember.user_id == user_id
+                )
+            )
+            .filter(
+                MessageRecipient.recipient_id == user_id,
+                MessageRecipient.read_at.is_(None),
+                # Chỉ đếm nếu user KHÔNG mute (is_muted là False hoặc NULL)
+                or_(
+                    ChatRoomMember.is_muted.is_(False),
+                    ChatRoomMember.is_muted.is_(None)
+                )
+            )
+            .scalar()
+        )
         
         return total_unread
 
