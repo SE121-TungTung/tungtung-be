@@ -45,7 +45,7 @@ class AddMembersRequest(BaseModel):
 class MemberResponse(BaseModel):
     user_id: UUID
     role: str
-    joined_at: datetime
+    joined_at: Optional[datetime] = None
     nickname: Optional[str]
     full_name: Optional[str]
     avatar_url: Optional[str]

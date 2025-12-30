@@ -12,6 +12,17 @@ from app.services.email import email_service
 import uuid
 import logging
 
+from uuid import UUID
+
+from datetime import date
+from sqlalchemy import func
+
+from app.models.academic import Class, Course, ClassEnrollment, EnrollmentStatus, ClassStatus
+from app.models.test import TestAttempt, Test, AttemptStatus
+from app.models.session_attendance import ClassSession
+from app.models.session_attendance import SessionStatus
+from app.models.user import UserStatus
+
 logger = logging.getLogger(__name__)
 from datetime import datetime
 from fastapi import UploadFile
@@ -252,6 +263,145 @@ class UserService(BaseService):
     
     async def get_all(self, db: Session, skip: int = 0, limit: int = 100) -> List[User]:
         return self.repository.get_all(db, skip, limit)
+    
+    def get_user_overview(self, db: Session, current_user: User) -> dict:
+        role = current_user.role
+        today = date.today()
+
+        if role == UserRole.STUDENT:
+            return self._get_student_stats(db, current_user.id, today)
+        elif role == UserRole.TEACHER:
+            return self._get_teacher_stats(db, current_user.id, today)
+        elif role in [UserRole.OFFICE_ADMIN, UserRole.CENTER_ADMIN]:
+            return self._get_center_admin_stats(db, today)
+        elif role == UserRole.SYSTEM_ADMIN:
+            return self._get_system_admin_stats(db)
+        
+        return {}
+
+    def _get_student_stats(self, db: Session, student_id: UUID, today: date) -> dict:
+        active_courses_count = (
+            db.query(ClassEnrollment)
+            .filter(ClassEnrollment.student_id == student_id, ClassEnrollment.status == EnrollmentStatus.ACTIVE)
+            .count()
+        )
+
+        upcoming_sessions_count = (
+            db.query(ClassSession)
+            .join(Class, ClassSession.class_id == Class.id)
+            .join(ClassEnrollment, ClassEnrollment.class_id == Class.id)
+            .filter(
+                ClassEnrollment.student_id == student_id,
+                ClassEnrollment.status == EnrollmentStatus.ACTIVE,
+                ClassSession.session_date >= today,
+                ClassSession.status == SessionStatus.SCHEDULED
+            )
+            .count()
+        )
+
+        attempts_query = db.query(TestAttempt.total_score).filter(
+            TestAttempt.student_id == student_id,
+            TestAttempt.status == AttemptStatus.GRADED
+        )
+        tests_taken = attempts_query.count()
+        
+        total_score = sum(a[0] for a in attempts_query.all() if a[0] is not None)
+        avg_score = round(total_score / tests_taken, 2) if tests_taken > 0 else 0.0
+
+        return {
+            "role": "student",
+            "active_courses": active_courses_count,
+            "upcoming_sessions_count": upcoming_sessions_count,
+            "tests_taken": tests_taken,
+            "average_test_score": avg_score
+        }
+
+    def _get_teacher_stats(self, db: Session, teacher_id: UUID, today: date) -> dict:
+        active_classes_count = db.query(Class).filter(
+            Class.teacher_id == teacher_id, 
+            Class.status == ClassStatus.ACTIVE
+        ).count()
+
+        total_students = (
+            db.query(ClassEnrollment.student_id)
+            .join(Class, ClassEnrollment.class_id == Class.id)
+            .filter(Class.teacher_id == teacher_id, ClassEnrollment.status == EnrollmentStatus.ACTIVE)
+            .distinct()
+            .count()
+        )
+
+        sessions_today = (
+            db.query(ClassSession)
+            .filter(
+                ClassSession.teacher_id == teacher_id,
+                ClassSession.session_date == today,
+                ClassSession.status == SessionStatus.SCHEDULED
+            )
+            .count()
+        )
+        
+        pending_grading = (
+            db.query(TestAttempt)
+            .join(Test, TestAttempt.test_id == Test.id)
+            .filter(Test.created_by == teacher_id, TestAttempt.status == AttemptStatus.SUBMITTED)
+            .count()
+        )
+
+        return {
+            "role": "teacher",
+            "active_classes": active_classes_count,
+            "total_students": total_students,
+            "sessions_today": sessions_today,
+            "pending_grading_count": pending_grading
+        }
+
+    def _get_center_admin_stats(self, db: Session, today: date) -> dict:
+
+        total_students = db.query(User).filter(
+            User.role == UserRole.STUDENT,
+            User.status == UserStatus.ACTIVE
+        ).count()
+
+        total_teachers = db.query(User).filter(
+            User.role == UserRole.TEACHER,
+            User.status == UserStatus.ACTIVE
+        ).count()
+
+        active_classes = db.query(Class).filter(
+            Class.status == ClassStatus.ACTIVE
+        ).count()
+
+        sessions_today = db.query(ClassSession).join(Class).filter(
+            ClassSession.session_date == today
+        ).count()
+
+        return {
+            "role": "center_admin",
+            "total_students": total_students,
+            "total_teachers": total_teachers,
+            "active_classes": active_classes,
+            "sessions_today_count": sessions_today
+        }
+
+    def _get_system_admin_stats(self, db: Session) -> dict:
+        total_users = db.query(User).count()
+        total_courses = db.query(Course).count()
+        active_classes = db.query(Class).filter(Class.status == ClassStatus.ACTIVE).count()
+        
+        users_by_role = (
+            db.query(User.role, func.count(User.id))
+            .group_by(User.role)
+            .all()
+        )
+        user_distribution = {role.value: count for role, count in users_by_role}
+
+        return {
+            "role": "system_admin",
+            "total_users": total_users,
+            "total_courses": total_courses,
+            "total_active_classes": active_classes,
+            "user_distribution": user_distribution
+        }
       
 
 # Initialize service instance

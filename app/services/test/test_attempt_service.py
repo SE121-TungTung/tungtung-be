@@ -17,9 +17,9 @@ from app.schemas.test.test_attempt import (
     SubmitAttemptRequest,
     SubmitAttemptResponse,
     QuestionResult,
-    TestAttemptDetailResponse,
     QuestionResultDetail
 )
+from app.schemas.test.test_read import TestAttemptDetailResponse
 from app.services.cloudinary import upload_and_save_metadata
 from app.models.file_upload import UploadType, AccessLevel
 
