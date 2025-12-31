@@ -2,7 +2,7 @@ from typing import List, Optional, Any
 from pydantic import BaseModel
 from uuid import UUID
 from datetime import datetime
-from app.models.test import TestType, QuestionType, DifficultyLevel, SkillArea
+from app.models.test import TestType, QuestionType, DifficultyLevel, SkillArea, TestStatus
 
 class QuestionCreate(BaseModel):
     id: Optional[UUID] = None  # For existing question reuse
@@ -54,7 +54,7 @@ class PassageCreate(BaseModel):
     duration_seconds: Optional[int] = None
 
 class TestSectionPartCreate(BaseModel):
-    structure_part_id: Optional[UUID]  # Link to ExamStructurePart if applicable
+    structure_part_id: Optional[UUID] = None # Link to ExamStructurePart if applicable
     name: str
     order_number: int
 
@@ -73,7 +73,7 @@ class TestSectionPartCreate(BaseModel):
     question_groups: List[QuestionGroupCreate]
 
 class TestSectionCreate(BaseModel):
-    structure_section_id: Optional[UUID]  # Link to ExamStructureSection if applicable
+    structure_section_id: Optional[UUID] = None  # Link to ExamStructureSection if applicable
     name: str
     order_number: int
     skill_area: SkillArea
@@ -101,7 +101,26 @@ class TestCreate(BaseModel):
 
     # Link to structure/template if this test follows a known structure (eg IELTS)
     test_type: Optional[TestType] = None
-    exam_type_id: Optional[UUID]  # Link to ExamType for predefined
-    structure_id: Optional[UUID]  # Link to ExamStructure for predefined
+    exam_type_id: Optional[UUID] = None # Link to ExamType for predefined
+    structure_id: Optional[UUID] = None  # Link to ExamStructure for predefined
 
     sections: List[TestSectionCreate]
+
+class TestUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    instructions: Optional[str] = None
+
+    time_limit_minutes: Optional[int] = None
+    passing_score: Optional[float] = None
+    max_attempts: Optional[int] = None
+
+    randomize_questions: Optional[bool] = None
+    show_results_immediately: Optional[bool] = None
+    ai_grading_enabled: Optional[bool] = None
+
+    start_time: Optional[datetime] = None
+    end_time: Optional[datetime] = None
+
+    # GỘP publish / unpublish
+    status: Optional[TestStatus] = None

@@ -312,7 +312,7 @@ class Test(BaseModel):
     end_time = Column(DateTime(timezone=True))
 
     status = Column(
-        Enum(TestStatus, values_callable=lambda x: [e.value for e in x], name="test_status"),
+        Enum(TestStatus, values_callable=lambda x: [e.value for e in x], native_enum=False, name="test_status"),
         default=TestStatus.DRAFT,
         nullable=False
     )
@@ -327,7 +327,7 @@ class Test(BaseModel):
     structure_id = Column(UUID(as_uuid=True), ForeignKey("exam_structures.id"))
 
     test_type = Column(
-        Enum(TestType, values_callable=lambda x: [e.value for e in x], name="test_type"),
+        Enum(TestType, values_callable=lambda x: [e.value for e in x], native_enum=False, name="test_type"),
         nullable=True
     )
 
@@ -353,7 +353,7 @@ class TestSection(BaseModel):
 
     name = Column(String(255), nullable=False)
     skill_area = Column(
-        Enum(SkillArea, values_callable=lambda x: [e.value for e in x], name="skill_area"),
+        Enum(SkillArea, values_callable=lambda x: [e.value for e in x], native_enum=False, name="skill_area"),
         nullable=False
     )
 
@@ -428,7 +428,7 @@ class QuestionGroup(BaseModel):
     order_number = Column(Integer, nullable=False)
 
     question_type = Column(
-        Enum(QuestionType, values_callable=lambda x: [e.value for e in x], name="question_type"),
+        Enum(QuestionType, values_callable=lambda x: [e.value for e in x], native_enum=False, name="question_type"),
         nullable=False
     )
 
@@ -458,17 +458,17 @@ class QuestionBank(BaseModel):
     question_text = Column(Text, nullable=False)
 
     question_type = Column(
-        Enum(QuestionType, values_callable=lambda x: [e.value for e in x], name="question_type"),
+        Enum(QuestionType, values_callable=lambda x: [e.value for e in x], native_enum=False, name="question_type"),
         nullable=False
     )
 
     skill_area = Column(
-        Enum(SkillArea, values_callable=lambda x: [e.value for e in x], name="skill_area"),
+        Enum(SkillArea, values_callable=lambda x: [e.value for e in x], native_enum=False, name="skill_area"),
         nullable=False
     )
 
     difficulty_level = Column(
-        Enum(DifficultyLevel, values_callable=lambda x: [e.value for e in x], name="difficulty_level")
+        Enum(DifficultyLevel, values_callable=lambda x: [e.value for e in x], native_enum=False, name="difficulty_level")
     )
 
     options = Column(JSONB)
@@ -486,7 +486,7 @@ class QuestionBank(BaseModel):
     success_rate = Column(Numeric(5, 2))
 
     status = Column(
-        Enum(ContentStatus, values_callable=lambda x: [e.value for e in x], name="content_status"),
+        Enum(ContentStatus, values_callable=lambda x: [e.value for e in x], native_enum=False, name="content_status"),
         default=ContentStatus.ACTIVE,
         nullable=False
     )
@@ -551,7 +551,7 @@ class TestAttempt(BaseModel):
     passed = Column(Boolean)
 
     status = Column(
-        Enum(AttemptStatus, values_callable=lambda x: [e.value for e in x], name="attempt_status"),
+        Enum(AttemptStatus, values_callable=lambda x: [e.value for e in x], native_enum=False, name="attempt_status"),
         default=AttemptStatus.IN_PROGRESS,
         nullable=False
     )
@@ -640,13 +640,13 @@ class ContentPassage(BaseModel):
     
     # Metadata
     topic = Column(String(100))  # VD: "Environment", "Technology"
-    difficulty_level = Column(Enum(DifficultyLevel, values_callable=lambda x: [e.value for e in x], name="difficulty_level"))
+    difficulty_level = Column(Enum(DifficultyLevel, values_callable=lambda x: [e.value for e in x], native_enum=False, name="difficulty_level"))
     word_count = Column(Integer)
     duration_seconds = Column(Integer)  # Cho listening
     
     # Reusability
     status = Column(
-        Enum(ContentStatus, values_callable=lambda x: [e.value for e in x], name="content_status"),
+        Enum(ContentStatus, values_callable=lambda x: [e.value for e in x], native_enum=False, name="content_status"),
         default=ContentStatus.ACTIVE,
         nullable=False
     )

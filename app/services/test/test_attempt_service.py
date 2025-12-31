@@ -4,8 +4,9 @@ from sqlalchemy.orm import Session, joinedload
 from fastapi import HTTPException, UploadFile
 from uuid import UUID
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any
+from typing import Any
 
+from app.models.user import User
 from app.models.test import (
     Test, TestAttempt, TestQuestion, 
     TestResponse, QuestionBank, 
@@ -17,7 +18,8 @@ from app.schemas.test.test_attempt import (
     SubmitAttemptRequest,
     SubmitAttemptResponse,
     QuestionResult,
-    QuestionResultDetail
+    QuestionResultDetail,
+    GradeAttemptRequest
 )
 from app.schemas.test.test_read import TestAttemptDetailResponse
 from app.services.cloudinary import upload_and_save_metadata
@@ -539,6 +541,125 @@ class AttemptService:
             
             details=details_list
         )
+    
+    def get_attempt_detail_for_teacher(
+        self,
+        db: Session,
+        attempt_id: UUID
+    ):
+        attempt = (
+            db.query(TestAttempt)
+            .filter(
+                TestAttempt.id == attempt_id,
+                TestAttempt.deleted_at.is_(None)
+            )
+            .first()
+        )
+
+        if not attempt:
+            raise HTTPException(404, "Attempt not found")
+
+        return self._build_attempt_detail(attempt, include_answers=True)
+
+    
+    def list_attempts_for_teacher(
+        self,
+        db: Session,
+        test_id: UUID,
+        teacher_id: UUID
+    ):
+        attempts = (
+            db.query(TestAttempt)
+            .join(User, User.id == TestAttempt.student_id)
+            .filter(
+                TestAttempt.test_id == test_id,
+                TestAttempt.deleted_at.is_(None)
+            )
+            .order_by(TestAttempt.started_at.desc())
+            .all()
+        )
+
+        return [
+            {
+                "id": a.id,
+                "student_id": a.student_id,
+                "student_name": f"{a.student.first_name} {a.student.last_name}",
+                "status": a.status,
+                "score": a.score,
+                "started_at": a.started_at,
+                "submitted_at": a.submitted_at,
+            }
+            for a in attempts
+        ]
+    
+    def grade_attempt(
+        self,
+        db: Session,
+        attempt_id: UUID,
+        teacher_id: UUID,
+        data: GradeAttemptRequest
+    ):
+        attempt = (
+            db.query(TestAttempt)
+            .filter(
+                TestAttempt.id == attempt_id,
+                TestAttempt.status == AttemptStatus.SUBMITTED
+            )
+            .first()
+        )
+
+        if not attempt:
+            raise HTTPException(404, "Attempt not found or not ready for grading")
+
+        total_points = 0
+        max_points = 0
+
+        for item in data.questions:
+            resp = db.query(TestResponse).filter(
+                TestResponse.attempt_id == attempt_id,
+                TestResponse.question_id == item.question_id
+            ).first()
+
+            if not resp:
+                continue
+
+            tq = db.query(TestQuestion).filter(
+                TestQuestion.test_id == attempt.test_id,
+                TestQuestion.question_id == item.question_id
+            ).first()
+
+            max_q_points = float(tq.points) if tq else 0
+            max_points += max_q_points
+
+            resp.teacher_points_earned = item.teacher_points_earned
+            resp.teacher_band_score = item.teacher_band_score
+            resp.teacher_rubric_scores = item.teacher_rubric_scores
+            resp.teacher_feedback = item.teacher_feedback
+
+            resp.points_earned = item.teacher_points_earned
+            total_points += item.teacher_points_earned
+
+        attempt.total_score = total_points
+        attempt.percentage_score = (total_points / max_points) * 100 if max_points else 0
+        attempt.band_score = self._calculate_band_score(attempt.percentage_score)
+        attempt.passed = attempt.percentage_score >= float(attempt.test.passing_score)
+
+        attempt.teacher_feedback = data.overall_feedback
+        attempt.graded_by = teacher_id
+        attempt.graded_at = datetime.now(timezone.utc)
+        attempt.status = AttemptStatus.GRADED
+
+        db.commit()
+        db.refresh(attempt)
+
+        return {
+            "status": "graded",
+            "attempt_id": attempt.id,
+            "band_score": attempt.band_score,
+            "passed": attempt.passed
+        }
+
+
 
     # ============================================================
     # 5. HELPER METHODS
@@ -657,5 +778,80 @@ class AttemptService:
         # Example: 6.2 -> 6.0, 6.3 -> 6.5, 6.7 -> 6.5, 6.8 -> 7.0
         band = round(score * 2) / 2
         return band
+    
+    def _build_attempt_detail(
+        self,
+        attempt: TestAttempt,
+        include_answers: bool
+    ):
+        responses_query = (
+            attempt.responses
+        )
+
+        details = []
+
+        for resp in responses_query:
+            qb = resp.question
+            tq = next(
+                (tq for tq in attempt.test.questions if tq.question_id == qb.id),
+                None
+            )
+            max_points = float(tq.points) if tq else 0
+
+            detail = {
+                "question_id": qb.id,
+                "question_type": qb.question_type.value,
+                "max_points": max_points,
+
+                # Student visible
+                "points_earned": float(resp.points_earned or 0),
+                "band_score": float(resp.band_score) if resp.band_score else None,
+                "auto_graded": resp.auto_graded,
+                "flagged_for_review": resp.flagged_for_review,
+                "audio_response_url": resp.audio_response_url,
+            }
+
+            if include_answers:
+                detail.update({
+                    # Student answer
+                    "response_text": resp.response_text,
+                    "response_data": resp.response_data,
+
+                    # Correct answer
+                    "correct_answer": qb.correct_answer,
+
+                    # AI grading
+                    "ai_points_earned": float(resp.ai_points_earned) if resp.ai_points_earned else None,
+                    "ai_band_score": float(resp.ai_band_score) if resp.ai_band_score else None,
+                    "ai_rubric_scores": resp.ai_rubric_scores,
+                    "ai_feedback": resp.ai_feedback,
+
+                    # Teacher grading
+                    "teacher_points_earned": float(resp.teacher_points_earned) if resp.teacher_points_earned else None,
+                    "teacher_band_score": float(resp.teacher_band_score) if resp.teacher_band_score else None,
+                    "teacher_rubric_scores": resp.teacher_rubric_scores,
+                    "teacher_feedback": resp.teacher_feedback,
+                })
+
+            details.append(detail)
+
+        return {
+            "attempt_id": attempt.id,
+            "test_id": attempt.test_id,
+            "student_id": attempt.student_id,
+            "status": attempt.status.value,
+
+            "total_score": float(attempt.total_score or 0),
+            "percentage_score": float(attempt.percentage_score or 0),
+            "band_score": float(attempt.band_score) if attempt.band_score else None,
+            "passed": attempt.passed,
+
+            "started_at": attempt.started_at,
+            "submitted_at": attempt.submitted_at,
+            "time_taken_seconds": attempt.time_taken_seconds,
+
+            "details": details
+        }
+
 
 attempt_service = AttemptService()

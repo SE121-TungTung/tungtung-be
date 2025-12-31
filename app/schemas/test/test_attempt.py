@@ -2,6 +2,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from typing import List, Optional, Any
 from datetime import datetime
+from typing import Dict
 
 class StartAttemptResponse(BaseModel):
     attempt_id: UUID
@@ -97,3 +98,25 @@ class QuestionResultDetail(BaseModel):
     # Metadata
     time_spent_seconds: Optional[int] = None
     flagged_for_review: bool = False
+
+# --- Summary of attempts for teacher view ---
+class TestAttemptSummaryResponse(BaseModel):
+    id: UUID
+    student_id: UUID
+    student_name: str
+
+    status: str
+    score: Optional[float]
+    started_at: datetime
+    submitted_at: Optional[datetime]
+
+class GradeQuestionRequest(BaseModel):
+    question_id: UUID
+    teacher_points_earned: float
+    teacher_band_score: Optional[float] = None
+    teacher_rubric_scores: Optional[Dict] = None
+    teacher_feedback: Optional[str] = None
+
+class GradeAttemptRequest(BaseModel):
+    questions: list[GradeQuestionRequest]
+    overall_feedback: Optional[str] = None
