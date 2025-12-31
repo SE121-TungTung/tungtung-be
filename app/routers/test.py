@@ -4,13 +4,13 @@ from typing import List, Optional
 from uuid import UUID
 
 from app.core.database import get_db
-from app.dependencies import get_current_user, get_current_admin_user
+from app.dependencies import get_current_user
 from app.models.user import UserRole
 
 import json
 from pydantic import ValidationError
 
-from app.schemas.test.test_create import TestCreate
+from app.schemas.test.test_create import TestCreate, TestUpdate
 from app.schemas.test.test_read import (
     TestResponse,
     TestTeacherResponse,
@@ -20,7 +20,9 @@ from app.schemas.test.test_read import (
 from app.schemas.test.test_attempt import (
     StartAttemptResponse,
     SubmitAttemptRequest,
-    SubmitAttemptResponse
+    SubmitAttemptResponse,
+    TestAttemptSummaryResponse,
+    GradeAttemptRequest
 )
 
 from app.services.test.test import test_service
@@ -86,8 +88,13 @@ async def create_test(
     # Nhận list files (optional)
     files: List[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin_user)
+    current_user=Depends(get_current_user)
 ):
+    if current_user.role not in (
+        UserRole.TEACHER,
+        UserRole.CENTER_ADMIN
+    ):
+        raise HTTPException(status_code=403, detail="Not authorized")
     try:
         # 1. Parse JSON string thành Dict
         test_data_dict = json.loads(test_data_str)
@@ -105,6 +112,50 @@ async def create_test(
     )
     
     return test_service.get_test_for_teacher(db, test.id)
+
+@router.patch("/{test_id}", response_model=TestTeacherResponse)
+def update_test(
+    test_id: UUID,
+    payload: TestUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    if current_user.role not in (
+        UserRole.TEACHER,
+        UserRole.CENTER_ADMIN,
+        UserRole.SYSTEM_ADMIN,
+    ):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    test = test_service.update_test(
+        db=db,
+        test_id=test_id,
+        payload=payload,
+        user_id=current_user.id
+    )
+
+    return test_service.get_test_for_teacher(db, test.id)
+
+@router.delete("/{test_id}")
+def delete_test(
+    test_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """
+    Delete test (soft delete):
+    - Only for TEACHER / ADMIN
+    - Cannot delete test with attempts
+    """
+    if current_user.role not in (
+        UserRole.TEACHER,
+        UserRole.CENTER_ADMIN,
+        UserRole.SYSTEM_ADMIN,
+    ):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    test_service.delete_test(db, test_id, current_user.id)
+    return {"success": True}
 
 # ============================================================
 # GET TEST - STUDENT
@@ -209,6 +260,25 @@ async def submit_speaking_answer(
         student_id=current_user.id
     )
 
+@router.get("/{test_id}/attempts", response_model=list[TestAttemptSummaryResponse])
+def list_test_attempts_for_teacher(
+    test_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    if current_user.role not in (
+        UserRole.TEACHER,
+        UserRole.CENTER_ADMIN,
+        UserRole.SYSTEM_ADMIN,
+    ):
+        raise HTTPException(403, "Not authorized")
+
+    return attempt_service.list_attempts_for_teacher(
+        db=db,
+        test_id=test_id,
+        teacher_id=current_user.id
+    )
+
 # ============================================================
 # GET ATTEMPT DETAIL
 # ============================================================
@@ -223,3 +293,44 @@ def get_attempt_detail(
         attempt_id=attempt_id,
         student_id=current_user.id
     )
+
+# Teacher view attempt
+@router.get("/attempts/{attempt_id}/teacher")
+def teacher_view_attempt(
+    attempt_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    if current_user.role not in (
+        UserRole.TEACHER,
+        UserRole.CENTER_ADMIN
+    ):
+        raise HTTPException(403, "Not authorized")
+
+    return attempt_service.get_attempt_detail_for_teacher(
+        db=db,
+        attempt_id=attempt_id
+    )
+
+
+# Teacher grade attempt
+@router.post("/attempts/{attempt_id}/grade")
+def grade_attempt(
+    attempt_id: UUID,
+    payload: GradeAttemptRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    if current_user.role not in (
+        UserRole.TEACHER,
+        UserRole.CENTER_ADMIN
+    ):
+        raise HTTPException(403, "Not authorized")
+
+    return attempt_service.grade_attempt(
+        db=db,
+        attempt_id=attempt_id,
+        teacher_id=current_user.id,
+        data=payload
+    )
+

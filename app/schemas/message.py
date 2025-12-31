@@ -21,6 +21,7 @@ class ConversationResponse(BaseModel):
     room_id: UUID
     room_type: str
     title: str
+    other_user_id: Optional[UUID]
     last_message: Optional[LastMessageResponse]
     last_message_at: Optional[datetime]
     unread_count: int

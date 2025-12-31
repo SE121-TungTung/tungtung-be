@@ -410,6 +410,7 @@ class MessageService:
                     title = f"{other_user.first_name} {other_user.last_name}"
                     avatar_url = other_user.avatar_url
                     description = None
+                    other_user_id = other_user.id
                 else:
                     title = "Unknown user"
                     avatar_url = None
@@ -431,6 +432,7 @@ class MessageService:
                     room_id=room.id,
                     room_type=room.room_type.value,
                     title=title or "No title",
+                    other_user_id=other_user_id if room.room_type == MessageType.DIRECT else None,
                     avatar_url=avatar_url,
                     description=description,
                     member_count=member_count,
@@ -444,39 +446,61 @@ class MessageService:
 
     
     async def get_or_create_direct_conversation(
-        self, 
-        db: Session, 
-        user_id: UUID, 
+        self,
+        db: Session,
+        user_id: UUID,
         other_user_id: UUID
     ) -> Dict[str, Any]:
         """Get or create a direct conversation between two users"""
-        ids = sorted([str(user_id), str(other_user_id)])
+
+        # 1. Normalize & sort user ids (giữ nguyên ý tưởng ban đầu, bỏ ép kiểu thừa)
+        participant_ids = sorted([user_id, other_user_id], key=lambda x: str(x))
+
+        # 2. Try to get existing DIRECT room
         room = db.query(ChatRoom).filter(
             ChatRoom.room_type == MessageType.DIRECT,
-            ChatRoom.participant1_id == UUID(ids[0]),
-            ChatRoom.participant2_id == UUID(ids[1]),
+            ChatRoom.participant1_id == participant_ids[0],
+            ChatRoom.participant2_id == participant_ids[1],
             ChatRoom.deleted_at.is_(None),
             ChatRoom.is_active.is_(True)
         ).first()
-        
-        # Get other user info
+
+        # 3. CREATE room nếu chưa tồn tại (đúng nghĩa get_or_create)
+        if room is None:
+            room = ChatRoom(
+                room_type=MessageType.DIRECT,
+                participant1_id=participant_ids[0],
+                participant2_id=participant_ids[1],
+                is_active=True
+            )
+            db.add(room)
+            db.commit()
+            db.refresh(room)
+
+        # 4. Get other user info (có guard)
         other_user = self.user_repo.get(db, id=other_user_id)
-        
+
+        # 5. Get last message (CHỈ khi room đã chắc chắn tồn tại)
         last_message = db.query(Message).filter(
             Message.chat_room_id == room.id
         ).order_by(Message.created_at.desc()).first()
-        
+
+        # 6. Build response (không crash nếu thiếu user / message)
         return {
             "room_id": str(room.id),
             "room_type": room.room_type.value,
-            "title": (other_user.first_name + " " + other_user.last_name) if other_user else "Unknown User",
-            "avatar_url": getattr(other_user, 'avatar_url', None) if other_user else None,
+            "title": (
+                f"{other_user.first_name} {other_user.last_name}"
+                if other_user else "Unknown User"
+            ),
+            "avatar_url": getattr(other_user, "avatar_url", None) if other_user else None,
             "last_message": {
-                "message_id": str(last_message.id) if last_message else None,
-                "content": last_message.content if last_message else None,
-                "timestamp": last_message.created_at.isoformat() if last_message else None
+                "message_id": str(last_message.id),
+                "content": last_message.content,
+                "timestamp": last_message.created_at.isoformat()
             } if last_message else None
         }
+
     
     async def get_chat_history(
         self, 

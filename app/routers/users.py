@@ -140,9 +140,15 @@ async def get_my_classes(
     current_user: User = Depends(get_current_active_user),
 ):
     """
-    Lấy danh sách lớp mà user hiện tại đang tham gia (học sinh),
-    kèm giáo viên, danh sách học sinh cùng lớp và các buổi học (sessions).
+    Lấy danh sách lớp mà user hiện tại tham gia:
+    - Student: lớp đã enroll
+    - Teacher: lớp đang giảng dạy
+    Trả về kèm giáo viên, danh sách học sinh và sessions
     """
+
+    class_ids: set = set()
+
+    # Student
     enrollments = (
         db.query(ClassEnrollment)
         .filter(
@@ -152,21 +158,36 @@ async def get_my_classes(
         .all()
     )
 
-    if not enrollments:
+    for enrollment in enrollments:
+        class_ids.add(enrollment.class_id)
+
+    # Teacher
+    teaching_classes = (
+        db.query(Class)
+        .filter(
+            Class.teacher_id == current_user.id,
+            Class.deleted_at.is_(None)
+        )
+        .all()
+    )
+
+    for class_ in teaching_classes:
+        class_ids.add(class_.id)
+
+    if not class_ids:
         return []
-
-    class_ids = [enrollment.class_id for enrollment in enrollments]
-
+    
     classes = (
         db.query(Class)
         .filter(
-            Class.id.in_(class_ids),
+            Class.id.in_(list(class_ids)),
             Class.deleted_at.is_(None)
         )
         .all()
     )
 
     result = []
+
     for class_ in classes:
         classmates = (
             db.query(User)
@@ -190,9 +211,12 @@ async def get_my_classes(
             **class_.__dict__,
             "teacher": {
                 "id": class_.teacher.id if class_.teacher else None,
-                "full_name": f"{class_.teacher.first_name} {class_.teacher.last_name}" if class_.teacher else None,
+                "full_name": (
+                    f"{class_.teacher.first_name} {class_.teacher.last_name}"
+                    if class_.teacher else None
+                ),
                 "email": class_.teacher.email if class_.teacher else None,
-                "avatar_url": class_.teacher.avatar_url if class_.teacher.avatar_url else None
+                "avatar_url": class_.teacher.avatar_url if class_.teacher and class_.teacher.avatar_url else None
             },
             "students": [
                 {
@@ -200,9 +224,10 @@ async def get_my_classes(
                     "full_name": f"{student.first_name} {student.last_name}",
                     "email": student.email,
                     "avatar_url": student.avatar_url if student.avatar_url else None
-                } for student in classmates
+                }
+                for student in classmates
             ],
-            "sessions": sessions 
+            "sessions": sessions
         })
 
     return result

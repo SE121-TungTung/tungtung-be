@@ -3,9 +3,11 @@ from sqlalchemy import func
 from uuid import UUID
 from fastapi import HTTPException
 from typing import Optional, List
+from datetime import datetime
 
 from app.schemas.test.test_create import TestCreate
 from app.schemas.test.test_read import TestResponse, TestTeacherResponse
+from app.models.test import ContentPassage
 
 from fastapi import UploadFile
 from app.services.cloudinary import upload_and_save_metadata
@@ -37,172 +39,243 @@ class TestService:
     # ...
 
     async def create_test(
-        self, 
-        db: Session, 
-        data: TestCreate, 
+        self,
+        db: Session,
+        data: TestCreate,
         created_by: UUID,
-        files: Optional[List[UploadFile]] = None 
+        files: Optional[List[UploadFile]] = None
     ):
-        # =================================================
-        # 1. HANDLE FILE UPLOADS & MAPPING
-        # =================================================
-        uploaded_map = {} # { "filename": "https://cloudinary..." }
-        
-        if files:
-            for file in files:
-                # Upload lên Cloudinary
-                file_meta = await upload_and_save_metadata(
-                    db=db,
-                    file=file,
-                    uploader_id=created_by,
-                    upload_type=UploadType.AUDIO,
-                    access_level=AccessLevel.PUBLIC # Test content thường public để học sinh access
-                )
-                # Lưu vào map với key là tên file gốc
-                uploaded_map[file.filename] = file_meta.file_path
+        try:
+            uploaded_map = {}
 
-        # Helper function để thay thế placeholder bằng URL thật
-        def resolve_url(url: Optional[str]) -> Optional[str]:
-            if not url: return None
-            # Quy ước: Nếu url bắt đầu bằng "file:", đó là placeholder trỏ tới file upload
-            # Ví dụ: "file:audio_part1.mp3"
-            prefix = "file:"
-            if url.startswith(prefix):
-                filename = url[len(prefix):]
-                return uploaded_map.get(filename, url) # Nếu không tìm thấy file, giữ nguyên (có thể là external url)
-            return url
+            if files:
+                for file in files:
+                    file_meta = await upload_and_save_metadata(
+                        db=db,
+                        file=file,
+                        uploader_id=created_by,
+                        upload_type=UploadType.AUDIO,
+                        access_level=AccessLevel.PUBLIC
+                    )
 
-        # =================================================
-        # 2. CREATE TEST OBJECT
-        # =================================================
-        test = Test(
-            title=data.title,
-            description=data.description,
-            instructions=data.instructions,
-            time_limit_minutes=data.time_limit_minutes,
-            passing_score=data.passing_score or 60,
-            max_attempts=data.max_attempts or 1,
-            randomize_questions=data.randomize_questions or False,
-            show_results_immediately=data.show_results_immediately or False,
-            start_time=data.start_time,
-            end_time=data.end_time,
-            ai_grading_enabled=data.ai_grading_enabled or False,
-            class_id=data.class_id,
-            course_id=data.course_id,
-            test_type=data.test_type,
-            exam_type_id=data.exam_type_id,
-            structure_id=data.structure_id,
-            created_by=created_by,
-            status=TestStatus.DRAFT
-        )
+                    if not file_meta or not file_meta.file_path:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Upload failed for file {file.filename}"
+                        )
 
-        db.add(test)
-        db.flush()
+                    uploaded_map[file.filename] = file_meta.file_path
 
-        global_order = 1
+            def resolve_url(url: Optional[str]) -> Optional[str]:
+                if not url:
+                    return None
+                prefix = "file:"
+                if url.startswith(prefix):
+                    filename = url[len(prefix):]
+                    if filename not in uploaded_map:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"File placeholder {filename} not found in uploads"
+                        )
+                    return uploaded_map[filename]
+                return url
 
-        for sec in data.sections:
-            section = TestSection(
-                test_id=test.id,
-                structure_section_id=sec.structure_section_id,
-                name=sec.name,
-                skill_area=sec.skill_area,
-                order_number=sec.order_number,
-                instructions=sec.instructions,
-                time_limit_minutes=sec.time_limit_minutes
+            test = Test(
+                title=data.title,
+                description=data.description,
+                instructions=data.instructions,
+                time_limit_minutes=data.time_limit_minutes,
+                passing_score=data.passing_score or 60,
+                max_attempts=data.max_attempts or 1,
+                randomize_questions=data.randomize_questions or False,
+                show_results_immediately=data.show_results_immediately or False,
+                start_time=data.start_time,
+                end_time=data.end_time,
+                ai_grading_enabled=data.ai_grading_enabled or False,
+                class_id=data.class_id,
+                course_id=data.course_id,
+                test_type=data.test_type,
+                exam_type_id=data.exam_type_id,
+                structure_id=data.structure_id,
+                created_by=created_by,
+                status=TestStatus.DRAFT
             )
-            db.add(section)
+
+            db.add(test)
             db.flush()
 
-            for part in sec.parts:
-                # ================= FIX #1 & Resolve URL =================
-                part_obj = TestSectionPart(
-                    test_section_id=section.id,
-                    structure_part_id=part.structure_part_id,
-                    name=part.name,
-                    order_number=part.order_number,
-                    passage_id=part.passage_id,  # ✅ FIX
-                    min_questions=part.min_questions,
-                    max_questions=part.max_questions,
-                    
-                    # ✅ RESOLVE URL HERE (Part audio/image)
-                    audio_url=resolve_url(part.audio_url),
-                    image_url=resolve_url(part.image_url),
-                    
-                    instructions=part.instructions
+            global_order = 1
+
+            for sec in data.sections:
+                section = TestSection(
+                    test_id=test.id,
+                    structure_section_id=sec.structure_section_id,
+                    name=sec.name,
+                    skill_area=sec.skill_area,
+                    order_number=sec.order_number,
+                    instructions=sec.instructions,
+                    time_limit_minutes=sec.time_limit_minutes
                 )
-                db.add(part_obj)
+                db.add(section)
                 db.flush()
 
-                for group_data in part.question_groups:
-                    group = QuestionGroup(
-                        part_id=part_obj.id,
-                        name=group_data.name,
-                        order_number=group_data.order_number,
-                        question_type=group_data.question_type,
-                        instructions=group_data.instructions,
-                        
-                        # ✅ RESOLVE URL HERE (Group image/audio if any)
-                        image_url=resolve_url(group_data.image_url)
+                for part in sec.parts:
+    # ================= CREATE PASSAGE IF INLINE =================
+                    passage_id = part.passage_id
+
+                    if not passage_id and part.passage:
+                        new_passage = ContentPassage(
+                            title=part.passage.title,
+                            content_type=part.passage.content_type,
+                            text_content=part.passage.text_content,
+                            audio_url=resolve_url(part.passage.audio_url),
+                            image_url=resolve_url(part.passage.image_url),
+                            topic=part.passage.topic,
+                            difficulty_level=part.passage.difficulty_level,
+                            word_count=part.passage.word_count,
+                            duration_seconds=part.passage.duration_seconds,
+                            created_by=created_by
+                        )
+                        db.add(new_passage)
+                        db.flush()
+
+                        passage_id = new_passage.id
+
+                    part_obj = TestSectionPart(
+                        test_section_id=section.id,
+                        structure_part_id=part.structure_part_id,
+                        name=part.name,
+                        order_number=part.order_number,
+                        passage_id=passage_id,
+                        min_questions=part.min_questions,
+                        max_questions=part.max_questions,
+                        audio_url=resolve_url(part.audio_url),
+                        image_url=resolve_url(part.image_url),
+                        instructions=part.instructions
                     )
-                    db.add(group)
+                    db.add(part_obj)
                     db.flush()
 
-                    # ================= FIX #2 =================
-                    group_order = 1
 
-                    for q in group_data.questions:
-                        # 2a. REUSE EXISTING QUESTION
-                        if q.id:
-                            question = db.query(QuestionBank).filter(
-                                QuestionBank.id == q.id,
-                                QuestionBank.deleted_at.is_(None)
-                            ).first()
-                            if not question:
-                                raise HTTPException(400, f"Question {q.id} not found")
-                        
-                        # 2b. CREATE NEW QUESTION
-                        else:
-                            question = QuestionBank(
-                                title=q.title,
-                                question_text=q.question_text,
-                                question_type=q.question_type,
-                                skill_area=q.skill_area,
-                                difficulty_level=q.difficulty_level,
-                                options=q.options,
-                                correct_answer=q.correct_answer,
-                                rubric=q.rubric,
-                                
-                                # ✅ RESOLVE URL HERE (Question audio/image)
-                                audio_url=resolve_url(q.audio_url),
-                                image_url=resolve_url(q.image_url),
-                                
-                                points=q.points,
-                                tags=q.tags,
-                                extra_metadata=q.extra_metadata,
-                                created_by=created_by
-                            )
-                            db.add(question)
-                            db.flush()
-
-                        # Link to Test
-                        test_question = TestQuestion(
-                            test_id=test.id,
-                            group_id=group.id,
-                            question_id=question.id,
-                            order_number=global_order,
-                            group_order_number=group_order,  # ✅ FIX
-                            points=q.points,
-                            required=True
+                    for group_data in part.question_groups:
+                        group = QuestionGroup(
+                            part_id=part_obj.id,
+                            name=group_data.name,
+                            order_number=group_data.order_number,
+                            question_type=group_data.question_type,
+                            instructions=group_data.instructions,
+                            image_url=resolve_url(group_data.image_url)
                         )
-                        db.add(test_question)
+                        db.add(group)
+                        db.flush()
 
-                        global_order += 1
-                        group_order += 1
+                        group_order = 1
+
+                        for q in group_data.questions:
+                            if q.id:
+                                question = db.query(QuestionBank).filter(
+                                    QuestionBank.id == q.id,
+                                    QuestionBank.deleted_at.is_(None)
+                                ).first()
+                                if not question:
+                                    raise HTTPException(
+                                        status_code=400,
+                                        detail=f"Question {q.id} not found"
+                                    )
+                            else:
+                                question = QuestionBank(
+                                    title=q.title,
+                                    question_text=q.question_text,
+                                    question_type=q.question_type,
+                                    skill_area=q.skill_area,
+                                    difficulty_level=q.difficulty_level,
+                                    options=q.options,
+                                    correct_answer=q.correct_answer,
+                                    rubric=q.rubric,
+                                    audio_url=resolve_url(q.audio_url),
+                                    image_url=resolve_url(q.image_url),
+                                    points=q.points,
+                                    tags=q.tags,
+                                    extra_metadata=q.extra_metadata,
+                                    created_by=created_by
+                                )
+                                db.add(question)
+                                db.flush()
+
+                            db.add(TestQuestion(
+                                test_id=test.id,
+                                group_id=group.id,
+                                question_id=question.id,
+                                order_number=global_order,
+                                group_order_number=group_order,
+                                points=q.points,
+                                required=True
+                            ))
+
+                            global_order += 1
+                            group_order += 1
+
+            db.commit()
+            db.refresh(test)
+            return test
+
+        except Exception:
+            db.rollback()
+            raise
+
+    def update_test(
+        self,
+        db: Session,
+        test_id: UUID,
+        payload,
+        user_id: UUID
+    ):
+        test = (
+            db.query(Test)
+            .filter(
+                Test.id == test_id,
+                Test.deleted_at.is_(None)
+            )
+            .first()
+        )
+
+        if not test:
+            raise HTTPException(404, "Test not found")
+
+        # Không cho sửa test đã có attempt
+        has_attempt = db.query(TestAttempt).filter(
+            TestAttempt.test_id == test.id
+        ).first()
+
+        if has_attempt and payload.status == TestStatus.DRAFT:
+            raise HTTPException(
+                400,
+                "Cannot unpublish test that already has attempts"
+            )
+
+        for field, value in payload.dict(exclude_unset=True).items():
+            setattr(test, field, value)
+
+        test.updated_by = user_id
 
         db.commit()
         db.refresh(test)
+
         return test
+    
+    def delete_test(self, db: Session, test_id: UUID, user_id: UUID):
+        test = db.query(Test).filter(
+            Test.id == test_id,
+            Test.deleted_at.is_(None)
+        ).first()
+
+        if not test:
+            raise HTTPException(404, "Test not found")
+
+        test.deleted_at = datetime.utcnow()
+        test.updated_by = user_id
+
+        db.commit()
 
     # ============================================================
     # READ TEST
