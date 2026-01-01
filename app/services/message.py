@@ -917,7 +917,8 @@ class MessageService:
                     "title": room.title,
                     "description": room.description,
                     "avatar_url": room.avatar_url
-                }
+                },
+                db_session=db
             )
 
         return room

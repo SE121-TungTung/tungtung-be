@@ -513,26 +513,48 @@ class TestService:
         results = []
         for test in tests:
             test_id_str = str(test.id)
-            
+
+            # ============================
+            # Skill (giống list_tests)
+            # ============================
+            if test.sections:
+                current_skill = test.sections[0].skill_area
+            else:
+                current_skill = SkillArea.READING
+
+            # ============================
+            # Difficulty (default)
+            # ============================
+            current_difficulty = DifficultyLevel.MEDIUM
+
             # Get attempts info từ map
             attempt_info = attempts_map.get(test_id_str, {'count': 0, 'max_attempt': 0})
             attempts_count = attempt_info['count']
-            
+
             # Get latest attempt info
             latest = latest_map.get(test_id_str, {'status': None, 'score': None})
-            
+
             # Calculate can_attempt
             can_attempt = attempts_count < (test.max_attempts or 1)
-            
+
             # Count questions (đã eager load)
             total_questions = len(test.questions)
-            
+
             results.append({
                 "id": test.id,
                 "title": test.title,
                 "description": test.description,
                 "test_type": test.test_type.value if test.test_type else None,
-                "time_limit_minutes": test.time_limit_minutes,
+
+                # ✅ BỔ SUNG ĐÚNG YÊU CẦU
+                "skill": current_skill,
+                "difficulty": current_difficulty,
+                "duration_minutes": test.time_limit_minutes or 0,
+                "created_at": test.created_at,
+
+                # ============================
+                # Existing working fields
+                # ============================
                 "total_questions": total_questions,
                 "total_points": float(test.total_points or 0),
                 "passing_score": float(test.passing_score or 0),
@@ -545,13 +567,6 @@ class TestService:
                 "latest_attempt_score": float(latest['score'] or 0) if latest['score'] else None,
                 "status": test.status
             })
-        
-        return {
-            "total": total,
-            "skip": skip,
-            "limit": limit,
-            "tests": results
-        }
 
     def get_test_summary(self, db: Session, test_id: UUID):
         """
@@ -646,7 +661,7 @@ class TestService:
             .options(
                 joinedload(Test.sections)
                 .joinedload(TestSection.parts)
-                .joinedload(TestSectionPart.passage),  # ✅ FIX
+                .joinedload(TestSectionPart.passage),
 
                 joinedload(Test.sections)
                 .joinedload(TestSection.parts)

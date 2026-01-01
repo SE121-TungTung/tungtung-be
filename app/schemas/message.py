@@ -10,7 +10,6 @@ class MessageCreate(BaseModel):
     receiver_id: Optional[UUID] = None
     
     content: str = Field(..., min_length=1)
-    # attachment_ids: Optional[List[UUID]] = Field(default_factory=list)
 
 class LastMessageResponse(BaseModel):
     message_id: Optional[UUID]

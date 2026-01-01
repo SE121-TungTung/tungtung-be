@@ -79,7 +79,7 @@ def list_classes(
         for class_ in items
     ]
 
-@router.get("/{class_id}", response_model=ClassResponse)
+@router.get("/classes/{class_id}", response_model=ClassResponse)
 def get_class(class_id: UUID, db: Session = Depends(get_db)):
     c = (
         db.query(Class)
