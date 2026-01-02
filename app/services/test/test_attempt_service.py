@@ -25,9 +25,6 @@ from app.schemas.test.test_read import TestAttemptDetailResponse
 from app.services.cloudinary import upload_and_save_metadata
 from app.models.file_upload import UploadType, AccessLevel
 
-from app.services.audit_log import audit_service
-from app.models.audit_log import AuditAction
-
 class AttemptService:
     
     # ============================================================
@@ -301,20 +298,6 @@ class AttemptService:
         ai_feedback = attempt.ai_feedback if isinstance(attempt.ai_feedback, dict) else None
         teacher_feedback = attempt.teacher_feedback if isinstance(attempt.teacher_feedback, str) else None
 
-        audit_service.log(
-            db=db,
-            user_id=user_id,
-            action=AuditAction.SUBMIT,
-            table_name="test_attempts",
-            record_id=attempt.id,
-            new_values={
-                "attempt_id": str(attempt.id),
-                "student_id": str(attempt.student_id),
-                "status": attempt.status.value,
-                "total_score": float(attempt.total_score or 0),
-                "percentage_score": float(attempt.percentage_score or 0)
-            }
-        )
 
         return SubmitAttemptResponse(
             attempt_id=attempt.id,
@@ -372,7 +355,7 @@ class AttemptService:
             db=db,
             file=file,
             uploader_id=user_id,
-            upload_type=UploadType.AUDIO,
+            upload_type=UploadType.ASSIGNMENT_SUBMISSION,
             access_level=AccessLevel.PRIVATE
         )
 
@@ -458,19 +441,6 @@ class AttemptService:
         attempt.status = AttemptStatus.SUBMITTED
         
         db.commit()
-
-        audit_service.log(
-            db=db,
-            user_id=user_id,
-            action=AuditAction.SUBMIT,
-            table_name="test_responses",
-            record_id=response.id,
-            new_values={
-                "attempt_id": str(attempt_id),
-                "question_id": str(question_id),
-                "audio_response_url": file_meta.file_path
-            }
-        )
         
         return {
             "status": "success",
@@ -682,21 +652,6 @@ class AttemptService:
         db.commit()
         db.refresh(attempt)
 
-        audit_service.log(
-            db=db,
-            user_id=teacher_id,
-            action=AuditAction.GRADE,
-            table_name="test_attempts",
-            record_id=attempt.id,
-            new_values={
-                "attempt_id": str(attempt.id),
-                "graded_by": str(teacher_id),
-                "total_score": float(attempt.total_score or 0),
-                "percentage_score": float(attempt.percentage_score or 0),
-                "band_score": float(attempt.band_score or 0)
-            }
-        )
-        
         return {
             "status": "graded",
             "attempt_id": attempt.id,

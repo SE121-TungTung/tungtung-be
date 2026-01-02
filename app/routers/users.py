@@ -11,9 +11,6 @@ from app.models.academic import ClassEnrollment, Class
 from uuid import UUID
 from app.routers.generator import create_crud_router
 from app.models.session_attendance import ClassSession
-from app.models.audit_log import AuditAction, AuditLogListResponse
-
-from app.services.audit_log import audit_service
 
 delete_user_router = create_crud_router(
     model=User,
@@ -117,7 +114,7 @@ async def list_users(
 @router.get("/overview", response_model=dict)
 async def get_user_overview(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_admin_user)
 ):
     """Get user overview statistics"""
     return user_service.get_user_overview(db, current_user=current_user)
@@ -246,38 +243,3 @@ async def update_user(
     """Update user (admin only)"""
     user_update = update_form.to_update_schema(UserUpdate)
     return await user_service.update_user(db, user_id, user_update, avatar_file, id_updated_by=current_user.id)
-
-@router.get("/admin/audit", response_model=AuditLogListResponse)
-def list_audit_logs(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-
-    user_id: Optional[UUID] = None,
-    action: Optional[AuditAction] = None,
-    table_name: Optional[str] = None,
-    record_id: Optional[UUID] = None,
-    success: Optional[bool] = None,
-    search: Optional[str] = None,
-
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin_user)
-):
-    # ============================================================
-    # Permission
-    # ============================================================
-    if current_user.role not in (
-        UserRole.SYSTEM_ADMIN,
-    ):
-        raise HTTPException(status_code=403, detail="Not authorized")
-
-    return audit_service.list_audit_logs(
-        db=db,
-        skip=skip,
-        limit=limit,
-        user_id=user_id,
-        action=action,
-        table_name=table_name,
-        record_id=record_id,
-        success=success,
-        search=search
-    )

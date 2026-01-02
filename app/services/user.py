@@ -28,10 +28,6 @@ from datetime import datetime
 from fastapi import UploadFile
 from app.services import cloudinary
 
-from app.services.audit_log import audit_service
-from app.models.audit_log import AuditAction
-
-
 class UserService(BaseService):
     def __init__(self):
         super().__init__(user_repository)
@@ -80,21 +76,6 @@ class UserService(BaseService):
                     new_user.role.value
                 )
             
-            audit_service.log(
-                db=db,
-                user_id=created_by,
-                action=AuditAction.CREATE,
-                table_name="users",
-                record_id=new_user.id,
-                old_values=None,
-                new_values={
-                    "email": new_user.email,
-                    "role": new_user.role.value,
-                    "status": new_user.status,
-                    "created_by": str(created_by) if created_by else None
-                }
-            )
-
             return new_user
         except Exception as e:
             raise e
@@ -130,26 +111,13 @@ class UserService(BaseService):
                 })
                 
                 # 3. TẠO USER
-                new_user = self.repository.create_user(db, user_data, default_class_id=user_data_in.class_id)
-                created_users.append(new_user)
+                user = self.repository.create_user(db, user_data, default_class_id=user_data_in.class_id)
+                created_users.append(user)
                 
                 # 4. GỬI EMAIL
-                full_name = f"{new_user.first_name} {new_user.last_name}"
-                await email_service.send_account_creation_email("khoiluub143@gmail.com", full_name, raw_password, new_user.role)
-                audit_service.log(
-                    db=db,
-                    user_id=created_by,
-                    action=AuditAction.CREATE,
-                    table_name="users",
-                    record_id=new_user.id,
-                    old_values=None,
-                    new_values={
-                        "email": new_user.email,
-                        "role": new_user.role.value,
-                        "status": new_user.status,
-                        "created_by": str(created_by) if created_by else None
-                    }
-                )
+                full_name = f"{user.first_name} {user.last_name}"
+                await email_service.send_account_creation_email("khoiluub143@gmail.com", full_name, raw_password, user.role)
+
             except Exception as e:
                 print(f"Error creating user {user_data_in.email}: {e}")
                 # Tiếp tục vòng lặp
@@ -166,19 +134,6 @@ class UserService(BaseService):
         user.last_login = datetime.now()
         user.failed_login_attempts = 0
         db.commit()
-
-        audit_service.log(
-            db=db,
-            user_id=user.id,
-            action=AuditAction.LOGIN,
-            table_name="users",
-            record_id=user.id,
-            old_values=None,
-            new_values={
-                "last_login": user.last_login.isoformat()
-            }
-        )
-
         return user
     
     async def get_user_by_email(self, db: Session, email: str) -> Optional[User]:
@@ -217,23 +172,6 @@ class UserService(BaseService):
         else:
             update_data = user_update.model_dump(exclude_unset=True)
         update_data["updated_by"] = id_updated_by
-        
-        old_values = {
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "avatar_url": user.avatar_url,
-            "status": user.status
-        }
-        audit_service.log(
-            db=db,
-            user_id=id_updated_by,
-            action=AuditAction.UPDATE,
-            table_name="users",
-            record_id=user.id,
-            old_values=old_values,
-            new_values=update_data
-        )
-
         return self.repository.update(db, db_obj=user, obj_in=update_data)
     
     async def change_password(self, db: Session, user: User, password_update: UserPasswordUpdate) -> User:

@@ -32,8 +32,8 @@ class NotificationService:
             }
 
             await websocket_manager.send_to_user(
-                user_id=notification.user_id,
-                message=payload,
+                notification.user_id,
+                payload,
             )
 
         return notification

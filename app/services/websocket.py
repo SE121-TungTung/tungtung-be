@@ -303,9 +303,12 @@ class ConnectionManager:
         self,
         room_id: UUID,
         updated_by_user_id: UUID,
-        updates: Dict[str, Any],
-        db_session: Session
+        updates: Dict[str, Any]
     ):
+        """
+        Notify group members that the group has been updated.
+        """
+        
         message = {
             "type": "group_updated",
             "room_id": str(room_id),
@@ -313,14 +316,8 @@ class ConnectionManager:
             "updates": updates,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-
-        await self.broadcast_to_room(
-            room_id=room_id,
-            message=message,
-            db_session=db_session,
-            exclude_user_id=updated_by_user_id
-        )
-
+        
+        await self.broadcast_to_room(room_id, message, db_session=None)
 
     # =====================================================
     # STATS

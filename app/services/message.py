@@ -22,9 +22,6 @@ from datetime import datetime, timezone
 
 from app.services.cloudinary import upload_and_save_metadata
 
-from app.services.audit_log import audit_service
-from app.models.audit_log import AuditAction
-
 logger = logging.getLogger(__name__)
 
 
@@ -184,9 +181,12 @@ class MessageService:
             "attachments": new_message.attachments or []
         }
         
+        # --- [BROADCAST LOGIC FIXED] ---
         if room.room_type == MessageType.DIRECT:
+            # Gửi cho chính mình (Sender)
             await manager.send_to_user(sender_id, payload)
             
+            # Gửi cho người nhận (Target) - Dùng ID chuẩn xác từ DB
             for uid in target_recipient_ids:
                 await manager.send_to_user(uid, payload)
         
@@ -692,20 +692,7 @@ class MessageService:
 
             db.commit()
             db.refresh(chat_room)
-                        
-            audit_service.log(
-                db=db,
-                action=AuditAction.CREATE,
-                table_name="chat_rooms",
-                record_id=chat_room.id,
-                user_id=creator_id,
-                new_values={
-                    "room_type": "GROUP",
-                    "title": chat_room.title,
-                    "members": [str(uid) for uid in member_ids]
-                }
-            )
-
+            
             return chat_room
         except Exception as e:
                 db.rollback()
@@ -930,21 +917,6 @@ class MessageService:
                     "title": room.title,
                     "description": room.description,
                     "avatar_url": room.avatar_url
-                },
-                db_session=db
-            )
-
-            audit_service.log(
-                db=db,
-                action=AuditAction.UPDATE,
-                table_name="chat_rooms",
-                record_id=room.id,
-                user_id=updater_id,
-                old_values={"changed_fields": changed_fields},
-                new_values={
-                    "title": room.title,
-                    "description": room.description,
-                    "avatar_url": room.avatar_url
                 }
             )
 
@@ -1014,17 +986,6 @@ class MessageService:
         room.is_active = False
         room.deleted_at = func.now()
         db.commit()
-
-        audit_service.log(
-            db=db,
-            action=AuditAction.DELETE,
-            table_name="chat_rooms",
-            record_id=room.id,
-            user_id=current_user_id,
-            old_values={"is_active": True},
-            new_values={"is_active": False}
-        )
-
 
         return {
             "success": True,
@@ -1199,6 +1160,8 @@ class MessageService:
         
         db.commit()
         db.refresh(message)
+        
+        # (Optional) Broadcast socket event 'message_updated' tại đây
         
         return message
 
