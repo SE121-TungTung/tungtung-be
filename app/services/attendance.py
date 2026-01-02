@@ -9,6 +9,8 @@ from app.models.user import User
 from app.models.academic import ClassEnrollment, EnrollmentStatus
 from datetime import timedelta
 
+from app.models.audit_log import AuditAction
+from app.services.audit_log import audit_service
 
 ALLOWED_EARLY_MINUTES = 15  # Được điểm danh sớm 15p
 GRACE_PERIOD_MINUTES = 5
@@ -113,6 +115,16 @@ class AttendanceService():
             # Cập nhật trạng thái session
             session.attendance_taken = True
             
+            audit_service.log(
+                db=db,
+                action=AuditAction.UPDATE,
+                table_name="class_sessions",
+                record_id=session.id,
+                user_id=marker_id,
+                old_values={"attendance_taken": False},
+                new_values={"attendance_taken": True}
+            )
+
             db.commit()
             return {"message": "Attendance marked successfully"}
     
