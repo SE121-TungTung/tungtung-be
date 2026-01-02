@@ -12,6 +12,10 @@ from app.models.test import ContentPassage
 from fastapi import UploadFile
 from app.services.cloudinary import upload_and_save_metadata
 
+from app.services.audit_log import audit_service
+from app.models.audit_log import AuditAction
+
+
 from app.models.test import (
     Test,
     TestSection,
@@ -217,6 +221,19 @@ class TestService:
 
             db.commit()
             db.refresh(test)
+
+            audit_service.log(
+                db=db,
+                user_id=created_by,
+                action=AuditAction.CREATE,
+                table_name="tests",
+                record_id=test.id,
+                new_values={
+                    "title": test.title,
+                    "description": test.description,
+                    "class_id": str(test.class_id)
+                }
+            )
             return test
 
         except Exception:
@@ -261,6 +278,15 @@ class TestService:
         db.commit()
         db.refresh(test)
 
+        audit_service.log(
+            db=db,
+            user_id=user_id,
+            action=AuditAction.UPDATE,
+            table_name="tests",
+            record_id=test.id,
+            new_values=payload.dict(exclude_unset=True)
+        )
+
         return test
     
     def delete_test(self, db: Session, test_id: UUID, user_id: UUID):
@@ -274,6 +300,14 @@ class TestService:
 
         test.deleted_at = datetime.utcnow()
         test.updated_by = user_id
+
+        audit_service.log(
+            db=db,
+            user_id=user_id,
+            action=AuditAction.DELETE,
+            table_name="tests",
+            record_id=test.id
+        )
 
         db.commit()
 

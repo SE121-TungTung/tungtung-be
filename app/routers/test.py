@@ -232,7 +232,7 @@ def submit_test_attempt(
     return attempt_service.submit_attempt(
         db=db,
         attempt_id=attempt_id,
-        payload=payload,
+        data=payload,
         student_id=current_user.id
     )
 
