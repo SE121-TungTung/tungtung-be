@@ -104,6 +104,8 @@ class TestCreate(BaseModel):
     exam_type_id: Optional[UUID] = None # Link to ExamType for predefined
     structure_id: Optional[UUID] = None  # Link to ExamStructure for predefined
 
+    status: Optional[TestStatus] = TestStatus.DRAFT
+
     sections: List[TestSectionCreate]
 
 class TestUpdate(BaseModel):

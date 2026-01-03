@@ -12,6 +12,10 @@ from app.services.email import email_service
 import uuid
 import logging
 
+from app.services.notification import notification_service
+from app.models.notification import NotificationPriority, NotificationType
+from app.schemas.notification import NotificationCreate
+
 from uuid import UUID
 
 from datetime import date
@@ -66,10 +70,8 @@ class UserService(BaseService):
             user_data["updated_by"] = created_by
             
             new_user = self.repository.create_user(db, user_data, default_class_id=default_class_id)
-            db.commit()
-
+            
             full_name = f"{new_user.first_name} {new_user.last_name}"
-
 
             if background_tasks:
                 background_tasks.add_task(
@@ -95,6 +97,18 @@ class UserService(BaseService):
                 }
             )
 
+            await notification_service.send_notification(
+                db=db,
+                noti_info=NotificationCreate(
+                    user_id=new_user.id,
+                    title="Tài khoản đã được tạo",
+                    content="Tài khoản của bạn đã được tạo thành công. Vui lòng kiểm tra email để nhận thông tin đăng nhập.",
+                    notification_type=NotificationType.SYSTEM_ALERT,
+                    priority=NotificationPriority.NORMAL,
+                    action_url="/login"
+                )
+            )
+            db.commit()
             return new_user
         except Exception as e:
             raise e
@@ -150,6 +164,17 @@ class UserService(BaseService):
                         "created_by": str(created_by) if created_by else None
                     }
                 )
+                await notification_service.send_notification(
+                    db=db,
+                    noti_info=NotificationCreate(
+                        user_id=new_user.id,
+                        title="Tài khoản đã được tạo",
+                        content="Tài khoản của bạn đã được tạo. Vui lòng kiểm tra email để nhận mật khẩu đăng nhập.",
+                        notification_type=NotificationType.SYSTEM_ALERT,
+                        priority=NotificationPriority.NORMAL,
+                        action_url="/login"
+                    )
+                )
             except Exception as e:
                 print(f"Error creating user {user_data_in.email}: {e}")
                 # Tiếp tục vòng lặp
@@ -165,7 +190,6 @@ class UserService(BaseService):
         # Update last login
         user.last_login = datetime.now()
         user.failed_login_attempts = 0
-        db.commit()
 
         audit_service.log(
             db=db,
@@ -178,7 +202,7 @@ class UserService(BaseService):
                 "last_login": user.last_login.isoformat()
             }
         )
-
+        db.commit()
         return user
     
     async def get_user_by_email(self, db: Session, email: str) -> Optional[User]:
@@ -233,6 +257,20 @@ class UserService(BaseService):
             old_values=old_values,
             new_values=update_data
         )
+
+        if "status" in update_data or "role" in update_data:
+            await notification_service.send_notification(
+                db=db,
+                noti_info=NotificationCreate(
+                    user_id=user.id,
+                    title="Thông tin tài khoản đã được cập nhật",
+                    content="Quản trị viên đã cập nhật trạng thái hoặc quyền của tài khoản bạn.",
+                    notification_type=NotificationType.SYSTEM_ALERT,
+                    priority=NotificationPriority.NORMAL,
+                    action_url="/profile"
+                )
+            )
+
 
         return self.repository.update(db, db_obj=user, obj_in=update_data)
     
@@ -295,7 +333,19 @@ class UserService(BaseService):
         user.must_change_password = False
         user.is_first_login = False
         user.updated_at = datetime.utcnow()
-        
+
+        await notification_service.send_notification(
+            db=db,
+            noti_info=NotificationCreate(
+                user_id=user.id,
+                title="Mật khẩu đã được thay đổi",
+                content="Mật khẩu tài khoản của bạn vừa được thay đổi thành công. Nếu không phải bạn thực hiện, hãy liên hệ hỗ trợ ngay.",
+                notification_type=NotificationType.SYSTEM_ALERT,
+                priority=NotificationPriority.HIGH,
+                action_url="/change-password"
+            )
+        )
+
         db.commit()
         db.refresh(user)
         

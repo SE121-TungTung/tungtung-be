@@ -114,7 +114,7 @@ class AttendanceService():
 
             # Cập nhật trạng thái session
             session.attendance_taken = True
-            
+
             audit_service.log(
                 db=db,
                 action=AuditAction.UPDATE,
@@ -124,7 +124,7 @@ class AttendanceService():
                 old_values={"attendance_taken": False},
                 new_values={"attendance_taken": True}
             )
-
+            
             db.commit()
             return {"message": "Attendance marked successfully"}
     

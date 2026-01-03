@@ -28,6 +28,10 @@ from app.models.file_upload import UploadType, AccessLevel
 from app.services.audit_log import audit_service
 from app.models.audit_log import AuditAction
 
+from app.services.notification import notification_service
+from app.schemas.notification import NotificationCreate
+from app.models.notification import NotificationType, NotificationPriority
+
 class AttemptService:
     
     # ============================================================
@@ -294,9 +298,6 @@ class AttemptService:
             # Calculate band score if applicable (Simulation)
             attempt.band_score = self._calculate_band_score(attempt.percentage_score)
 
-        db.commit()
-        db.refresh(attempt)
-
         graded_by = attempt.graded_by if isinstance(attempt.graded_by, UUID) else None
         ai_feedback = attempt.ai_feedback if isinstance(attempt.ai_feedback, dict) else None
         teacher_feedback = attempt.teacher_feedback if isinstance(attempt.teacher_feedback, str) else None
@@ -315,6 +316,9 @@ class AttemptService:
                 "percentage_score": float(attempt.percentage_score or 0)
             }
         )
+
+        db.commit()
+        db.refresh(attempt)
 
         return SubmitAttemptResponse(
             attempt_id=attempt.id,
@@ -456,8 +460,6 @@ class AttemptService:
         # 6. Update Attempt Status
         # Fix #8: Do not calculate score yet, just mark as submitted
         attempt.status = AttemptStatus.SUBMITTED
-        
-        db.commit()
 
         audit_service.log(
             db=db,
@@ -471,6 +473,8 @@ class AttemptService:
                 "audio_response_url": file_meta.file_path
             }
         )
+
+        db.commit()
         
         return {
             "status": "success",
@@ -622,7 +626,7 @@ class AttemptService:
             for a in attempts
         ]
     
-    def grade_attempt(
+    async def grade_attempt(
         self,
         db: Session,
         attempt_id: UUID,
@@ -679,9 +683,6 @@ class AttemptService:
         attempt.graded_at = datetime.now(timezone.utc)
         attempt.status = AttemptStatus.GRADED
 
-        db.commit()
-        db.refresh(attempt)
-
         audit_service.log(
             db=db,
             user_id=teacher_id,
@@ -697,6 +698,27 @@ class AttemptService:
             }
         )
         
+        db.commit()
+        db.refresh(attempt)
+
+        noti = NotificationCreate(
+            user_id=attempt.student_id,
+            title="Kết quả bài kiểm tra đã có",
+            content=(
+                f"Bài kiểm tra của bạn đã được chấm. "
+                f"Band score: {attempt.band_score}, "
+                f"{'Đạt' if attempt.passed else 'Chưa đạt'}."
+            ),
+            notification_type=NotificationType.GRADE_AVAILABLE,
+            priority=NotificationPriority.NORMAL,
+            action_url=f"/student/tests/attempts/{attempt.id}",
+        )
+
+        await notification_service.send_notification(
+            db=db,
+            noti_info=noti
+        )
+
         return {
             "status": "graded",
             "attempt_id": attempt.id,

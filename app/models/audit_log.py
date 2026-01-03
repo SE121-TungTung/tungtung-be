@@ -1,14 +1,15 @@
 from sqlalchemy import (
-    Column, String, Boolean, ForeignKey, Text, JSON, TIMESTAMP
+    Column, String, Boolean, ForeignKey, Text, JSON, TIMESTAMP, UUID
 )
-from sqlalchemy.dialects.postgresql import UUID, INET
+from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.sql import func
-import uuid
 
 import enum
 from sqlalchemy.types import Enum
-from app.models.base import BaseModel
+from app.models.base import Base
+from pydantic import BaseModel as pyBase
 from datetime import datetime
+import uuid
 
 from typing import Optional, Dict, Any
 
@@ -23,11 +24,10 @@ class AuditAction(enum.Enum):
     LOGIN = "LOGIN"
     LOGOUT = "LOGOUT"
 
-class AuditLog(BaseModel):
+class AuditLog(Base):
     __tablename__ = "audit_logs"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-
+    id = Column(UUID(as_uuid=True), primary_key=True, default=func.gen_random_uuid())
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
 
     action = Column(Enum(AuditAction, values_callable=lambda obj: [e.value for e in obj], 
@@ -50,16 +50,16 @@ class AuditLog(BaseModel):
 
 # Schemas for AuditLog
 
-class AuditLogCreate(BaseModel):
-    user_id: Optional[UUID]
+class AuditLogCreate(pyBase):
+    user_id: Optional[uuid.UUID]
     action: str
     table_name: str
-    record_id: Optional[UUID]
+    record_id: Optional[uuid.UUID]
     old_values: Optional[Dict[str, Any]]
     new_values: Optional[Dict[str, Any]]
     ip_address: Optional[str]
     user_agent: Optional[str]
-    session_id: Optional[UUID]
+    session_id: Optional[uuid.UUID]
     success: bool = True
     error_message: Optional[str]
 
@@ -67,29 +67,30 @@ class AuditLogCreate(BaseModel):
         "from_attributes": True
     }
 
-class AuditLogResponse(BaseModel):
-    id: UUID
-    user_id: Optional[UUID]
+class AuditLogResponse(pyBase):
+    id: uuid.UUID
+    user_id: Optional[uuid.UUID]
     action: str
     table_name: str
-    record_id: Optional[UUID]
+    record_id: Optional[uuid.UUID]
 
     old_values: Optional[Dict[str, Any]]
     new_values: Optional[Dict[str, Any]]
 
     ip_address: Optional[str]
     user_agent: Optional[str]
-    session_id: Optional[UUID]
+    session_id: Optional[uuid.UUID]
 
     success: bool
     error_message: Optional[str]
     timestamp: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }
 
 
-class AuditLogListResponse(BaseModel):
+class AuditLogListResponse(pyBase):
     total: int
     skip: int
     limit: int

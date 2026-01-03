@@ -6,14 +6,14 @@ from uuid import UUID
 
 from app.core.database import get_db
 from app.dependencies import get_current_user
-from app.schemas.notification import NotificationResponse
+from app.schemas.notification import NotificationResponse, NotificationListResponse
 from app.repositories.notification import notification_repo
 from app.services.notification import notification_service
 from app.models.user import User
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
-@router.get("/", response_model=List[NotificationResponse])
+@router.get("/", response_model=NotificationListResponse)
 def get_my_notifications(
     skip: int = 0, 
     limit: int = 50, 
@@ -25,7 +25,7 @@ def get_my_notifications(
     count = notification_repo.count_by_user(db, user_id=current_user.id)
     return {
         "notifications": noti,
-        "total": count
+        "total": count  
     }
 
 @router.get("/unread-count")

@@ -4,6 +4,9 @@ from uuid import UUID
 
 from app.models.audit_log import AuditLog, AuditAction
 from sqlalchemy import or_
+import logging
+
+logger = logging.getLogger(__name__)
 
 class AuditService:
 
@@ -28,23 +31,25 @@ class AuditService:
         Không được phép throw exception
         """
         try:
-            log = AuditLog(
-                user_id=user_id,
-                action=action,
-                table_name=table_name,
-                record_id=record_id,
-                old_values=old_values,
-                new_values=new_values,
-                ip_address=ip_address,
-                user_agent=user_agent,
-                session_id=session_id,
-                success=success,
-                error_message=error_message
-            )
-            db.add(log)
-            db.flush()
-        except Exception:
-            pass
+            with db.begin_nested():
+                log = AuditLog(
+                    user_id=user_id,
+                    action=action,
+                    table_name=table_name,
+                    record_id=record_id,
+                    old_values=old_values,
+                    new_values=new_values,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                    session_id=session_id,
+                    success=success,
+                    error_message=error_message
+                )
+                db.add(log)
+                db.flush() 
+        except Exception as e:
+            print("FAILED TO CREATE AUDIT LOG: ", e)
+            logger.warning(f"Failed to write audit log: {e}")
 
     def list_audit_logs(
         self,
