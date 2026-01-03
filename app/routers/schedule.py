@@ -45,7 +45,7 @@ async def create_session(
     current_user = Depends(get_current_admin_user)
 ):
     """UC MF.3.1: Tạo session thủ công với Conflict Check"""
-    return schedule_service.create_session_manual(db, data)
+    return await schedule_service.create_session_manual(db, data)
 
 @router.get("/weekly", response_model=WeeklySchedule, tags=["Schedule Viewing"])
 async def get_weekly_schedule_view(

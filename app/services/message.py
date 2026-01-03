@@ -48,7 +48,8 @@ class MessageService:
                 "room_type": MessageType.DIRECT.value,
                 "participant1_id": p1_id,
                 "participant2_id": p2_id,
-                "title": "Direct Chat"
+                "title": "Direct Chat",
+                "created_at": datetime.utcnow()
             }
             room = self.chat_room_repo.create(db, obj_in=room_data)
             db.flush()
@@ -592,7 +593,8 @@ class MessageService:
                 "timestamp": msg.created_at.isoformat(),
                 "attachments": msg.attachments or [],
                 "is_read": status.get("read_at") is not None,
-                "is_starred": status.get("starred", False)
+                "is_starred": status.get("starred", False),
+                "is_edited": msg.updated_at != msg.created_at
             })
 
         history.reverse()
@@ -640,7 +642,7 @@ class MessageService:
                         status_code=404, 
                         detail=f"User {user_id} not found"
                     )
-                
+            avatar_url = None
             # Handle avatar upload if provided
             if avatar:
                 upload_result = await upload_and_save_metadata(
@@ -689,10 +691,22 @@ class MessageService:
                 chat_room.id, 
                 f"Group '{chat_room.title}' was created by {creator_name}"
             )
-
+                        
+            audit_service.log(
+                db=db,
+                action=AuditAction.CREATE,
+                table_name="chat_rooms",
+                record_id=chat_room.id,
+                user_id=creator_id,
+                new_values={
+                    "room_type": "GROUP",
+                    "title": chat_room.title,
+                    "members": [str(uid) for uid in member_ids]
+                }
+            )
+            
             db.commit()
             db.refresh(chat_room)
-            
             return chat_room
         except Exception as e:
                 db.rollback()
@@ -904,9 +918,6 @@ class MessageService:
             room.avatar_url = upload_result.file_path
             changed_fields.append("avatar")
 
-        db.commit()
-        db.refresh(room)
-
         # --- Notify members ---
         if changed_fields:
             await manager.notify_group_updated(
@@ -917,8 +928,26 @@ class MessageService:
                     "title": room.title,
                     "description": room.description,
                     "avatar_url": room.avatar_url
+                },
+                db_session=db
+            )
+
+            audit_service.log(
+                db=db,
+                action=AuditAction.UPDATE,
+                table_name="chat_rooms",
+                record_id=room.id,
+                user_id=updater_id,
+                old_values={"changed_fields": changed_fields},
+                new_values={
+                    "title": room.title,
+                    "description": room.description,
+                    "avatar_url": room.avatar_url
                 }
             )
+
+        db.commit()
+        db.refresh(room)
 
         return room
 
@@ -985,8 +1014,18 @@ class MessageService:
         # --- SOFT DELETE ---
         room.is_active = False
         room.deleted_at = func.now()
-        db.commit()
 
+        audit_service.log(
+            db=db,
+            action=AuditAction.DELETE,
+            table_name="chat_rooms",
+            record_id=room.id,
+            user_id=current_user_id,
+            old_values={"is_active": True},
+            new_values={"is_active": False}
+        )
+
+        db.commit()
         return {
             "success": True,
             "room_id": str(room_id),

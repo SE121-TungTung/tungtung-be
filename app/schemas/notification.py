@@ -32,3 +32,7 @@ class NotificationResponse(NotificationBase):
     model_config = {
         "from_attributes": True
     }
+
+class NotificationListResponse(BaseModel):
+    notifications: List[NotificationResponse]
+    total: int

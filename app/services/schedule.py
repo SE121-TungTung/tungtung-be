@@ -14,7 +14,8 @@ from app.schemas.schedule import (
 
 from app.models.academic import Room
 from app.models.session_attendance import ClassSession
-from app.models.academic import Class
+from app.models.academic import Class, ClassEnrollment
+from app.models.user import User
 
 from app.repositories.user import user_repository
 from app.repositories.room import room_repository
@@ -22,9 +23,15 @@ from app.repositories.class_session import class_repository
 from app.repositories.class_session import class_session_repository
 from app.core import config
 
+from app.services.notification import notification_service
+from app.schemas.notification import NotificationCreate
+from app.models.notification import NotificationType, NotificationPriority
+
 import math
 import random
 import json
+
+from app.core.database import SessionLocal
 
 DEFAULT_MAX_SLOT_PER_SESSION = config.settings.DEFAULT_MAX_SLOT_PER_SESSION
 
@@ -76,7 +83,7 @@ class ScheduleService:
         session_date: date,
         time_slots: List[int],
         exclude_session_id: UUID = None,
-        proposed_sessions: List[SessionProposal] = None # <--- FIX 1: Thêm tham số này
+        proposed_sessions: List[SessionProposal] = None
     ) -> bool:
         """Kiểm tra teacher có bận vào time slots này không (bằng cách so sánh time_slots)."""
         
@@ -96,7 +103,6 @@ class ScheduleService:
             if set(session.time_slots) & set(time_slots):
                 return True
 
-        # 2. Check trong RAM (Lịch đang đề xuất - chưa lưu DB) <--- FIX 2: Check thêm ở đây
         if proposed_sessions:
             for p in proposed_sessions:
                 # Nếu cùng giáo viên và cùng ngày
@@ -358,8 +364,65 @@ class ScheduleService:
                 created_sessions.append(session)
                 
             db.commit()
-            
-            # TODO: Trigger notifications (UC MF.6)
+
+            # Notification
+            noti_db = SessionLocal()
+            try:
+                students_by_class = {}
+                for session in created_sessions:
+                    noti = NotificationCreate(
+                        user_id=session.teacher_id,
+                        title="Lịch dạy mới đã được xếp",
+                        content=(
+                            f"Bạn có buổi dạy lớp {session.class_name} "
+                            f"vào {session.session_date} "
+                            f"{session.start_time}-{session.end_time}"
+                        ),
+                        notification_type=NotificationType.SCHEDULE_CHANGE,
+                        priority=NotificationPriority.NORMAL,
+                        action_url="",
+                    )
+
+                    notification_service.send_notification_sync(
+                        db=noti_db,
+                        noti_info=noti
+                    )
+                
+                    if session.class_id not in students_by_class:
+                        students_by_class[session.class_id] = (
+                            db.query(User)
+                            .join(
+                                ClassEnrollment,
+                                ClassEnrollment.student_id == User.id
+                            )
+                            .filter(
+                                ClassEnrollment.class_id == session.class_id,
+                                User.deleted_at.is_(None),
+                                ClassEnrollment.deleted_at.is_(None)
+                            )
+                            .all()
+                        )
+
+                    for student in students_by_class[session.class_id]:
+                        noti = NotificationCreate(
+                            user_id=student.id,  # ✅ FIX BUG
+                            title="Lịch học mới",
+                            content=(
+                                f"Lớp {session.class_name} có buổi học "
+                                f"vào {session.session_date} "
+                                f"{session.start_time}-{session.end_time}"
+                            ),
+                            notification_type=NotificationType.SCHEDULE_CHANGE,
+                            priority=NotificationPriority.NORMAL,
+                            action_url=f"/student/schedule/{session.id}",
+                        )
+
+                        notification_service.send_notification_sync(
+                            db=noti_db,
+                            noti_info=noti
+                        )
+            finally:
+                noti_db.close()
             
             return {
                 "success": True,
@@ -424,7 +487,7 @@ class ScheduleService:
             
     # ... (Các hàm CRUD thủ công khác giữ nguyên logic)
     
-    def create_session_manual(self, db: Session, data: SessionCreate) -> SessionResponse:
+    async def create_session_manual(self, db: Session, data: SessionCreate) -> SessionResponse:
         """Tạo session thủ công với conflict check"""
         # ... Logic tìm kiếm phòng và kiểm tra xung đột ...
         
@@ -455,6 +518,56 @@ class ScheduleService:
         session = self.session_repo.create(db, obj_in=session_data)
         db.commit()
         
+        await notification_service.send_notification(
+            db,
+            NotificationCreate(
+                user_id=session.teacher_id,
+                title="Buổi dạy mới được thêm",
+                content=(
+                    f"Bạn có buổi dạy lớp {session.class_name} "
+                    f"vào {session.session_date} "
+                    f"{session.start_time}-{session.end_time}"
+                ),
+                notification_type=NotificationType.SCHEDULE_CHANGE,
+            )
+        )
+
+        students_by_class = {}
+        if session.class_id not in students_by_class:
+            students_by_class[session.class_id] = (
+                db.query(User)
+                .join(
+                    ClassEnrollment,
+                    ClassEnrollment.student_id == User.id
+                )
+                .filter(
+                    ClassEnrollment.class_id == session.class_id,
+                    User.deleted_at.is_(None),
+                    ClassEnrollment.deleted_at.is_(None)
+                )
+                .all()
+            )
+
+        for student in students_by_class[session.class_id]:
+            noti = NotificationCreate(
+                user_id=student.id,
+                title="Lịch học mới",
+                content=(
+                    f"Lớp {session.class_name} có buổi học "
+                    f"vào {session.session_date} "
+                    f"{session.start_time}-{session.end_time}"
+                ),
+                notification_type=NotificationType.SCHEDULE_CHANGE,
+                priority=NotificationPriority.NORMAL,
+                action_url=f"/student/schedule/{session.id}",
+            )
+
+            await notification_service.send_notification(
+                db=db,
+                noti_info=noti
+            )
+
+
         return self._to_response(db, session)
 
     def update_session(
@@ -497,14 +610,16 @@ class ScheduleService:
         
         updated_session = self.session_repo.update(db, db_obj=session, obj_in=update_dict)
         db.commit()
-        
+
+        # TODO: Notify related users
+
         return self._to_response(db, updated_session)
     
     # =========================================================================
     # UC MF.3.4: DELETE SESSION
     # =========================================================================
     
-    def delete_session(
+    async def delete_session(
         self,
         db: Session,
         session_id: UUID
@@ -519,6 +634,55 @@ class ScheduleService:
         db.commit()
         
         # TODO: Trigger notification
+
+        await notification_service.send_notification(
+            db,
+            NotificationCreate(
+                user_id=session.teacher_id,
+                title="Buổi dạy đã bị hủy",
+                content=(
+                    f"Buổi dạy lớp {session.class_name} "
+                    f"ngày {session.session_date} đã bị hủy"
+                ),
+                notification_type=NotificationType.SCHEDULE_CHANGE,
+                priority=NotificationPriority.URGENT,
+            )
+        )
+
+        students_by_class = {}
+        if session.class_id not in students_by_class:
+            students_by_class[session.class_id] = (
+                db.query(User)
+                .join(
+                    ClassEnrollment,
+                    ClassEnrollment.student_id == User.id
+                )
+                .filter(
+                    ClassEnrollment.class_id == session.class_id,
+                    User.deleted_at.is_(None),
+                    ClassEnrollment.deleted_at.is_(None)
+                )
+                .all()
+            )
+
+        for student in students_by_class[session.class_id]:
+            noti = NotificationCreate(
+                user_id=student.id,
+                title="Lịch học đã bị hủy",
+                content=(
+                    f"Lớp {session.class_name} "
+                    f"vào {session.session_date} "
+                    f"{session.start_time}-{session.end_time} đã bị hủy"
+                ),
+                notification_type=NotificationType.SCHEDULE_CHANGE,
+                priority=NotificationPriority.NORMAL,
+                action_url=f"/student/schedule/{session.id}",
+            )
+
+            await notification_service.send_notification(
+                db=db,
+                noti_info=noti
+            )
         
         return {"success": True, "message": "Session cancelled"}
     

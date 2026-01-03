@@ -315,7 +315,7 @@ def teacher_view_attempt(
 
 # Teacher grade attempt
 @router.post("/attempts/{attempt_id}/grade")
-def grade_attempt(
+async def grade_attempt(
     attempt_id: UUID,
     payload: GradeAttemptRequest,
     db: Session = Depends(get_db),
@@ -327,7 +327,7 @@ def grade_attempt(
     ):
         raise HTTPException(403, "Not authorized")
 
-    return attempt_service.grade_attempt(
+    return await attempt_service.grade_attempt(
         db=db,
         attempt_id=attempt_id,
         teacher_id=current_user.id,

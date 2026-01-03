@@ -1,22 +1,21 @@
 from sqlalchemy.orm import Session
 from datetime import datetime
-from fastapi import BackgroundTasks
 from uuid import UUID
 
 from app.repositories.notification import notification_repo
 from app.schemas.notification import NotificationCreate
 from app.services.websocket import manager as websocket_manager
 
+import asyncio
 
 class NotificationService:
     async def send_notification(
         self,
         db: Session,
         noti_info: NotificationCreate,
-        background_tasks: BackgroundTasks | None = None,
     ):
         # 1. Lưu notification vào DB (commit trong service – giữ nguyên)
-        notification = notification_repo.create(db, obj_in=noti_info)
+        notification = notification_repo.create(db, obj_in=noti_info.dict())
 
         # 2. Realtime WebSocket – chỉ xử lý kênh in_app
         if "in_app" in notification.channels:
@@ -69,5 +68,21 @@ class NotificationService:
             "updated_count": updated_count,
         }
 
+    def send_notification_sync(self, db: Session, noti_info: NotificationCreate):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # Đang ở trong event loop (FastAPI)
+            return asyncio.create_task(
+                self.send_notification(db, noti_info)
+            )
+        else:
+            # Chạy sync context
+            asyncio.run(
+                self.send_notification(db, noti_info)
+            )
 
 notification_service = NotificationService()

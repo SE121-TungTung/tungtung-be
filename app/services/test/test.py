@@ -50,12 +50,16 @@ class TestService:
 
             if files:
                 for file in files:
+                    u_type = UploadType.AUDIO
+                    if file.filename and ("image" in file.filename.lower() or any(ext in file.filename.lower() for ext in ['.jpg', '.png', '.jpeg'])):
+                        u_type = UploadType.IMAGE
                     file_meta = await upload_and_save_metadata(
                         db=db,
-                        file=file,
-                        uploader_id=created_by,
-                        upload_type=UploadType.AUDIO,
-                        access_level=AccessLevel.PUBLIC
+                        uploaded_file=file,
+                        user_id=created_by,
+                        folder="test_material",
+                        upload_type_value=u_type,
+                        access_level_value=AccessLevel.PUBLIC
                     )
 
                     if not file_meta or not file_meta.file_path:
@@ -73,12 +77,17 @@ class TestService:
                 if url.startswith(prefix):
                     filename = url[len(prefix):]
                     if filename not in uploaded_map:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"File placeholder {filename} not found in uploads"
-                        )
+                        print(f"File {filename} not found in upload map")
+                        return None
                     return uploaded_map[filename]
                 return url
+            
+            total_points = sum(
+                q.points for sec in data.sections 
+                for part in sec.parts 
+                for group in part.question_groups 
+                for q in group.questions
+            )
 
             test = Test(
                 title=data.title,
@@ -97,8 +106,9 @@ class TestService:
                 test_type=data.test_type,
                 exam_type_id=data.exam_type_id,
                 structure_id=data.structure_id,
+                total_points=total_points,
                 created_by=created_by,
-                status=TestStatus.DRAFT
+                status=data.status
             )
 
             db.add(test)
@@ -215,13 +225,29 @@ class TestService:
                             global_order += 1
                             group_order += 1
 
+            audit_service.log(
+                db=db,
+                user_id=created_by,
+                action=AuditAction.CREATE,
+                table_name="tests",
+                record_id=test.id,
+                new_values={
+                    "title": test.title,
+                    "description": test.description,
+                    "class_id": str(test.class_id)
+                }
+            )
+
             db.commit()
             db.refresh(test)
-            return test
 
-        except Exception:
+            return test
+        except HTTPException as httpex:
             db.rollback()
-            raise
+            raise httpex
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(500, detail=str(e))
 
     def update_test(
         self,
@@ -258,6 +284,15 @@ class TestService:
 
         test.updated_by = user_id
 
+        audit_service.log(
+            db=db,
+            user_id=user_id,
+            action=AuditAction.UPDATE,
+            table_name="tests",
+            record_id=test.id,
+            new_values=payload.dict(exclude_unset=True)
+        )
+        
         db.commit()
         db.refresh(test)
 
@@ -460,7 +495,7 @@ class TestService:
         
         # Map attempts data theo test_id
         attempts_map = {
-            str(row.test_id): {
+            row.test_id: {
                 'count': row.count,
                 'max_attempt': row.max_attempt
             }
@@ -512,15 +547,27 @@ class TestService:
         # ============================================================
         results = []
         for test in tests:
-            test_id_str = str(test.id)
-            
+
+            # ============================
+            # Skill (giống list_tests)
+            # ============================
+            if test.sections:
+                current_skill = test.sections[0].skill_area
+            else:
+                current_skill = SkillArea.READING
+
+            # ============================
+            # Difficulty (default)
+            # ============================
+            current_difficulty = DifficultyLevel.MEDIUM
+
             # Get attempts info từ map
-            attempt_info = attempts_map.get(test_id_str, {'count': 0, 'max_attempt': 0})
+            attempt_info = attempts_map.get(test.id, {'count': 0, 'max_attempt': 0})
             attempts_count = attempt_info['count']
             
             # Get latest attempt info
-            latest = latest_map.get(test_id_str, {'status': None, 'score': None})
-            
+            latest = latest_map.get(test.id, {'status': None, 'score': None})
+
             # Calculate can_attempt
             can_attempt = attempts_count < (test.max_attempts or 1)
             
@@ -546,12 +593,7 @@ class TestService:
                 "status": test.status
             })
         
-        return {
-            "total": total,
-            "skip": skip,
-            "limit": limit,
-            "tests": results
-        }
+        return results
 
     def get_test_summary(self, db: Session, test_id: UUID):
         """

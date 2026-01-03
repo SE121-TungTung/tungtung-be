@@ -25,6 +25,13 @@ from app.schemas.test.test_read import TestAttemptDetailResponse
 from app.services.cloudinary import upload_and_save_metadata
 from app.models.file_upload import UploadType, AccessLevel
 
+from app.services.audit_log import audit_service
+from app.models.audit_log import AuditAction
+
+from app.services.notification import notification_service
+from app.schemas.notification import NotificationCreate
+from app.models.notification import NotificationType, NotificationPriority
+
 class AttemptService:
     
     # ============================================================
@@ -291,13 +298,27 @@ class AttemptService:
             # Calculate band score if applicable (Simulation)
             attempt.band_score = self._calculate_band_score(attempt.percentage_score)
 
-        db.commit()
-        db.refresh(attempt)
-
         graded_by = attempt.graded_by if isinstance(attempt.graded_by, UUID) else None
         ai_feedback = attempt.ai_feedback if isinstance(attempt.ai_feedback, dict) else None
         teacher_feedback = attempt.teacher_feedback if isinstance(attempt.teacher_feedback, str) else None
 
+        audit_service.log(
+            db=db,
+            user_id=user_id,
+            action=AuditAction.SUBMIT,
+            table_name="test_attempts",
+            record_id=attempt.id,
+            new_values={
+                "attempt_id": str(attempt.id),
+                "student_id": str(attempt.student_id),
+                "status": attempt.status.value,
+                "total_score": float(attempt.total_score or 0),
+                "percentage_score": float(attempt.percentage_score or 0)
+            }
+        )
+
+        db.commit()
+        db.refresh(attempt)
 
         return SubmitAttemptResponse(
             attempt_id=attempt.id,
@@ -439,7 +460,20 @@ class AttemptService:
         # 6. Update Attempt Status
         # Fix #8: Do not calculate score yet, just mark as submitted
         attempt.status = AttemptStatus.SUBMITTED
-        
+
+        audit_service.log(
+            db=db,
+            user_id=user_id,
+            action=AuditAction.SUBMIT,
+            table_name="test_responses",
+            record_id=response.id,
+            new_values={
+                "attempt_id": str(attempt_id),
+                "question_id": str(question_id),
+                "audio_response_url": file_meta.file_path
+            }
+        )
+
         db.commit()
         
         return {
@@ -592,7 +626,7 @@ class AttemptService:
             for a in attempts
         ]
     
-    def grade_attempt(
+    async def grade_attempt(
         self,
         db: Session,
         attempt_id: UUID,
@@ -649,8 +683,41 @@ class AttemptService:
         attempt.graded_at = datetime.now(timezone.utc)
         attempt.status = AttemptStatus.GRADED
 
+        audit_service.log(
+            db=db,
+            user_id=teacher_id,
+            action=AuditAction.GRADE,
+            table_name="test_attempts",
+            record_id=attempt.id,
+            new_values={
+                "attempt_id": str(attempt.id),
+                "graded_by": str(teacher_id),
+                "total_score": float(attempt.total_score or 0),
+                "percentage_score": float(attempt.percentage_score or 0),
+                "band_score": float(attempt.band_score or 0)
+            }
+        )
+        
         db.commit()
         db.refresh(attempt)
+
+        noti = NotificationCreate(
+            user_id=attempt.student_id,
+            title="Kết quả bài kiểm tra đã có",
+            content=(
+                f"Bài kiểm tra của bạn đã được chấm. "
+                f"Band score: {attempt.band_score}, "
+                f"{'Đạt' if attempt.passed else 'Chưa đạt'}."
+            ),
+            notification_type=NotificationType.GRADE_AVAILABLE,
+            priority=NotificationPriority.NORMAL,
+            action_url=f"/student/tests/attempts/{attempt.id}",
+        )
+
+        await notification_service.send_notification(
+            db=db,
+            noti_info=noti
+        )
 
         return {
             "status": "graded",
