@@ -581,6 +581,8 @@ class TestService:
                 "id": test.id,
                 "title": test.title,
                 "description": test.description,
+                "skill": current_skill,
+                "difficulty": current_difficulty,
                 "test_type": test.test_type.value if test.test_type else None,
                 "time_limit_minutes": test.time_limit_minutes,
                 "total_questions": total_questions,

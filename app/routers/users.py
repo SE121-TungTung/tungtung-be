@@ -208,7 +208,8 @@ async def get_my_classes(
         )
 
         result.append({
-            **class_.__dict__,
+            "id": class_.id,
+            "name": class_.name,
             "teacher": {
                 "id": class_.teacher.id if class_.teacher else None,
                 "full_name": (
@@ -225,7 +226,7 @@ async def get_my_classes(
                     "email": student.email,
                     "avatar_url": student.avatar_url if student.avatar_url else None
                 }
-                for student in classmates
+                for student in classmates if student.id != current_user.id
             ],
             "sessions": sessions
         })
