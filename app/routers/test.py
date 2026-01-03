@@ -232,8 +232,8 @@ def submit_test_attempt(
     return attempt_service.submit_attempt(
         db=db,
         attempt_id=attempt_id,
-        payload=payload,
-        student_id=current_user.id
+        data=payload,
+        user_id=current_user.id
     )
 
 # ============================================================
@@ -256,8 +256,8 @@ async def submit_speaking_answer(
         db=db,
         attempt_id=attempt_id,
         question_id=question_id,
-        audio_file=audio,
-        student_id=current_user.id
+        file=audio,
+        user_id=current_user.id
     )
 
 @router.get("/{test_id}/attempts", response_model=list[TestAttemptSummaryResponse])
