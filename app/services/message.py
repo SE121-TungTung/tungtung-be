@@ -22,9 +22,6 @@ from datetime import datetime, timezone
 
 from app.services.cloudinary import upload_and_save_metadata
 
-from app.services.audit_log import audit_service
-from app.models.audit_log import AuditAction
-
 logger = logging.getLogger(__name__)
 
 
@@ -185,9 +182,12 @@ class MessageService:
             "attachments": new_message.attachments or []
         }
         
+        # --- [BROADCAST LOGIC FIXED] ---
         if room.room_type == MessageType.DIRECT:
+            # Gửi cho chính mình (Sender)
             await manager.send_to_user(sender_id, payload)
             
+            # Gửi cho người nhận (Target) - Dùng ID chuẩn xác từ DB
             for uid in target_recipient_ids:
                 await manager.send_to_user(uid, payload)
         
@@ -1199,6 +1199,8 @@ class MessageService:
         
         db.commit()
         db.refresh(message)
+        
+        # (Optional) Broadcast socket event 'message_updated' tại đây
         
         return message
 

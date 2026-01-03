@@ -4,9 +4,6 @@ from app.models.academic import ClassEnrollment
 from app.schemas.enrollment import ClassEnrollmentCreateAuto
 from uuid import UUID
 
-from app.services.audit_log import audit_service
-from app.models.audit_log import AuditAction
-
 class ClassEnrollmentService:
     """Service layer chuyên xử lý logic Enrollment"""
     
@@ -31,15 +28,7 @@ class ClassEnrollmentService:
             db=db, 
             obj_in=enrollment_in.model_dump() 
         )
-        audit_service.log(
-            db=db,
-            action=AuditAction.CREATE,
-            table_name="class_enrollments",
-            record_id=new_enrollment.id,
-            user_id=student_id,
-            old_values=None,
-            new_values=new_enrollment
-        )
+        
         return new_enrollment
 
 class_enrollment_service = ClassEnrollmentService(CRUDBase(ClassEnrollment))

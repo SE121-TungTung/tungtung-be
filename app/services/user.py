@@ -32,10 +32,6 @@ from datetime import datetime
 from fastapi import UploadFile
 from app.services import cloudinary
 
-from app.services.audit_log import audit_service
-from app.models.audit_log import AuditAction
-
-
 class UserService(BaseService):
     def __init__(self):
         super().__init__(user_repository)
@@ -144,8 +140,8 @@ class UserService(BaseService):
                 })
                 
                 # 3. TẠO USER
-                new_user = self.repository.create_user(db, user_data, default_class_id=user_data_in.class_id)
-                created_users.append(new_user)
+                user = self.repository.create_user(db, user_data, default_class_id=user_data_in.class_id)
+                created_users.append(user)
                 
                 # 4. GỬI EMAIL
                 full_name = f"{new_user.first_name} {new_user.last_name}"

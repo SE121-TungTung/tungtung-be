@@ -12,10 +12,6 @@ from app.models.test import ContentPassage
 from fastapi import UploadFile
 from app.services.cloudinary import upload_and_save_metadata
 
-from app.services.audit_log import audit_service
-from app.models.audit_log import AuditAction
-
-
 from app.models.test import (
     Test,
     TestSection,
@@ -314,14 +310,6 @@ class TestService:
         test.deleted_at = datetime.utcnow()
         test.updated_by = user_id
 
-        audit_service.log(
-            db=db,
-            user_id=user_id,
-            action=AuditAction.DELETE,
-            table_name="tests",
-            record_id=test.id
-        )
-
         db.commit()
 
     # ============================================================
@@ -576,31 +564,22 @@ class TestService:
             # Get attempts info từ map
             attempt_info = attempts_map.get(test.id, {'count': 0, 'max_attempt': 0})
             attempts_count = attempt_info['count']
-
+            
             # Get latest attempt info
             latest = latest_map.get(test.id, {'status': None, 'score': None})
 
             # Calculate can_attempt
             can_attempt = attempts_count < (test.max_attempts or 1)
-
+            
             # Count questions (đã eager load)
             total_questions = len(test.questions)
-
+            
             results.append({
                 "id": test.id,
                 "title": test.title,
                 "description": test.description,
                 "test_type": test.test_type.value if test.test_type else None,
-
-                # ✅ BỔ SUNG ĐÚNG YÊU CẦU
-                "skill": current_skill,
-                "difficulty": current_difficulty,
-                "duration_minutes": test.time_limit_minutes or 0,
-                "created_at": test.created_at,
-
-                # ============================
-                # Existing working fields
-                # ============================
+                "time_limit_minutes": test.time_limit_minutes,
                 "total_questions": total_questions,
                 "total_points": float(test.total_points or 0),
                 "passing_score": float(test.passing_score or 0),
@@ -709,7 +688,7 @@ class TestService:
             .options(
                 joinedload(Test.sections)
                 .joinedload(TestSection.parts)
-                .joinedload(TestSectionPart.passage),
+                .joinedload(TestSectionPart.passage),  # ✅ FIX
 
                 joinedload(Test.sections)
                 .joinedload(TestSection.parts)
