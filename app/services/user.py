@@ -8,7 +8,8 @@ from app.schemas.user import UserCreate, UserUpdate, UserPasswordUpdate, BulkImp
 from app.core.security import verify_password, get_password_hash, create_password_reset_token, verify_password_reset_token
 from app.services.email import email_service
 from app.dependencies import generate_strong_password
-from app.services.email import email_service
+from app.services.audit_log import audit_service
+from app.models.audit_log import AuditAction
 import uuid
 import logging
 
@@ -140,8 +141,8 @@ class UserService(BaseService):
                 })
                 
                 # 3. TẠO USER
-                user = self.repository.create_user(db, user_data, default_class_id=user_data_in.class_id)
-                created_users.append(user)
+                new_user = self.repository.create_user(db, user_data, default_class_id=user_data_in.class_id)
+                created_users.append(new_user)
                 
                 # 4. GỬI EMAIL
                 full_name = f"{new_user.first_name} {new_user.last_name}"
