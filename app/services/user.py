@@ -493,8 +493,12 @@ class UserService(BaseService):
         }
 
     def _get_system_admin_stats(self, db: Session) -> dict:
-        total_users = db.query(User).count()
-        total_courses = db.query(Course).count()
+        total_users = db.query(User).filter(
+            User.deleted_at.is_(None)
+        ).count()
+        total_courses = db.query(Course).filter(
+            Course.deleted_at.is_(None)
+        ).count()
         active_classes = db.query(Class).filter(Class.status == ClassStatus.ACTIVE).count()
         
         users_by_role = (

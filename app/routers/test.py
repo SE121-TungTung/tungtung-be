@@ -28,6 +28,15 @@ from app.schemas.test.test_attempt import (
 from app.services.test.test import test_service
 from app.services.test.test_attempt_service import attempt_service
 
+from app.schemas.test.speaking import (
+    PreUploadResponse,
+    BatchSubmitSpeakingRequest,
+    BatchSubmitSpeakingResponse
+)
+from app.services.test.speaking_service import speaking_service
+from app.services.cloudinary import upload_and_save_metadata
+from app.models.file_upload import UploadType, AccessLevel
+
 router = APIRouter(tags=["Tests"], prefix="/tests")
 
 # ============================================================
@@ -217,7 +226,7 @@ def start_test_attempt(
 # SUBMIT ATTEMPT
 # ============================================================
 @router.post("/attempts/{attempt_id}/submit", response_model=SubmitAttemptResponse)
-def submit_test_attempt(
+async def submit_test_attempt(
     attempt_id: UUID,
     payload: SubmitAttemptRequest,
     db: Session = Depends(get_db),
@@ -229,7 +238,7 @@ def submit_test_attempt(
     - Attempt must be IN_PROGRESS
     - Auto grading only where allowed
     """
-    return attempt_service.submit_attempt(
+    return await attempt_service.submit_attempt(
         db=db,
         attempt_id=attempt_id,
         data=payload,
@@ -259,6 +268,144 @@ async def submit_speaking_answer(
         file=audio,
         user_id=current_user.id
     )
+
+# ────────────────────────────────────────────────────────────
+# STEP 1: PRE-UPLOAD AUDIO FILE
+# ────────────────────────────────────────────────────────────
+
+@router.post(
+    "/attempts/{attempt_id}/speaking/upload/{question_id}",
+    response_model=PreUploadResponse,
+    summary="Pre-upload speaking audio file",
+    description="""
+    Upload a single audio file for a speaking question.
+    
+    This is step 1 of the 2-step speaking submission process:
+    1. Upload each audio file as student records (this endpoint)
+    2. Batch submit all file_upload_ids for grading
+    
+    **Benefits:**
+    - Progressive upload (better UX)
+    - No timeout issues with slow connections
+    - Resume capability if interrupted
+    - Student sees progress immediately
+    
+    **Returns:** file_upload_id to use in batch submit
+    """
+)
+async def pre_upload_speaking_audio(
+    attempt_id: UUID,
+    question_id: UUID,
+    audio: UploadFile = File(..., description="Audio file (mp3, wav, webm, ogg)"),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Pre-upload single speaking audio file
+    
+    Example usage:
+    ```bash
+    curl -X POST "http://localhost:8000/tests/attempts/{attempt_id}/speaking/upload/{question_id}" \
+      -H "Authorization: Bearer {token}" \
+      -F "audio=@recording.mp3"
+    ```
+    """
+    
+    # 1. Upload file to Cloudinary
+    try:
+        file_meta = await upload_and_save_metadata(
+            db=db,
+            file=audio,
+            uploader_id=current_user.id,
+            upload_type=UploadType.ASSIGNMENT_SUBMISSION,
+            access_level=AccessLevel.PRIVATE
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to upload file: {str(e)}"
+        )
+    
+    # 2. Process with speaking service
+    result = await speaking_service.pre_upload_audio(
+        db=db,
+        attempt_id=attempt_id,
+        question_id=question_id,
+        file_meta=file_meta,
+        user_id=current_user.id
+    )
+    
+    return result
+
+
+# ────────────────────────────────────────────────────────────
+# STEP 2: BATCH SUBMIT ALL SPEAKING RESPONSES
+# ────────────────────────────────────────────────────────────
+
+@router.post(
+    "/attempts/{attempt_id}/speaking/batch-submit",
+    response_model=BatchSubmitSpeakingResponse,
+    summary="Batch submit all speaking responses",
+    description="""
+    Submit all speaking responses for AI grading at once.
+    
+    This is step 2 of the speaking submission process.
+    All files must be pre-uploaded using the upload endpoint first.
+    
+    **What happens:**
+    1. Validates all file_upload_ids and questions
+    2. AI grades all questions in parallel (fast!)
+    3. Calculates overall IELTS speaking scores
+    4. Returns comprehensive results with feedback
+    
+    **Note:** Final scores require teacher review.
+    This endpoint provides AI suggestions only.
+    """
+)
+async def batch_submit_speaking(
+    attempt_id: UUID,
+    request: BatchSubmitSpeakingRequest,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    """
+    Batch submit all speaking responses
+    
+    Example request body:
+    ```json
+    {
+      "responses": [
+        {
+          "question_id": "q1-uuid",
+          "file_upload_id": "file1-uuid",
+          "duration_seconds": 30
+        },
+        {
+          "question_id": "q2-uuid",
+          "file_upload_id": "file2-uuid",
+          "duration_seconds": 45
+        }
+      ]
+    }
+    ```
+    
+    Example curl:
+    ```bash
+    curl -X POST "http://localhost:8000/tests/attempts/{attempt_id}/speaking/batch-submit" \
+      -H "Authorization: Bearer {token}" \
+      -H "Content-Type: application/json" \
+      -d '{"responses": [...]}'
+    ```
+    """
+    
+    result = await speaking_service.batch_submit_speaking(
+        db=db,
+        attempt_id=attempt_id,
+        request=request,
+        user_id=current_user.id
+    )
+    
+    return result
 
 @router.get("/{test_id}/attempts", response_model=list[TestAttemptSummaryResponse])
 def list_test_attempts_for_teacher(

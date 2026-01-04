@@ -120,8 +120,8 @@ def get_classes_by_teacher(
         ClassResponse.model_validate(c).model_copy(
             update={
                 "course_name": c.course.name if c.course else None,
-                "teacher_name": c.teacher.full_name if c.teacher else None,
-                "substitute_teacher_name": c.substitute_teacher.full_name if c.substitute_teacher else None,
+                "teacher_name": f"{c.teacher.first_name} {c.teacher.last_name}" if c.teacher else None,
+                "substitute_teacher_name": f"{c.substitute_teacher.first_name} {c.substitute_teacher.last_name}" if c.substitute_teacher else None,
                 "room_name": c.room.name if c.room else None,
             }
         )
