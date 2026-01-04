@@ -376,7 +376,7 @@ class AttemptService:
             db=db,
             file=file,
             uploader_id=user_id,
-            upload_type=UploadType.ASSIGNMENT_SUBMISSION,
+            upload_type=UploadType.AUDIO,
             access_level=AccessLevel.PRIVATE
         )
 

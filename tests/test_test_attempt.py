@@ -228,7 +228,7 @@ async def test_submit_speaking_success(mock_db_session):
 
     # ✅ FIX 4: Mock UploadType trong service vì Enum thật thiếu attribute
     with patch("app.services.test.test_attempt_service.UploadType") as MockUploadType:
-        MockUploadType.ASSIGNMENT_SUBMISSION = "assignment_submission"
+        MockUploadType.AUDIO = "assignment_submission"
         
         with patch("app.services.test.test_attempt_service.upload_and_save_metadata", new_callable=AsyncMock) as mock_upload, \
              patch("app.services.test.test_attempt_service.ai_grade_service") as mock_ai:

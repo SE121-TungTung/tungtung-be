@@ -317,7 +317,7 @@ async def pre_upload_speaking_audio(
             db=db,
             file=audio,
             uploader_id=current_user.id,
-            upload_type=UploadType.ASSIGNMENT_SUBMISSION,
+            upload_type=UploadType.AUDIO,
             access_level=AccessLevel.PRIVATE
         )
     except Exception as e:
