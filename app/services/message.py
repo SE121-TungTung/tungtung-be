@@ -52,7 +52,8 @@ class MessageService:
                 "participant1_id": p1_id,
                 "participant2_id": p2_id,
                 "title": "Direct Chat",
-                "created_at": datetime.utcnow()
+                "created_at": datetime.utcnow(),
+                "created_by": sender_id
             }
             room = self.chat_room_repo.create(db, obj_in=room_data)
             db.flush()
