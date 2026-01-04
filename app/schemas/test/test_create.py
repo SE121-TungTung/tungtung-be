@@ -123,6 +123,3 @@ class TestUpdate(BaseModel):
 
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
-
-    # GỘP publish / unpublish
-    status: Optional[TestStatus] = None

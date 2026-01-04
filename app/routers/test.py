@@ -14,7 +14,7 @@ from app.schemas.test.test_create import TestCreate, TestUpdate
 from app.schemas.test.test_read import (
     TestResponse,
     TestTeacherResponse,
-    TestListResponse,
+    TestListPageResponse,
     TestAttemptDetailResponse
 )
 from app.schemas.test.test_attempt import (
@@ -42,7 +42,7 @@ router = APIRouter(tags=["Tests"], prefix="/tests")
 # ============================================================
 # LIST TESTS
 # ============================================================
-@router.get("/")
+@router.get("/", response_model=TestListPageResponse)
 def list_tests(
     skip: int = 0,
     limit: int = 20,
@@ -123,27 +123,55 @@ async def create_test(
     return test_service.get_test_for_teacher(db, test.id)
 
 @router.patch("/{test_id}", response_model=TestTeacherResponse)
-def update_test(
+async def update_test(
     test_id: UUID,
-    payload: TestUpdate,
+    test_data_str: str = Form(...),
+    files: list[UploadFile] | None = File(None),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
     if current_user.role not in (
         UserRole.TEACHER,
         UserRole.CENTER_ADMIN,
-        UserRole.SYSTEM_ADMIN,
+        UserRole.SYSTEM_ADMIN
     ):
         raise HTTPException(status_code=403, detail="Not authorized")
 
-    test = test_service.update_test(
+    try:
+        payload_dict = json.loads(test_data_str)
+        payload = TestUpdate(**payload_dict)
+    except Exception as e:
+        raise HTTPException(400, f"Invalid test data: {e}")
+
+    updated_test = await test_service.update_test(
         db=db,
         test_id=test_id,
         payload=payload,
+        user_id=current_user.id,
+        files=files
+    )
+
+    return test_service.get_test_for_teacher(db, updated_test.id)
+
+@router.post("/{test_id}/publish", response_model=TestTeacherResponse)
+def publish_test(
+    test_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    """
+    Validate and switch test status to PUBLISHED.
+    """
+    if current_user.role not in (UserRole.TEACHER, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    published_test = test_service.publish_test(
+        db=db,
+        test_id=test_id,
         user_id=current_user.id
     )
 
-    return test_service.get_test_for_teacher(db, test.id)
+    return test_service.get_test_for_teacher(db, published_test.id)
 
 @router.delete("/{test_id}")
 def delete_test(
