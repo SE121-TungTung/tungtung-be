@@ -18,10 +18,9 @@ from app.schemas.test.test_attempt import (
     SubmitAttemptRequest,
     SubmitAttemptResponse,
     QuestionResult,
-    QuestionResultDetail,
     GradeAttemptRequest
 )
-from app.schemas.test.test_read import TestAttemptDetailResponse
+from app.schemas.test.test_read import TestAttemptDetailResponse, QuestionResultResponse
 from app.services.cloudinary import upload_and_save_metadata
 from app.models.file_upload import UploadType, AccessLevel
 
@@ -398,7 +397,7 @@ class AttemptService:
             # Here passing file_url. AI Service needs to handle speech-to-text then grade.
             ai_result = await ai_grade_service.ai_grade_speaking(
                 question=question,
-                audio_url=file_meta.file_path 
+                audio_url=file_meta.file_path
             )
             raw = ai_result.get("raw", {})
             
@@ -507,7 +506,6 @@ class AttemptService:
             raise HTTPException(403, "Not authorized to view this attempt")
 
         # 3. Load responses with Question info
-        # We need max points from TestQuestion as well
         responses_query = (
             db.query(TestResponse, QuestionBank, TestQuestion.points)
             .join(QuestionBank, TestResponse.question_id == QuestionBank.id)
@@ -520,23 +518,32 @@ class AttemptService:
         details_list = []
         for resp, qb, max_pts in responses_query:
             
-            # Map Response to Schema
-            detail = QuestionResultDetail(
+            detail = QuestionResultResponse(
                 question_id=resp.question_id,
+                question_text=qb.question_text,
+                question_type=qb.question_type.value if hasattr(qb.question_type, 'value') else str(qb.question_type),
                 
-                # Basic info
+                user_answer=resp.response_text,
+                response_data=resp.response_data,
                 audio_response_url=resp.audio_response_url,
+                
                 is_correct=resp.is_correct,
-                points_earned=float(resp.points_earned or 0),
-                max_points=float(max_pts or 0),
                 auto_graded=resp.auto_graded,
                 
-                # AI Grading
-                ai_score=float(resp.ai_points_earned) if resp.ai_points_earned else None,
+                points_earned=float(resp.points_earned or 0),
+                max_points=float(max_pts or 0),
+                band_score=float(resp.teacher_band_score) if resp.teacher_band_score else (float(resp.ai_band_score) if resp.ai_band_score else None),
+                
+                rubric_scores=resp.teacher_rubric_scores if resp.teacher_rubric_scores else resp.ai_rubric_scores,
+                
+                ai_points_earned=float(resp.ai_points_earned) if resp.ai_points_earned is not None else None,
+                ai_band_score=float(resp.ai_band_score) if resp.ai_band_score is not None else None,
+                ai_rubric_scores=resp.ai_rubric_scores,
                 ai_feedback=resp.ai_feedback,
                 
-                # Teacher Grading
-                teacher_score=float(resp.teacher_points_earned) if resp.teacher_points_earned else None,
+                teacher_points_earned=float(resp.teacher_points_earned) if resp.teacher_points_earned is not None else None,
+                teacher_band_score=float(resp.teacher_band_score) if resp.teacher_band_score is not None else None,
+                teacher_rubric_scores=resp.teacher_rubric_scores,
                 teacher_feedback=resp.teacher_feedback,
                 
                 time_spent_seconds=resp.time_spent_seconds,
@@ -551,11 +558,18 @@ class AttemptService:
             test_title=attempt.test.title,
             student_id=attempt.student_id,
             
-            start_time=attempt.started_at,
-            end_time=attempt.submitted_at, # Using submitted_at as end time
+            # --- FIX 1: Thêm attempt_number ---
+            attempt_number=attempt.attempt_number, 
+
+            # --- FIX 2: Đổi start_time thành started_at cho đúng schema ---
+            started_at=attempt.started_at, 
             
-            # Fix #9: Map correct fields
+            # Giữ lại submitted_at
             submitted_at=attempt.submitted_at,
+            
+            # Nếu schema của bạn có trường end_time thì giữ dòng này, nếu không thì bỏ đi
+            # end_time=attempt.submitted_at, 
+            
             time_taken_seconds=attempt.time_taken_seconds,
             
             total_score=float(attempt.total_score or 0),
@@ -564,12 +578,10 @@ class AttemptService:
             passed=attempt.passed,
             status=attempt.status.value,
             
-            # Overall Feedback
             ai_feedback=attempt.ai_feedback,
             teacher_feedback=attempt.teacher_feedback,
             graded_by=attempt.graded_by,
             
-            # Security
             ip_address=str(attempt.ip_address) if attempt.ip_address else None,
             user_agent=attempt.user_agent,
             

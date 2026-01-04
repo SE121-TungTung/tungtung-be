@@ -315,10 +315,10 @@ async def pre_upload_speaking_audio(
     try:
         file_meta = await upload_and_save_metadata(
             db=db,
-            file=audio,
-            uploader_id=current_user.id,
-            upload_type=UploadType.AUDIO,
-            access_level=AccessLevel.PRIVATE
+            uploaded_file=audio,
+            user_id=current_user.id,
+            upload_type_value=UploadType.AUDIO.value,
+            access_level_value=AccessLevel.PRIVATE.value
         )
     except Exception as e:
         raise HTTPException(
@@ -438,7 +438,7 @@ def get_attempt_detail(
     return attempt_service.get_attempt_detail(
         db=db,
         attempt_id=attempt_id,
-        student_id=current_user.id
+        user_id=current_user.id
     )
 
 # Teacher view attempt

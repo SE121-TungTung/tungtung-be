@@ -96,7 +96,7 @@ class SpeakingService:
             audio_url=file_meta.file_path,
             question_id=question_id,
             file_size=file_meta.file_size or 0,
-            uploaded_at=file_meta.uploaded_at or datetime.now(timezone.utc)
+            uploaded_at=file_meta.created_at or datetime.now(timezone.utc)
         )
     
     # ============================================================
@@ -154,7 +154,7 @@ class SpeakingService:
         # Fetch files - must belong to user
         files = db.query(FileUpload).filter(
             FileUpload.id.in_(file_ids),
-            FileUpload.uploader_id == user_id
+            FileUpload.uploaded_by == user_id
         ).all()
         
         if len(files) != len(file_ids):
@@ -375,6 +375,7 @@ class SpeakingService:
             question_results=question_results,
             ai_overall_scores=overall_scores,
             ai_total_points=ai_total_points,
+            ai_rubric_scores=ai_rubric,
             max_total_points=total_max_points,
             status=attempt.status.value,
             requires_teacher_review=True,
