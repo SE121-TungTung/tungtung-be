@@ -20,6 +20,9 @@ from app.models.user import User
 from fastapi import UploadFile
 from datetime import datetime, timezone
 
+from app.services.audit_log import audit_service
+from app.models.audit_log import AuditAction
+
 from app.services.cloudinary import upload_and_save_metadata
 
 logger = logging.getLogger(__name__)
