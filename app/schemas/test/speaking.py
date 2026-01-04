@@ -188,6 +188,7 @@ class BatchSubmitSpeakingResponse(BaseModel):
     # Overall AI assessment
     ai_overall_scores: Optional[OverallSpeakingScores] = None
     ai_overall_feedback: Optional[str] = None
+    ai_rubric_scores: Optional[Dict[str, float]] = None
     
     # Scoring (converted from band scores)
     ai_total_points: Optional[float] = None

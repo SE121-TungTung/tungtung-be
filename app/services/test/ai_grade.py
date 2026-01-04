@@ -89,37 +89,46 @@ class AIGradeService:
         """
         
         try:
-            # Use longer timeout for speaking (includes speech-to-text + grading)
             async with httpx.AsyncClient(timeout=120.0) as client:
-                
-                payload = {
-                    "audio_url": audio_url,
-                    "prompt": question.question_text,
-                    "question_part": question.question_type.value  # SPEAKING_PART_1, etc.
+
+                # 1️⃣ Download audio
+                audio_resp = await client.get(audio_url)
+                audio_resp.raise_for_status()
+                audio_bytes = audio_resp.content
+
+                # 2️⃣ Build multipart payload
+                files = {
+                    "audio": ("speech.webm", audio_bytes, "audio/webm")
                 }
-                
+
+                data = {
+                    "prompt": question.question_text,
+                    "question_part": question.question_type.value
+                }
+
+                # 3️⃣ Call AI service
                 resp = await client.post(
                     f"{settings.AI_BASE_URL}/grade/speaking",
-                    json=payload
+                    files=files,
+                    data=data
                 )
-                
+
                 resp.raise_for_status()
                 result = resp.json()
-                
-                # Validate response structure
+
                 if "overallScore" not in result:
                     raise ValueError("AI response missing overallScore")
-                
-                return {
-                    "raw": result
-                }
-                
-        except httpx.TimeoutException as e:
-            raise Exception(f"AI service timeout after 120s: {str(e)}")
-        
+
+                return {"raw": result}
+
+        except httpx.TimeoutException:
+            raise Exception("AI service timeout (speaking grading)")
+
         except httpx.HTTPStatusError as e:
-            raise Exception(f"AI service error (HTTP {e.response.status_code}): {e.response.text}")
-        
+            raise Exception(
+                f"AI service error (HTTP {e.response.status_code}): {e.response.text}"
+            )
+
         except Exception as e:
             raise Exception(f"AI grading failed: {str(e)}")
     

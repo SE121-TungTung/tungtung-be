@@ -63,7 +63,6 @@ async def upload_and_save_metadata(
     uploaded_file: UploadFile, 
     user_id: UUID,
     folder: str = "user_avatars",
-    # Mặc định cho luồng Avatar, có thể được ghi đè
     upload_type_value: str = UploadType.AVATAR.value, 
     access_level_value: str = AccessLevel.PRIVATE.value 
 ) -> FileUpload:
