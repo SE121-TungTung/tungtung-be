@@ -1,6 +1,6 @@
 # app/api/v1/endpoints/schedule.py
 
-from fastapi import APIRouter, Depends, status, Path, Query
+from fastapi import APIRouter, Depends, status, Path, Query, BackgroundTasks
 from datetime import date
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -41,11 +41,13 @@ async def apply_schedule_proposal(
 @router.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
 async def create_session(
     data: SessionCreate,
+    background_tasks: BackgroundTasks, # Inject BackgroundTasks
     db: Session = Depends(get_db),
     current_user = Depends(get_current_admin_user)
 ):
     """UC MF.3.1: Tạo session thủ công với Conflict Check"""
-    return await schedule_service.create_session_manual(db, data)
+    # Truyền background_tasks vào service
+    return await schedule_service.create_session_manual(db, data, background_tasks)
 
 @router.get("/weekly", response_model=WeeklySchedule, tags=["Schedule Viewing"])
 async def get_weekly_schedule_view(

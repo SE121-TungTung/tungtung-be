@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, joinedload
 from fastapi import HTTPException, UploadFile
 from uuid import UUID
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from app.models.user import User
 from app.models.test import (
@@ -594,18 +594,27 @@ class AttemptService:
         attempt_id: UUID
     ):
         attempt = (
-            db.query(TestAttempt)
-            .filter(
-                TestAttempt.id == attempt_id,
-                TestAttempt.deleted_at.is_(None)
+            db.query(TestAttempt, User)
+            .join(User, User.id == TestAttempt.student_id)
+            .options(
+                joinedload(TestAttempt.responses)
+                .joinedload(TestResponse.question),
+                joinedload(TestAttempt.test)
+                .joinedload(Test.questions)
             )
+            .filter(TestAttempt.id == attempt_id)
             .first()
         )
 
         if not attempt:
             raise HTTPException(404, "Attempt not found")
 
-        return self._build_attempt_detail(attempt, include_answers=True)
+        attempt_obj, student = attempt
+
+        if not attempt:
+            raise HTTPException(404, "Attempt not found")
+
+        return self._build_attempt_detail(attempt=attempt_obj, include_answers=True, student=student)
 
     
     def list_attempts_for_teacher(
@@ -614,8 +623,12 @@ class AttemptService:
         test_id: UUID,
         teacher_id: UUID
     ):
-        attempts = (
-            db.query(TestAttempt)
+        rows = (
+            db.query(
+                TestAttempt,
+                User.first_name,
+                User.last_name
+            )
             .join(User, User.id == TestAttempt.student_id)
             .filter(
                 TestAttempt.test_id == test_id,
@@ -627,16 +640,17 @@ class AttemptService:
 
         return [
             {
-                "id": a.id,
-                "student_id": a.student_id,
-                "student_name": f"{a.student.first_name} {a.student.last_name}",
-                "status": a.status,
-                "score": a.score,
-                "started_at": a.started_at,
-                "submitted_at": a.submitted_at,
+                "id": attempt.id,
+                "student_id": attempt.student_id,
+                "student_name": f"{first_name} {last_name}".strip(),
+                "status": attempt.status,
+                "score": attempt.band_score,
+                "started_at": attempt.started_at,
+                "submitted_at": attempt.submitted_at,
             }
-            for a in attempts
+            for attempt, first_name, last_name in rows
         ]
+
     
     async def grade_attempt(
         self,
@@ -861,7 +875,8 @@ class AttemptService:
     def _build_attempt_detail(
         self,
         attempt: TestAttempt,
-        include_answers: bool
+        include_answers: bool,
+        student: Optional[User]
     ):
         responses_query = (
             attempt.responses
@@ -913,11 +928,14 @@ class AttemptService:
                 })
 
             details.append(detail)
-
+        student_name = None
+        if student:
+            student_name = f"{student.first_name} {student.last_name}".strip()
         return {
             "attempt_id": attempt.id,
             "test_id": attempt.test_id,
             "student_id": attempt.student_id,
+            "student_name": student_name,
             "status": attempt.status.value,
 
             "total_score": float(attempt.total_score or 0),

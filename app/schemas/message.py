@@ -58,9 +58,9 @@ class MemberResponse(BaseModel):
 
 class GroupDetailResponse(BaseModel):
     id: UUID
-    title: str
-    description: Optional[str]
-    avatar_url: Optional[str]
+    title: Optional[str] = None
+    description: Optional[str] = None
+    avatar_url: Optional[str] = None
     room_type: str
     created_at: datetime
     member_count: int

@@ -1,6 +1,6 @@
 # app/services/schedule.py
 from sqlalchemy.orm import Session
-from fastapi import HTTPException
+from fastapi import HTTPException, BackgroundTasks
 from typing import List, Tuple, Optional, Dict, Any, Union
 from datetime import timedelta, date, time
 from uuid import UUID
@@ -374,7 +374,7 @@ class ScheduleService:
                         user_id=session.teacher_id,
                         title="Lịch dạy mới đã được xếp",
                         content=(
-                            f"Bạn có buổi dạy lớp {session.class_name} "
+                            f"Bạn có buổi dạy lớp {session.session_class.name} "
                             f"vào {session.session_date} "
                             f"{session.start_time}-{session.end_time}"
                         ),
@@ -408,7 +408,7 @@ class ScheduleService:
                             user_id=student.id,  # ✅ FIX BUG
                             title="Lịch học mới",
                             content=(
-                                f"Lớp {session.class_name} có buổi học "
+                                f"Lớp {session.session_class.name} có buổi học "
                                 f"vào {session.session_date} "
                                 f"{session.start_time}-{session.end_time}"
                             ),
@@ -485,61 +485,102 @@ class ScheduleService:
             
         return WeeklySchedule(schedule=schedule_data)
             
-    # ... (Các hàm CRUD thủ công khác giữ nguyên logic)
     
-    async def create_session_manual(self, db: Session, data: SessionCreate) -> SessionResponse:
+    async def create_session_manual(
+        self, 
+        db: Session, 
+        data: SessionCreate, 
+        background_tasks: BackgroundTasks = None
+    ) -> SessionResponse:
         """Tạo session thủ công với conflict check"""
-        # ... Logic tìm kiếm phòng và kiểm tra xung đột ...
         
+        # 1. Validate Class
         class_obj = self.class_repo.get(db, data.class_id)
-        if not class_obj: raise HTTPException(404, "Class not found")
+        if not class_obj: 
+            raise HTTPException(404, "Class not found")
         
+        # 2. Determine Teacher
         teacher_id = data.teacher_id or class_obj.teacher_id
-        
+        if not teacher_id:
+            raise HTTPException(400, "Class has no teacher and no teacher_id provided")
+
+        # 3. Check Teacher Conflict
         if self._check_teacher_conflict(db, teacher_id, data.session_date, data.time_slots):
             raise HTTPException(409, "Teacher has conflict at this time")
         
+        # 4. Handle Room Logic
         room_id = data.room_id
         if not room_id:
             room_id = self._find_available_room(db, data.session_date, data.time_slots, class_obj.max_students)
-            if not room_id: raise HTTPException(409, "No available room found")
+            if not room_id: 
+                raise HTTPException(409, "No available room found")
         elif self._check_room_conflict(db, room_id, data.session_date, data.time_slots):
             raise HTTPException(409, "Room is not available at this time")
             
-        start_time, end_time = self._get_time_range(data.time_slots)
+        # 5. Calculate Time Range
+        try:
+            start_time, end_time = self._get_time_range(data.time_slots)
+        except Exception as e:
+            raise HTTPException(400, f"Invalid time slots: {str(e)}")
         
-        session_data = data.model_dump(exclude_unset=True) # Dùng Pydantic V2 dump
+        # 6. Prepare Data & Insert
+        session_data = data.model_dump(exclude_unset=True)
         session_data.update({
-            "teacher_id": teacher_id, "room_id": room_id, 
-            "start_time": start_time, "end_time": end_time,
+            "teacher_id": teacher_id, 
+            "room_id": room_id, 
+            "start_time": start_time, 
+            "end_time": end_time,
             "status": "scheduled"
         })
         
-        session = self.session_repo.create(db, obj_in=session_data)
-        db.commit()
-        
-        await notification_service.send_notification(
-            db,
-            NotificationCreate(
-                user_id=session.teacher_id,
-                title="Buổi dạy mới được thêm",
-                content=(
-                    f"Bạn có buổi dạy lớp {session.class_name} "
-                    f"vào {session.session_date} "
-                    f"{session.start_time}-{session.end_time}"
-                ),
-                notification_type=NotificationType.SCHEDULE_CHANGE,
-            )
-        )
+        try:
+            session = self.session_repo.create(db, obj_in=session_data)
+            db.commit()
+            db.refresh(session) # Refresh để lấy ID và các trường default
+        except Exception as e:
+            db.rollback()
+            # Log lỗi thực tế ra console
+            print(f"DB Error: {str(e)}")
+            raise HTTPException(500, "Database error while creating session")
 
-        students_by_class = {}
-        if session.class_id not in students_by_class:
-            students_by_class[session.class_id] = (
-                db.query(User)
-                .join(
-                    ClassEnrollment,
-                    ClassEnrollment.student_id == User.id
+        # 7. Notification (Async & Background)
+        # Lưu ý: Dùng class_obj.name thay vì session.session_class.name để tránh lỗi crash
+        if background_tasks:
+            background_tasks.add_task(
+                self._send_session_notifications,
+                db=db, # Lưu ý: Cần xử lý session scope cẩn thận hoặc tạo session mới trong task
+                session=session,
+                class_name=class_obj.name 
+            )
+        else:
+            # Fallback nếu không dùng background task (như code cũ nhưng fix lỗi access)
+            await self._send_session_notifications(db, session, class_obj.name)
+
+        return self._to_response(db, session)
+
+    # Tách hàm gửi notification ra riêng cho gọn
+    async def _send_session_notifications(self, db: Session, session, class_name: str):
+        try:
+            # 1. Notify Teacher
+            await notification_service.send_notification(
+                db,
+                NotificationCreate(
+                    user_id=session.teacher_id,
+                    title="Buổi dạy mới được thêm",
+                    content=(
+                        f"Bạn có buổi dạy lớp {class_name} " # FIX: Dùng biến class_name truyền vào
+                        f"vào {session.session_date} "
+                        f"{session.start_time}-{session.end_time}"
+                    ),
+                    notification_type=NotificationType.SCHEDULE_CHANGE,
                 )
+            )
+
+            # 2. Notify Students
+            # Logic lấy students...
+            students = (
+                db.query(User)
+                .join(ClassEnrollment, ClassEnrollment.student_id == User.id)
                 .filter(
                     ClassEnrollment.class_id == session.class_id,
                     User.deleted_at.is_(None),
@@ -548,27 +589,23 @@ class ScheduleService:
                 .all()
             )
 
-        for student in students_by_class[session.class_id]:
-            noti = NotificationCreate(
-                user_id=student.id,
-                title="Lịch học mới",
-                content=(
-                    f"Lớp {session.class_name} có buổi học "
-                    f"vào {session.session_date} "
-                    f"{session.start_time}-{session.end_time}"
-                ),
-                notification_type=NotificationType.SCHEDULE_CHANGE,
-                priority=NotificationPriority.NORMAL,
-                action_url=f"/student/schedule/{session.id}",
-            )
-
-            await notification_service.send_notification(
-                db=db,
-                noti_info=noti
-            )
-
-
-        return self._to_response(db, session)
+            for student in students:
+                noti = NotificationCreate(
+                    user_id=student.id,
+                    title="Lịch học mới",
+                    content=(
+                        f"Lớp {class_name} có buổi học " # FIX: Dùng biến class_name truyền vào
+                        f"vào {session.session_date} "
+                        f"{session.start_time}-{session.end_time}"
+                    ),
+                    notification_type=NotificationType.SCHEDULE_CHANGE,
+                    priority=NotificationPriority.NORMAL,
+                    action_url=f"/student/schedule/{session.id}",
+                )
+                await notification_service.send_notification(db=db, noti_info=noti)
+                
+        except Exception as e:
+            print(f"Error sending notifications: {e}")
 
     def update_session(
         self,
@@ -641,7 +678,7 @@ class ScheduleService:
                 user_id=session.teacher_id,
                 title="Buổi dạy đã bị hủy",
                 content=(
-                    f"Buổi dạy lớp {session.class_name} "
+                    f"Buổi dạy lớp {session.session_class.name} "
                     f"ngày {session.session_date} đã bị hủy"
                 ),
                 notification_type=NotificationType.SCHEDULE_CHANGE,
@@ -670,7 +707,7 @@ class ScheduleService:
                 user_id=student.id,
                 title="Lịch học đã bị hủy",
                 content=(
-                    f"Lớp {session.class_name} "
+                    f"Lớp {session.session_class.name} "
                     f"vào {session.session_date} "
                     f"{session.start_time}-{session.end_time} đã bị hủy"
                 ),

@@ -1,12 +1,12 @@
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func
+from sqlalchemy import func, case
 from uuid import UUID
 from fastapi import HTTPException
 from typing import Optional, List
 from datetime import datetime
 
 from app.schemas.test.test_create import TestCreate
-from app.schemas.test.test_read import TestResponse, TestTeacherResponse
+from app.schemas.test.test_read import TestResponse, TestTeacherResponse, TestListResponse, TestListPageResponse
 from app.models.test import ContentPassage
 
 from app.services.audit_log import audit_service
@@ -28,7 +28,8 @@ from app.models.test import (
     DifficultyLevel,
     SkillArea
 )
-
+from app.schemas.test.test_create import TestUpdate
+from datetime import datetime, timezone
 
 class TestService:
 
@@ -252,39 +253,124 @@ class TestService:
             db.rollback()
             raise HTTPException(500, detail=str(e))
 
-    def update_test(
+    async def update_test(
         self,
         db: Session,
         test_id: UUID,
-        payload,
-        user_id: UUID
+        payload: TestUpdate,
+        user_id: UUID,
+        files: Optional[List[UploadFile]] = None
     ):
-        test = (
-            db.query(Test)
-            .filter(
-                Test.id == test_id,
-                Test.deleted_at.is_(None)
+        
+        uploaded_map = {}
+
+        if files:
+            for file in files:
+                u_type = UploadType.AUDIO
+                if file.filename and any(ext in file.filename.lower() for ext in ['.jpg', '.png', '.jpeg']):
+                    u_type = UploadType.IMAGE
+
+                file_meta = await upload_and_save_metadata(
+                    db=db,
+                    uploaded_file=file,
+                    user_id=user_id,
+                    folder="test_material",
+                    upload_type_value=u_type,
+                    access_level_value=AccessLevel.PUBLIC
+                )
+
+                if not file_meta or not file_meta.file_path:
+                    raise HTTPException(500, f"Upload failed for file {file.filename}")
+
+                uploaded_map[file.filename] = file_meta.file_path
+
+
+        def resolve_url(url: Optional[str]) -> Optional[str]:
+            if not url:
+                return None
+            if url.startswith("file:"):
+                filename = url.replace("file:", "")
+                return uploaded_map.get(filename)
+            return url
+
+
+        test = self.get_test_by_id(db, test_id) # Tận dụng hàm get có sẵn để check 404/Deleted
+
+        # Convert payload sang dict, loại bỏ các trường None
+        update_data = payload.model_dump(exclude_unset=True)
+
+        # --- LOGIC 1: CHẶN PUBLISH TẠI HÀM NÀY ---
+        # Nếu muốn Publish, phải gọi route /publish riêng để validate dữ liệu
+        if update_data.get("status") == TestStatus.PUBLISHED:
+             raise HTTPException(
+                400, 
+                "To publish a test, please use the 'Publish' endpoint."
             )
-            .first()
-        )
 
-        if not test:
-            raise HTTPException(404, "Test not found")
+        # --- LOGIC 2: CHECK KHI UN-PUBLISH (Về Draft) ---
+        # Nếu đang Published mà muốn về Draft -> Phải check xem có ai thi chưa
+        if (
+            test.status == TestStatus.PUBLISHED 
+            and update_data.get("status") == TestStatus.DRAFT
+        ):
+            has_attempt = db.query(TestAttempt).filter(TestAttempt.test_id == test.id).first()
+            if has_attempt:
+                raise HTTPException(400, "Cannot unpublish (set to Draft) a test that already has student attempts.")
 
-        # Không cho sửa test đã có attempt
-        has_attempt = db.query(TestAttempt).filter(
-            TestAttempt.test_id == test.id
-        ).first()
+        # --- LOGIC 3: UPDATE DỮ LIỆU ---
+        update_data = payload.model_dump(exclude_unset=True)
 
-        if has_attempt and payload.status == TestStatus.DRAFT:
-            raise HTTPException(
-                400,
-                "Cannot unpublish test that already has attempts"
-            )
+        for field, value in update_data.items():
+            if field in ("audio_url", "image_url"):
+                value = resolve_url(value)
 
-        for field, value in payload.dict(exclude_unset=True).items():
             setattr(test, field, value)
 
+
+        test.updated_by = user_id
+        
+        # Ghi Audit Log
+        audit_service.log(
+            db=db,
+            user_id=user_id,
+            action=AuditAction.UPDATE,
+            table_name="tests",
+            record_id=test.id,
+            new_values=update_data
+        )
+
+        db.commit()
+        db.refresh(test)
+        return test
+
+    def publish_test(self, db: Session, test_id: UUID, user_id: UUID):
+        """
+        Chuyên dùng để Public test.
+        Tại đây sẽ validate kỹ càng trước khi cho phép Public.
+        """
+        test = self.get_test_by_id(db, test_id) # Hàm này nên join sẵn questions/sections
+
+        if test.status == TestStatus.PUBLISHED:
+            raise HTTPException(400, "Test is already published")
+
+        # --- VALIDATION LOGIC ---
+        # 1. Check câu hỏi
+        if not test.questions: 
+            # Lưu ý: test.test_questions là relation 1-N
+            raise HTTPException(400, "Cannot publish a test with no questions")
+
+        # 2. Check tổng điểm (Ví dụ phải >= 1)
+        total_points = sum(tq.points for tq in test.questions)
+        if total_points <= 0:
+             raise HTTPException(400, "Total points of the test must be greater than 0")
+        
+        # 3. Check thời gian
+        if not test.time_limit_minutes or test.time_limit_minutes <= 0:
+            raise HTTPException(400, "Test duration must be set")
+
+        # --- ACTION ---
+        old_status = test.status
+        test.status = TestStatus.PUBLISHED
         test.updated_by = user_id
 
         audit_service.log(
@@ -293,12 +379,11 @@ class TestService:
             action=AuditAction.UPDATE,
             table_name="tests",
             record_id=test.id,
-            new_values=payload.dict(exclude_unset=True)
+            new_values={"status": "PUBLISHED", "old_status": str(old_status)}
         )
-        
+
         db.commit()
         db.refresh(test)
-
         return test
     
     def delete_test(self, db: Session, test_id: UUID, user_id: UUID):
@@ -329,74 +414,134 @@ class TestService:
     # ============================================================
     # LIST TESTS
     # ============================================================
+
     def list_tests(
-        self, 
-        db: Session, 
-        skip: int = 0, 
-        limit: int = 20, 
-        class_id: Optional[UUID] = None, 
+        self,
+        db: Session,
+        skip: int = 0,
+        limit: int = 20,
+        class_id: Optional[UUID] = None,
         status: Optional[str] = None,
-        skill: Optional[str] = None 
+        skill: Optional[str] = None
     ):
-        """
-        List tests with filters and manual mapping for calculated fields.
-        """
         try:
-            query = db.query(Test)
-            
-            # Filter
+            # ============================================================
+            # 1. BASE QUERY (NO JOIN)
+            # ============================================================
+            base_query = db.query(Test).filter(Test.deleted_at.is_(None))
+
             if class_id:
-                query = query.filter(Test.class_id == class_id)
+                base_query = base_query.filter(Test.class_id == class_id)
+
             if status:
-                query = query.filter(Test.status == status)
+                base_query = base_query.filter(Test.status == status)
+
             if skill:
-                query = query.join(TestSection).filter(TestSection.skill_area == skill).distinct()
-                
-            # Eager load để lấy dữ liệu tính toán
-            query = query.options(
-                joinedload(Test.sections),
-                joinedload(Test.questions)
+                base_query = base_query.filter(
+                    Test.id.in_(
+                        db.query(TestSection.test_id)
+                        .filter(TestSection.skill_area == skill)
+                    )
+                )
+
+            # ============================================================
+            # 2. TOTAL COUNT
+            # ============================================================
+            total = base_query.count()
+
+            # ============================================================
+            # 3. DATA QUERY
+            # ============================================================
+            tests = (
+                base_query
+                .options(
+                    joinedload(Test.sections),
+                    joinedload(Test.questions)
+                )
+                .order_by(Test.created_at.desc())
+                .offset(skip)
+                .limit(limit)
+                .all()
             )
-            
-            # Query DB
-            items = query.order_by(Test.created_at.desc()).offset(skip).limit(limit).all()
-            
-            # Map dữ liệu thủ công từ Model sang Dict (khớp với TestListResponse)
+
+            if not tests:
+                return {
+                    "total": total,
+                    "skip": skip,
+                    "limit": limit,
+                    "tests": []
+                }
+
+            test_ids = [t.id for t in tests]
+
+            # ============================================================
+            # 4. BATCH ATTEMPT STATS
+            # ============================================================
+            attempt_rows = (
+                db.query(
+                    TestAttempt.test_id,
+                    func.count(TestAttempt.id).label("total_attempts"),
+                    func.sum(
+                        case(
+                            (TestAttempt.status == AttemptStatus.SUBMITTED, 1),
+                            else_=0
+                        )
+                    ).label("pending_attempts")
+                )
+                .filter(TestAttempt.test_id.in_(test_ids))
+                .group_by(TestAttempt.test_id)
+                .all()
+            )
+
+            attempts_map = {
+                r.test_id: {
+                    "total": r.total_attempts,
+                    "pending": r.pending_attempts or 0
+                }
+                for r in attempt_rows
+            }
+
+            # ============================================================
+            # 5. BUILD RESPONSE
+            # ============================================================
             results = []
-            for test in items:
-                # 1. Xác định Skill (Lấy skill của section đầu tiên hoặc Default)
-                # Lưu ý: Nếu bài test tổng hợp nhiều skill, logic này lấy cái đầu tiên
-                current_skill = None
-                if test.sections:
-                    current_skill = test.sections[0].skill_area
-                else:
-                    current_skill = SkillArea.READING # Default fallback nếu chưa có section
-                
-                # 2. Xác định Difficulty (Hiện DB Test chưa có cột này -> Default Medium)
-                # Bạn có thể phát triển logic tính dựa trên độ khó trung bình câu hỏi sau
-                current_difficulty = DifficultyLevel.MEDIUM 
+
+            for test in tests:
+                skill_area = (
+                    test.sections[0].skill_area
+                    if test.sections
+                    else SkillArea.READING
+                )
+
+                attempt_info = attempts_map.get(
+                    test.id,
+                    {"total": 0, "pending": 0}
+                )
 
                 results.append({
                     "id": test.id,
                     "title": test.title,
                     "description": test.description,
+                    "skill": skill_area,
+                    "difficulty": DifficultyLevel.MEDIUM,
                     "test_type": test.test_type,
-                    "skill": current_skill,                 # Map vào field 'skill'
-                    "difficulty": current_difficulty,       # Map vào field 'difficulty'
-                    "duration_minutes": test.time_limit_minutes or 0, # Map từ time_limit_minutes
-                    "total_questions": len(test.questions), # Đếm số lượng câu hỏi
+                    "duration_minutes": test.time_limit_minutes or 0,
+                    "total_questions": len(test.questions),
                     "created_at": test.created_at,
-                    "status": test.status
+                    "pending_attempts_count": attempt_info["pending"],
+                    "total_attempts_count": attempt_info["total"],
                 })
-                
+
             return {
-                "total": query.count(),
+                "total": total,
                 "skip": skip,
                 "limit": limit,
                 "tests": results
             }
+
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
 
 
     def list_tests_for_student(
@@ -408,197 +553,137 @@ class TestService:
         skip: int = 0,
         limit: int = 20
     ):
-        """
-        List PUBLISHED tests available for students with optimized eager loading
-        """
-        from datetime import datetime, timezone
-        from sqlalchemy import func, case
-        
-        now = datetime.now(timezone.utc)
-        
-        # ============================================================
-        # Base query với eager loading
-        # ============================================================
-        query = (
-            db.query(Test)
-            .options(
-                joinedload(Test.sections),
-                joinedload(Test.questions)
+        try:
+            now = datetime.now(timezone.utc)
+
+            # ============================================================
+            # 1. BASE QUERY
+            # ============================================================
+            base_query = (
+                db.query(Test)
+                .filter(
+                    Test.deleted_at.is_(None),
+                    Test.status == TestStatus.PUBLISHED,
+                    (Test.start_time.is_(None)) | (Test.start_time <= now),
+                    (Test.end_time.is_(None)) | (Test.end_time >= now),
+                )
             )
-            .filter(
-                Test.deleted_at.is_(None),
-                Test.status == TestStatus.PUBLISHED
+
+            if class_id:
+                base_query = base_query.filter(Test.class_id == class_id)
+
+            if skill:
+                base_query = base_query.filter(
+                    Test.id.in_(
+                        db.query(TestSection.test_id)
+                        .filter(TestSection.skill_area == skill)
+                    )
+                )
+
+            # ============================================================
+            # 2. TOTAL
+            # ============================================================
+            total = base_query.count()
+
+            # ============================================================
+            # 3. DATA QUERY
+            # ============================================================
+            tests = (
+                base_query
+                .options(
+                    joinedload(Test.sections),
+                    joinedload(Test.questions)
+                )
+                .order_by(
+                    Test.start_time.desc().nullslast(),
+                    Test.created_at.desc()
+                )
+                .offset(skip)
+                .limit(limit)
+                .all()
             )
-        )
-        
-        # ============================================================
-        # Time-based filters
-        # ============================================================
-        query = query.filter(
-            (Test.start_time.is_(None)) | (Test.start_time <= now),
-            (Test.end_time.is_(None)) | (Test.end_time >= now)
-        )
-        
-        # ============================================================
-        # Optional filters
-        # ============================================================
-        if class_id:
-            query = query.filter(Test.class_id == class_id)
-        
-        if skill:
-            # Join với TestSection để filter theo skill_area
-            query = query.join(TestSection).filter(
-                TestSection.skill_area == skill
-            ).distinct()
-        
-        # ============================================================
-        # Count total trước khi pagination
-        # ============================================================
-        total = query.count()
-        
-        # ============================================================
-        # Pagination và ordering
-        # ============================================================
-        query = query.order_by(
-            Test.start_time.desc().nullslast(),
-            Test.created_at.desc()
-        )
-        
-        tests = query.offset(skip).limit(limit).all()
-        
-        # ============================================================
-        # Batch load attempts cho tất cả tests trong 1 query
-        # ============================================================
-        test_ids = [test.id for test in tests]
-        
-        # Subquery để đếm attempts per test
-        attempts_subq = (
-            db.query(
-                TestAttempt.test_id,
-                func.count(TestAttempt.id).label('count'),
-                func.max(TestAttempt.attempt_number).label('max_attempt')
+
+            if not tests:
+                return {
+                    "total": total,
+                    "skip": skip,
+                    "limit": limit,
+                    "tests": []
+                }
+
+            test_ids = [t.id for t in tests]
+
+            # ============================================================
+            # 4. BATCH ATTEMPTS PER STUDENT
+            # ============================================================
+            attempt_rows = (
+                db.query(
+                    TestAttempt.test_id,
+                    func.count(TestAttempt.id).label("attempts_count"),
+                    func.max(TestAttempt.attempt_number).label("max_attempt")
+                )
+                .filter(
+                    TestAttempt.test_id.in_(test_ids),
+                    TestAttempt.student_id == student_id
+                )
+                .group_by(TestAttempt.test_id)
+                .all()
             )
-            .filter(
-                TestAttempt.test_id.in_(test_ids),
-                TestAttempt.student_id == student_id
-            )
-            .group_by(TestAttempt.test_id)
-            .subquery()
-        )
-        
-        # Query attempts data trong 1 lần
-        attempts_data = (
-            db.query(
-                attempts_subq.c.test_id,
-                attempts_subq.c.count,
-                attempts_subq.c.max_attempt
-            )
-            .all()
-        )
-        
-        # Map attempts data theo test_id
-        attempts_map = {
-            row.test_id: {
-                'count': row.count,
-                'max_attempt': row.max_attempt
+
+            attempts_map = {
+                r.test_id: {
+                    "count": r.attempts_count,
+                    "max_attempt": r.max_attempt or 0
+                }
+                for r in attempt_rows
             }
-            for row in attempts_data
-        }
-        
-        # ============================================================
-        # Batch load latest attempts
-        # ============================================================
-        latest_attempts_subq = (
-            db.query(
-                TestAttempt.test_id,
-                TestAttempt.id,
-                TestAttempt.status,
-                TestAttempt.total_score,
-                func.row_number().over(
-                    partition_by=TestAttempt.test_id,
-                    order_by=TestAttempt.attempt_number.desc()
-                ).label('rn')
-            )
-            .filter(
-                TestAttempt.test_id.in_(test_ids),
-                TestAttempt.student_id == student_id
-            )
-            .subquery()
-        )
-        
-        latest_attempts = (
-            db.query(
-                latest_attempts_subq.c.test_id,
-                latest_attempts_subq.c.status,
-                latest_attempts_subq.c.total_score
-            )
-            .filter(latest_attempts_subq.c.rn == 1)
-            .all()
-        )
-        
-        # Map latest attempts
-        latest_map = {
-            str(row.test_id): {
-                'status': row.status,
-                'score': row.total_score
+
+            # ============================================================
+            # 5. BUILD RESPONSE
+            # ============================================================
+            results = []
+
+            for test in tests:
+                skill_area = (
+                    test.sections[0].skill_area
+                    if test.sections
+                    else SkillArea.READING
+                )
+
+                attempt_info = attempts_map.get(
+                    test.id,
+                    {"count": 0, "max_attempt": 0}
+                )
+
+                max_attempts = test.max_attempts or 1
+                can_attempt = attempt_info["count"] < max_attempts
+
+                results.append({
+                    "id": test.id,
+                    "title": test.title,
+                    "description": test.description,
+                    "skill": skill_area,
+                    "difficulty": DifficultyLevel.MEDIUM,
+                    "test_type": test.test_type.value if test.test_type else None,
+                    "time_limit_minutes": test.time_limit_minutes,
+                    "total_questions": len(test.questions),
+                    "total_points": float(test.total_points or 0),
+                    "passing_score": float(test.passing_score or 0),
+                    "attempts_count": attempt_info["count"],
+                    "max_attempts": max_attempts,
+                    "can_attempt": can_attempt,
+                    "status": test.status,
+                })
+
+            return {
+                "total": total,
+                "skip": skip,
+                "limit": limit,
+                "tests": results
             }
-            for row in latest_attempts
-        }
-        
-        # ============================================================
-        # Build response
-        # ============================================================
-        results = []
-        for test in tests:
 
-            # ============================
-            # Skill (giống list_tests)
-            # ============================
-            if test.sections:
-                current_skill = test.sections[0].skill_area
-            else:
-                current_skill = SkillArea.READING
-
-            # ============================
-            # Difficulty (default)
-            # ============================
-            current_difficulty = DifficultyLevel.MEDIUM
-
-            # Get attempts info từ map
-            attempt_info = attempts_map.get(test.id, {'count': 0, 'max_attempt': 0})
-            attempts_count = attempt_info['count']
-            
-            # Get latest attempt info
-            latest = latest_map.get(test.id, {'status': None, 'score': None})
-
-            # Calculate can_attempt
-            can_attempt = attempts_count < (test.max_attempts or 1)
-            
-            # Count questions (đã eager load)
-            total_questions = len(test.questions)
-            
-            results.append({
-                "id": test.id,
-                "title": test.title,
-                "description": test.description,
-                "skill": current_skill,
-                "difficulty": current_difficulty,
-                "test_type": test.test_type.value if test.test_type else None,
-                "time_limit_minutes": test.time_limit_minutes,
-                "total_questions": total_questions,
-                "total_points": float(test.total_points or 0),
-                "passing_score": float(test.passing_score or 0),
-                "start_time": test.start_time,
-                "end_time": test.end_time,
-                "attempts_count": attempts_count,
-                "max_attempts": test.max_attempts,
-                "can_attempt": can_attempt,
-                "latest_attempt_status": latest['status'],
-                "latest_attempt_score": float(latest['score'] or 0) if latest['score'] else None,
-                "status": test.status
-            })
-        
-        return results
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     def get_test_summary(self, db: Session, test_id: UUID):
         """
@@ -835,5 +920,28 @@ class TestService:
             "sections": sections
         }
 
+    def get_test_by_id(self, db: Session, test_id: UUID) -> Test:
+        """
+        Lấy thông tin Test và preload các thông tin quan trọng 
+        để phục vụ validation (questions, sections).
+        """
+        test = (
+            db.query(Test)
+            # Quan trọng: Load sẵn test_questions để tính tổng điểm ở hàm publish_test
+            .options(
+                joinedload(Test.questions),
+                joinedload(Test.sections) 
+            )
+            .filter(
+                Test.id == test_id,
+                Test.deleted_at.is_(None)
+            )
+            .first()
+        )
+
+        if not test:
+            raise HTTPException(status_code=404, detail="Test not found")
+
+        return test
 
 test_service = TestService()

@@ -374,7 +374,7 @@ class MessageService:
                             ChatRoom.participant2_id == user_id,
                         ),
                         or_(
-                            CRM.last_read_at.is_(None),
+                            CRM.id.is_(None),
                             last_msg_sub.c.last_msg_time > CRM.last_read_at,
                         ),
                     ),
@@ -402,7 +402,7 @@ class MessageService:
         for row in rows:
             room = row.ChatRoom
 
-            title = room.title
+            title = room.title if room.title else "Chat room"
             avatar_url = room.avatar_url
             description = room.description
             member_count = row.member_count
@@ -410,7 +410,7 @@ class MessageService:
             # ---------- DIRECT ----------
             if room.room_type == MessageType.DIRECT:
                 other_user = row.u2 if room.participant1_id == user_id else row.u1
-
+                other_user_id = None
                 if other_user:
                     title = f"{other_user.first_name} {other_user.last_name}"
                     avatar_url = other_user.avatar_url

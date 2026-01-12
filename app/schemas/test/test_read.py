@@ -140,7 +140,7 @@ class SectionTeacherResponse(SectionResponse):
     }
 
 class TestTeacherResponse(TestResponse):
-    sections: List[SectionTeacherResponse]
+    sections: Optional[List[SectionTeacherResponse]] = None
     created_by: Optional[UUID4] = None
     updated_by: Optional[UUID4] = None
     created_at: Optional[datetime] = None
@@ -165,16 +165,25 @@ class TestTeacherResponse(TestResponse):
 class TestListResponse(BaseModel):
     id: UUID4
     title: str
-    description: Optional[str]
+    description: Optional[str] = None
     skill: SkillArea
     difficulty: DifficultyLevel
-    test_type: str
+    test_type: Optional[str] = None
     duration_minutes: int
     total_questions: int
     created_at: datetime
+
+    pending_attempts_count: int = 0
+    total_attempts_count: int = 0
     
     class Config:
         from_attributes = True
+
+class TestListPageResponse(BaseModel):
+    total: int
+    skip: int
+    limit: int
+    tests: list[TestListResponse]
 
 # --- 2. Schema cho Attempt Detail ---
 class QuestionResultResponse(BaseModel):
