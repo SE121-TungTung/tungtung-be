@@ -1,13 +1,14 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from app.core.database import get_db
-from app.dependencies import get_current_active_user, get_current_admin_user, CommonQueryParams
+from app.dependencies import get_current_active_user, get_current_admin_user, get_current_user, CommonQueryParams
 from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest, UserUpdateForm, ClassWithMembersResponse
 from app.services.user import user_service
 from app.models.user import User, UserRole, UserStatus
 from app.models.academic import ClassEnrollment, Class
+import json
 from uuid import UUID
 from app.routers.generator import create_crud_router
 from app.models.session_attendance import ClassSession
@@ -30,16 +31,34 @@ async def read_user_me(
     """Get current user profile"""
     return current_user
 
-@router.put("/me", response_model=UserResponse)
-async def update_user_me(
-    update_form: UserUpdateForm = Depends(),
+@router.put("/me")
+async def update_me(
+    first_name: str | None = Form(None),
+    last_name: str | None = Form(None),
+    phone: str | None = Form(None),
+    address: str | None = Form(None),
+    emergency_contact: str | None = Form(None),
+    preferences: str | None = Form(None),
+    avatar_file: UploadFile | None = File(None),
     db: Session = Depends(get_db),
-    avatar_file: Optional[UploadFile]= File(None, description="Avatar image file"),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user),
 ):
-    user_update = update_form.to_update_schema(UserUpdate)
-    """Update current user profile"""
-    return await user_service.update_user(db, current_user.id, user_update, avatar_file, id_updated_by=current_user.id)
+    user_update = UserUpdate(
+        first_name=first_name,
+        last_name=last_name,
+        phone=phone,
+        address=address,
+        emergency_contact=json.loads(emergency_contact) if emergency_contact else None,
+        preferences=json.loads(preferences) if preferences else None,
+    )
+
+    return await user_service.update_user(
+        db=db,
+        user_id=current_user.id,
+        user_update=user_update,
+        avatar_file=avatar_file,
+        id_updated_by=current_user.id
+    )
 
 @router.post("/me/change-password")
 async def change_password(
