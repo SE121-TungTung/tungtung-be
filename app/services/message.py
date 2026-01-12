@@ -608,6 +608,7 @@ class MessageService:
     async def mark_conversation_as_read(self, db: Session, room_id: UUID, user_id: UUID):
         """Mark all messages in a conversation as read"""
         updated_count = self.recipient_repo.mark_room_as_read(db, user_id, room_id)
+        db.commit()
         return {
             "success": True,
             "room_id": str(room_id),

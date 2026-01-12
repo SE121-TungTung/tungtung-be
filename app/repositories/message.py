@@ -60,8 +60,6 @@ class MessageRecipientRepository(CRUDBase):
             {self.model.read_at: func.now()},
             synchronize_session=False
         )
-        
-        db.commit()
         return result
 
 class ChatRoomRepository(CRUDBase):

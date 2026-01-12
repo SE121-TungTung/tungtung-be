@@ -279,7 +279,9 @@ class UserService(BaseService):
                 detail="Incorrect current password"
             )
         
-        return self.repository.update_password(db, user, password_update.new_password)
+        updated_user = self.repository.update_password(db, user, password_update.new_password)
+        db.commit()
+        return updated_user
     
     async def request_password_reset(self, db: Session, email: str) -> bool:
         """Request password reset - send email with token"""

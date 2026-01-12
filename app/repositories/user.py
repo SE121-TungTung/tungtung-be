@@ -55,8 +55,6 @@ class UserRepository(BaseRepository[User]):
         user.password_hash = get_password_hash(new_password)
         user.must_change_password = False
         user.is_first_login = False
-        db.commit()
-        db.refresh(user)
         return user
     
     def get_users_by_role(self, db: Session, role: UserRole, skip: int = 0, limit: int = 100) -> List[User]:
