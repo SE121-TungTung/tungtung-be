@@ -1,14 +1,13 @@
-import asyncio
 from fastapi import APIRouter, HTTPException, status, File, UploadFile, Form, Query # Thêm HTTPException và status
-from app.core.database import get_db, SessionLocal
-from app.dependencies import get_current_active_user, get_current_user, get_current_user_from_token
+from app.core.database import get_db
+from app.dependencies import get_current_active_user, get_current_user
 import logging
 from app.models.message import Message, MessageRecipient
 from app.schemas.message import MessageCreate, ConversationResponse, GroupCreateRequest, GroupDetailResponse, MemberResponse, AddMembersRequest, GroupUpdateRequest
 from app.routers.generator import create_crud_router
-from app.services.message import message_service
-from app.services.websocket import manager
-from fastapi import WebSocket, WebSocketDisconnect, Depends
+from app.services.message_service import message_service
+from app.services.websocket import websocket_manager
+from fastapi import WebSocket, Depends
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import List, Optional
@@ -283,85 +282,4 @@ async def websocket_endpoint(
     websocket: WebSocket,
     token: str = Query(..., description="JWT token")
 ):
-    connection_id = None
-    user_id = None
-
-    try:
-        # 1. ACCEPT
-        await websocket.accept()
-
-        # 2. AUTH
-        try:
-            user = await get_current_user_from_token(token)
-            user_id = user.id
-        except HTTPException as e:
-            await websocket.send_json({
-                "type": "error",
-                "code": "AUTH_FAILED",
-                "message": "Authentication failed",
-                "detail": e.detail,
-            })
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
-
-        # 3. CONNECT
-        connection_id = await manager.connect(websocket, user_id)
-
-        await websocket.send_json({
-            "type": "connected",
-            "user_id": str(user_id),
-            "connection_id": connection_id,
-        })
-
-        # 4. LOOP
-        while True:
-            data = await websocket.receive_json()
-            msg_type = data.get("type")
-
-            if msg_type == "ping":
-                await manager.handle_ping(connection_id)
-                await websocket.send_json({"type": "pong"})
-
-            elif msg_type == "typing":
-                room_id = data.get("room_id")
-                if room_id:
-                    await manager.send_typing_indicator(
-                        user_id=user_id,
-                        room_id=UUID(room_id),
-                        is_typing=bool(data.get("is_typing", False)),
-                    )
-
-            elif msg_type == "message":
-                db = SessionLocal()
-                try:
-                    await message_service.handle_new_message(
-                        db=db,
-                        sender_id=user_id,
-                        message_data=data,
-                    )
-                except Exception:
-                    logger.exception("Failed to handle WS message")
-                    await websocket.send_json({
-                        "type": "error",
-                        "code": "MESSAGE_FAILED",
-                        "message": "Failed to send message",
-                    })
-                finally:
-                    db.close()
-
-            else:
-                await websocket.send_json({
-                    "type": "error",
-                    "code": "UNKNOWN_TYPE",
-                    "message": f"Unknown type: {msg_type}",
-                })
-
-    except WebSocketDisconnect:
-        logger.info("WS disconnected user=%s", user_id)
-
-    except Exception:
-        logger.exception("WebSocket fatal error")
-
-    finally:
-        if connection_id and user_id:
-            await manager.disconnect(connection_id, user_id)
+    websocket_manager.websocket_connect(websocket=websocket,token=token)
