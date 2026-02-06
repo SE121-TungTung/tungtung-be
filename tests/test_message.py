@@ -3,7 +3,7 @@ import asyncio
 from unittest.mock import MagicMock, AsyncMock, patch, call
 from uuid import uuid4
 from datetime import datetime
-from app.services.message import MessageService
+from app.services.message_service import MessageService
 from app.models.message import MessageType, Message
 
 # Fixtures cơ bản

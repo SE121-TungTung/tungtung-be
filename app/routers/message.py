@@ -3,23 +3,21 @@ from app.core.database import get_db
 from app.dependencies import get_current_active_user, get_current_user
 import logging
 from app.models.message import Message, MessageRecipient
-from app.schemas.message import MessageCreate, ConversationResponse, GroupCreateRequest, GroupDetailResponse, MemberResponse, AddMembersRequest, GroupUpdateRequest
+from app.schemas.message import MessageCreate, ConversationResponse, GroupCreateRequest, AddMembersRequest, GroupUpdateRequest
 from app.routers.generator import create_crud_router
-from app.services.message_service import message_service
-from app.services.websocket import websocket_manager
 from fastapi import WebSocket, Depends
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import List, Optional
-from app.models.message import ChatRoom
-from app.schemas.message import ConversationResponse, GroupDetailResponse, MemberResponse
+from app.schemas.message import ConversationResponse
 
-
+from app.services.websocket import websocket_manager
+from app.services.message.sender_service import message_sender_service
+from app.services.message.conversation_service import message_conversation_service
+from app.services.message.interaction_service import message_interaction_service
+from app.services.message.group_service import message_group_service
 
 logger = logging.getLogger(__name__)
-
-
-message_service = message_service
 
 base_message_router = create_crud_router(
     model=Message,
@@ -45,7 +43,7 @@ async def send_message_rest(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    return await message_service.handle_new_message(
+    return await message_sender_service.handle_new_message(
         db,
         sender_id=current_user.id,
         message_data=message_data
@@ -60,7 +58,7 @@ async def get_history(
     current_user = Depends(get_current_user)
 ):
     """Get chat history for a room"""
-    return await message_service.get_chat_history(
+    return await message_conversation_service.get_chat_history(
         db, room_id, current_user.id, skip, limit
     )
 
@@ -72,7 +70,7 @@ async def get_direct_conversation(
     current_user = Depends(get_current_user)
 ):
     """Get or create a direct conversation between current user and another user"""
-    return await message_service.get_or_create_direct_conversation(
+    return await message_conversation_service.get_or_create_direct_conversation(
         db, current_user.id, other_user_id
     )
 
@@ -82,7 +80,7 @@ async def get_conversations(
     current_user = Depends(get_current_user)
 ):
     """Get list of conversations for the current user"""
-    return await message_service.get_user_conversations(
+    return await message_conversation_service.get_user_conversations(
         db, current_user.id
     )
 
@@ -96,7 +94,7 @@ async def mark_conversation_read(
     Mark all messages in a conversation as read.
     Frontend should call this when user opens a chat room.
     """
-    return await message_service.mark_conversation_as_read(db, room_id, current_user.id)
+    return await message_interaction_service.mark_conversation_as_read(db, room_id, current_user.id)
 
 @router.post("/groups", status_code=status.HTTP_201_CREATED)
 async def create_group(
@@ -120,7 +118,7 @@ async def create_group(
         member_ids=parsed_member_ids
     )
 
-    return await message_service.create_group_chat(
+    return await message_group_service.create_group_chat(
         db=db,
         group_data=data,
         avatar=avatar,
@@ -134,31 +132,8 @@ async def get_group_details(
     current_user = Depends(get_current_user)
 ):
     """Get group details and members"""
-    members_data = await message_service.get_group_members(db, room_id, current_user.id)
-    
-    # Get room info
-    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
-    if not room:
-        raise HTTPException(status_code=404, detail="Group not found")
-    
-    return GroupDetailResponse(
-        id=room.id,
-        title=room.title,
-        description=room.description,
-        avatar_url=room.avatar_url,
-        room_type=room.room_type.value,
-        created_at=room.created_at,
-        member_count=len(members_data),
-        members=[MemberResponse(
-            user_id=m['user_id'],
-            role=m['role'],
-            joined_at=m['joined_at'],
-            nickname=m.get('nickname'),
-            full_name=m.get('full_name'),
-            avatar_url=m.get('avatar_url'),
-            email=m.get('email'),
-            is_online=m.get('is_online')
-        ) for m in members_data]
+    return await message_group_service.get_group_details(
+        db, room_id, current_user.id
     )
 
 @router.post("/groups/{room_id}/members")
@@ -169,7 +144,7 @@ async def add_group_members(
     current_user = Depends(get_current_user)
 ):
     """Add members to group"""
-    return await message_service.add_members_to_group(
+    return await message_group_service.add_members_to_group(
         db, room_id, current_user.id, request.user_ids
     )
 
@@ -182,7 +157,7 @@ async def remove_group_member(
     current_user = Depends(get_current_user)
 ):
     """Remove a member from group"""
-    return await message_service.remove_member_from_group(
+    return await message_group_service.remove_member_from_group(
         db, room_id, current_user.id, user_id, new_admin_id
     )
 
@@ -202,7 +177,7 @@ async def update_group(
         description=description
     )
 
-    return await message_service.update_group_info(
+    return await message_group_service.update_group_info(
         db=db,
         room_id=room_id,
         updater_id=current_user.id,
@@ -221,7 +196,7 @@ async def delete_chat_room(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    return await message_service.delete_chat_room(
+    return await message_interaction_service.delete_chat_room(
         db=db,
         room_id=room_id,
         current_user_id=current_user.id
@@ -235,7 +210,7 @@ async def edit_message(
     current_user = Depends(get_current_user)
 ):
     """Edit a previously sent message"""
-    return await message_service.edit_message(
+    return await message_interaction_service.edit_message(
         db, message_id, new_content, current_user.id,
     )
 
@@ -249,7 +224,7 @@ async def search_messages(
     current_user = Depends(get_current_user)
 ):
     """Search messages containing the query string, optionally within a specific room"""
-    return await message_service.search_messages(
+    return await message_interaction_service.search_messages(
         db, query, current_user.id, room_id, skip, limit
     )
 
@@ -258,7 +233,7 @@ async def get_total_unread_count(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    count = message_service.get_total_unread_count(db, current_user.id)
+    count = message_interaction_service.get_total_unread_count(db, current_user.id)
     return {"unread_count": count}
 
 @router.post("/rooms/{room_id}/mute")
@@ -267,7 +242,7 @@ async def mute_conversation(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    return await message_service.toggle_mute(db, room_id, current_user.id, True)
+    return await message_interaction_service.toggle_mute(db, room_id, current_user.id, True)
 
 @router.post("/rooms/{room_id}/unmute")
 async def unmute_conversation(
@@ -275,7 +250,7 @@ async def unmute_conversation(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    return await message_service.toggle_mute(db, room_id, current_user.id, False)
+    return await message_interaction_service.toggle_mute(db, room_id, current_user.id, False)
 
 @router.websocket("/ws")
 async def websocket_endpoint(

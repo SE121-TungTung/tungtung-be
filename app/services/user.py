@@ -1,37 +1,54 @@
-from typing import Optional, List
-from sqlalchemy.orm import Session
-from fastapi import HTTPException, status, BackgroundTasks
-from app.services.base import BaseService
-from app.repositories.user import user_repository
-from app.models.user import User, UserRole
-from app.schemas.user import UserCreate, UserUpdate, UserPasswordUpdate, BulkImportRequest
-from app.core.security import verify_password, get_password_hash, create_password_reset_token, verify_password_reset_token
-from app.services.email import email_service
-from app.dependencies import generate_strong_password
-from app.services.audit_log import audit_service
-from app.models.audit_log import AuditAction
-import uuid
 import logging
+from datetime import datetime, date
+from typing import Optional, List
+from uuid import UUID
+import uuid
 
-from app.services.notification import notification_service
+from fastapi import HTTPException, status, BackgroundTasks, UploadFile
+from sqlalchemy.orm import Session
+from sqlalchemy import func, or_
+
+from app.services.base import BaseService
+from app.core.security import (
+    verify_password,
+    get_password_hash,
+    create_password_reset_token,
+    verify_password_reset_token,
+)
+from app.dependencies import generate_strong_password, CommonQueryParams
+
+from app.models.user import User, UserRole, UserStatus
+from app.models.audit_log import AuditAction
 from app.models.notification import NotificationPriority, NotificationType
+from app.models.academic import (
+    Class,
+    Course,
+    ClassEnrollment,
+    EnrollmentStatus,
+    ClassStatus,
+)
+from app.models.test import TestAttempt, Test, AttemptStatus
+from app.models.session_attendance import ClassSession, SessionStatus
+
+from app.schemas.user import (
+    UserCreate,
+    UserUpdate,
+    UserPasswordUpdate,
+    BulkImportRequest,
+    UserResponse,
+    UserListResponse,
+)
 from app.schemas.notification import NotificationCreate
 
-from uuid import UUID
+from app.repositories.user import user_repository
 
-from datetime import date
-from sqlalchemy import func
-
-from app.models.academic import Class, Course, ClassEnrollment, EnrollmentStatus, ClassStatus
-from app.models.test import TestAttempt, Test, AttemptStatus
-from app.models.session_attendance import ClassSession
-from app.models.session_attendance import SessionStatus
-from app.models.user import UserStatus
+from app.services.email import email_service
+from app.services.audit_log import audit_service
+from app.services.notification import notification_service
+from app.services import cloudinary
 
 logger = logging.getLogger(__name__)
-from datetime import datetime
-from fastapi import UploadFile
-from app.services import cloudinary
+
 
 class UserService(BaseService):
     def __init__(self):
@@ -205,6 +222,39 @@ class UserService(BaseService):
     async def get_user_by_email(self, db: Session, email: str) -> Optional[User]:
         return self.repository.get_by_email(db, email)
     
+    async def get_list_user(
+            commons: CommonQueryParams, 
+            role: UserRole, 
+            search: str, 
+            db: Session, 
+            current_user: User):
+        if search:
+            users = await user_service.search_users(db, search, commons.skip, commons.limit)
+            search_filter = or_(
+                User.first_name.ilike(f"%{search}%"),
+                User.last_name.ilike(f"%{search}%"),
+                User.email.ilike(f"%{search}%")
+            )
+            total = db.query(User).filter(search_filter, User.deleted_at.is_(None)).count()
+        elif role:
+            users = await user_service.get_users_by_role(db, role, commons.skip, commons.limit)
+            total = db.query(User).filter(User.role == role, User.deleted_at.is_(None)).count()
+        else:
+            users = await user_service.get_all(db, commons.skip, commons.limit)
+            total = db.query(User).filter(User.deleted_at.is_(None)).count()
+
+        pages = (total + commons.limit - 1) // commons.limit
+
+        users_schema = [UserResponse.model_validate(u) for u in users]
+
+        return UserListResponse(
+            users=[u.model_dump(mode="json") for u in users_schema],
+            total=total,
+            page=(commons.skip // commons.limit) + 1,
+            size=commons.limit,
+            pages=pages
+        )
+    
     async def update_user(self, db: Session, user_id: uuid.UUID, user_update: UserUpdate, avatar_file: Optional[UploadFile], id_updated_by) -> User:
         user = await self.get(db, user_id)
         if not user:
@@ -374,6 +424,94 @@ class UserService(BaseService):
     
     async def get_all(self, db: Session, skip: int = 0, limit: int = 100) -> List[User]:
         return self.repository.get_all(db, skip, limit)
+    
+    def get_my_classes(self, db: Session, current_user: User):
+        class_ids: set = set()
+
+        # Student
+        enrollments = (
+            db.query(ClassEnrollment)
+            .filter(
+                ClassEnrollment.student_id == current_user.id,
+                ClassEnrollment.deleted_at.is_(None)
+            )
+            .all()
+        )
+
+        for enrollment in enrollments:
+            class_ids.add(enrollment.class_id)
+
+        # Teacher
+        teaching_classes = (
+            db.query(Class)
+            .filter(
+                Class.teacher_id == current_user.id,
+                Class.deleted_at.is_(None)
+            )
+            .all()
+        )
+
+        for class_ in teaching_classes:
+            class_ids.add(class_.id)
+
+        if not class_ids:
+            return []
+        
+        classes = (
+            db.query(Class)
+            .filter(
+                Class.id.in_(list(class_ids)),
+                Class.deleted_at.is_(None)
+            )
+            .all()
+        )
+
+        result = []
+
+        for class_ in classes:
+            classmates = (
+                db.query(User)
+                .join(ClassEnrollment, ClassEnrollment.student_id == User.id)
+                .filter(
+                    ClassEnrollment.class_id == class_.id,
+                    User.deleted_at.is_(None),
+                    ClassEnrollment.deleted_at.is_(None)
+                )
+                .all()
+            )
+
+            sessions = (
+                db.query(ClassSession)
+                .filter(ClassSession.class_id == class_.id)
+                .order_by(ClassSession.session_date, ClassSession.start_time)
+                .all()
+            )
+
+            result.append({
+                "id": class_.id,
+                "name": class_.name,
+                "teacher": {
+                    "id": class_.teacher.id if class_.teacher else None,
+                    "full_name": (
+                        f"{class_.teacher.first_name} {class_.teacher.last_name}"
+                        if class_.teacher else None
+                    ),
+                    "email": class_.teacher.email if class_.teacher else None,
+                    "avatar_url": class_.teacher.avatar_url if class_.teacher and class_.teacher.avatar_url else None
+                },
+                "students": [
+                    {
+                        "id": student.id,
+                        "full_name": f"{student.first_name} {student.last_name}",
+                        "email": student.email,
+                        "avatar_url": student.avatar_url if student.avatar_url else None
+                    }
+                    for student in classmates if student.id != current_user.id
+                ],
+                "sessions": sessions
+            })
+
+        return result
     
     def get_user_overview(self, db: Session, current_user: User) -> dict:
         role = current_user.role
