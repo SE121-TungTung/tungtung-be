@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from typing import List, Optional
-from app.services.chatbot import chatbot_service
+from app.services.chatbot_service import chatbot_service
 from app.dependencies import get_current_user, get_current_admin_user
 
 router = APIRouter()

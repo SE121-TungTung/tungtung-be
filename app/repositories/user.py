@@ -5,7 +5,7 @@ from app.repositories.base import BaseRepository
 from app.models.user import User, UserRole, UserStatus
 from app.core.security import get_password_hash, verify_password
 
-from app.services.enrollment import class_enrollment_service
+from app.services.enrollment_service import class_enrollment_service
 
 from fastapi import HTTPException, status
 

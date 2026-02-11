@@ -42,9 +42,9 @@ from app.schemas.notification import NotificationCreate
 
 from app.repositories.user import user_repository
 
-from app.services.email import email_service
-from app.services.audit_log import audit_service
-from app.services.notification import notification_service
+from app.services.email_service import email_service
+from app.services.audit_log_service import audit_service
+from app.services.notification_service import notification_service
 from app.services import cloudinary
 
 logger = logging.getLogger(__name__)

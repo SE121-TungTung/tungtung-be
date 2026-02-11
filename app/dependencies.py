@@ -92,7 +92,7 @@ async def get_current_user_from_token(token: str):
         if email is None:
             raise HTTPException(401, "Invalid token")
         
-        from app.services.user import user_service
+        from app.services.user_service import user_service
         from sqlalchemy.orm import Session
         from app.core.database import SessionLocal
         

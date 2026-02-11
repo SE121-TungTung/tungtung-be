@@ -9,7 +9,7 @@ from app.schemas.test.test_create import TestCreate
 from app.schemas.test.test_read import TestResponse, TestTeacherResponse, TestListResponse, TestListPageResponse
 from app.models.test import ContentPassage
 
-from app.services.audit_log import audit_service
+from app.services.audit_log_service import audit_service
 from app.models.audit_log import AuditAction
 
 from fastapi import UploadFile

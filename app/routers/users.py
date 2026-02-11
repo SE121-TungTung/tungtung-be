@@ -5,7 +5,7 @@ from sqlalchemy import or_
 from app.core.database import get_db
 from app.dependencies import get_current_active_user, get_current_admin_user, get_current_user, CommonQueryParams
 from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest, UserUpdateForm, ClassWithMembersResponse
-from app.services.user import user_service
+from app.services.user_service import user_service
 from app.models.user import User, UserRole, UserStatus
 from app.models.academic import ClassEnrollment, Class
 import json

@@ -24,10 +24,10 @@ from app.schemas.test.test_read import TestAttemptDetailResponse, QuestionResult
 from app.services.cloudinary import upload_and_save_metadata
 from app.models.file_upload import UploadType, AccessLevel
 
-from app.services.audit_log import audit_service
+from app.services.audit_log_service import audit_service
 from app.models.audit_log import AuditAction
 
-from app.services.notification import notification_service
+from app.services.notification_service import notification_service
 from app.schemas.notification import NotificationCreate
 from app.models.notification import NotificationType, NotificationPriority
 
@@ -339,148 +339,6 @@ class AttemptService:
             
             question_results=question_results
         )
-
-    # ============================================================
-    # 3. SUBMIT SPEAKING (Audio)
-    # ============================================================
-    async def submit_speaking(
-        self,
-        db: Session,
-        attempt_id: UUID,
-        question_id: UUID,
-        file: UploadFile,
-        user_id: UUID
-    ):
-        # 1. Validate
-        attempt = db.query(TestAttempt).filter(TestAttempt.id == attempt_id).first()
-        if not attempt:
-            raise HTTPException(404, "Attempt not found")
-        if attempt.student_id != user_id:
-            raise HTTPException(403, "Not authorized")
-        
-        question = db.query(QuestionBank).filter(QuestionBank.id == question_id).first()
-        if not question:
-            raise HTTPException(404, "Question not found")
-            
-        # Fix #6: Check correct Speaking types
-        if question.question_type not in [
-            QuestionType.SPEAKING_PART_1,
-            QuestionType.SPEAKING_PART_2,
-            QuestionType.SPEAKING_PART_3
-        ]:
-            raise HTTPException(400, "Not a speaking question")
-
-        # 2. Upload to Cloudinary
-        file_meta = await upload_and_save_metadata(
-            db=db,
-            file=file,
-            uploader_id=user_id,
-            upload_type=UploadType.AUDIO,
-            access_level=AccessLevel.PRIVATE
-        )
-
-        # 3. Get Max Points for this question in this test
-        tq = db.query(TestQuestion).filter(
-            TestQuestion.test_id == attempt.test_id,
-            TestQuestion.question_id == question_id
-        ).first()
-        max_points = float(tq.points) if tq else 1.0
-
-        # 4. AI Grading
-        ai_points_earned = 0
-        ai_band_score = None
-        ai_rubric_scores = None
-        ai_feedback = None
-        
-        try:
-            # Call AI Service (assumes it handles audio url or file)
-            # Here passing file_url. AI Service needs to handle speech-to-text then grade.
-            ai_result = await ai_grade_service.ai_grade_speaking(
-                question=question,
-                audio_url=file_meta.file_path
-            )
-            raw = ai_result.get("raw", {})
-            
-            # Extract
-            ai_band_score = float(raw.get("overallScore", 0))
-            ai_rubric_scores = raw.get("rubricScores", {})
-            ai_feedback = raw.get("detailedFeedback")
-            
-            # Convert
-            if ai_band_score > 0:
-                ai_points_earned = round((ai_band_score / 9.0) * max_points, 2)
-                
-        except Exception as e:
-            print(f"AI Speaking Grade Error: {e}")
-
-        # 5. Save/Update TestResponse
-        response = db.query(TestResponse).filter(
-            TestResponse.attempt_id == attempt_id,
-            TestResponse.question_id == question_id
-        ).first()
-
-        response_data = {
-            "file_upload_id": str(file_meta.id),
-            "audio_url": file_meta.file_path
-        }
-
-        if response:
-            response.response_data = response_data
-            response.audio_response_url = file_meta.file_path
-            
-            # Update AI suggestions
-            response.ai_points_earned = ai_points_earned
-            response.ai_band_score = ai_band_score
-            response.ai_rubric_scores = ai_rubric_scores
-            response.ai_feedback = ai_feedback
-            
-            # Reset Manual scores (wait for teacher)
-            response.points_earned = 0
-            response.band_score = None
-            response.auto_graded = False 
-        else:
-            response = TestResponse(
-                attempt_id=attempt_id,
-                question_id=question_id,
-                response_data=response_data,
-                audio_response_url=file_meta.file_path,
-                
-                points_earned=0, # Wait for teacher
-                auto_graded=False,
-                
-                # AI Suggestions
-                ai_points_earned=ai_points_earned,
-                ai_band_score=ai_band_score,
-                ai_rubric_scores=ai_rubric_scores,
-                ai_feedback=ai_feedback
-            )
-            db.add(response)
-
-        # 6. Update Attempt Status
-        # Fix #8: Do not calculate score yet, just mark as submitted
-        attempt.status = AttemptStatus.SUBMITTED
-
-        audit_service.log(
-            db=db,
-            user_id=user_id,
-            action=AuditAction.SUBMIT,
-            table_name="test_responses",
-            record_id=response.id,
-            new_values={
-                "attempt_id": str(attempt_id),
-                "question_id": str(question_id),
-                "audio_response_url": file_meta.file_path
-            }
-        )
-
-        db.commit()
-        
-        return {
-            "status": "success",
-            "audio_url": file_meta.file_path,
-            "ai_feedback": ai_feedback,
-            "ai_band_score": ai_band_score
-        }
 
     # ============================================================
     # 4. GET ATTEMPT DETAIL

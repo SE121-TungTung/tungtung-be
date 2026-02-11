@@ -4,7 +4,7 @@ from app.models.audit_log import AuditLogListResponse, AuditAction
 from sqlalchemy.orm import Session
 from app.dependencies import get_current_admin_user
 from app.core.database import get_db
-from app.services.audit_log import audit_service
+from app.services.audit_log_service import audit_service
 from uuid import UUID
 from app.models.user import User
 

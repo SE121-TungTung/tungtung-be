@@ -9,7 +9,7 @@ from app.models.user import User
 from app.models.academic import ClassEnrollment, EnrollmentStatus
 from datetime import timedelta
 
-from app.services.audit_log import audit_service
+from app.services.audit_log_service import audit_service
 from app.models.audit_log import AuditAction
 
 ALLOWED_EARLY_MINUTES = 15  # Được điểm danh sớm 15p

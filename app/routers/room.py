@@ -4,7 +4,7 @@ from typing import List
 from app.core.database import get_db
 from app.dependencies import get_current_admin_user
 from app.models.academic import Room
-from app.services.room import room_service
+from app.services.room_service import room_service
 from app.routers.generator import create_crud_router
 
 # Generate base CRUD using your existing generator ✅

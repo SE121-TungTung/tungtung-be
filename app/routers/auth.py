@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import create_access_token
 from app.schemas.token import Token, LoginRequest, LoginResponse, PasswordResetRequest
-from app.services.user import user_service
+from app.services.user_service import user_service
 from app.models.user import UserStatus
 from app.schemas.token import PasswordResetConfirm, PasswordResetResponse
 from app.core.security import verify_password_reset_token, create_refresh_token

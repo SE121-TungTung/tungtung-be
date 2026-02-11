@@ -7,7 +7,7 @@ import random
 from fastapi import HTTPException
 
 # Giả định cấu trúc import
-from app.services.schedule import ScheduleService, SYSTEM_TIME_SLOTS, MAX_SLOT_NUMBER
+from app.services.schedule_service import ScheduleService, SYSTEM_TIME_SLOTS, MAX_SLOT_NUMBER
 from app.schemas.schedule import ScheduleGenerateRequest, SessionProposal, ConflictInfo
 
 # --- MOCK OBJECTS TỐI THIỂU ---

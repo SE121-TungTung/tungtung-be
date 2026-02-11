@@ -273,30 +273,6 @@ async def submit_test_attempt(
         user_id=current_user.id
     )
 
-# ============================================================
-# SUBMIT SPEAKING
-# ============================================================
-@router.post("/attempts/{attempt_id}/speaking")
-async def submit_speaking_answer(
-    attempt_id: UUID,
-    question_id: UUID = Form(...),
-    audio: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user=Depends(get_current_user)
-):
-    """
-    Speaking submit:
-    - Validate ownership
-    - Validate question type == SPEAKING
-    """
-    return await attempt_service.submit_speaking(
-        db=db,
-        attempt_id=attempt_id,
-        question_id=question_id,
-        file=audio,
-        user_id=current_user.id
-    )
-
 # ────────────────────────────────────────────────────────────
 # STEP 1: PRE-UPLOAD AUDIO FILE
 # ────────────────────────────────────────────────────────────

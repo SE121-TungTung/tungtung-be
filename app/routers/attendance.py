@@ -5,7 +5,7 @@ from typing import List
 from fastapi import HTTPException
 
 from app.core.database import get_db
-from app.services.attendance import attendance_service
+from app.services.attendance_service import attendance_service
 from app.schemas.attendance import BatchAttendanceRequest, AttendanceResponseItem, StudentCheckInRequest, StudentCheckInResponse
 from app.models.user import UserRole
 from app.core.security import get_current_user # Giả sử bạn có auth

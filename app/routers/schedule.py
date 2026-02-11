@@ -6,7 +6,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.dependencies import get_current_admin_user, get_current_week_range
-from app.services.schedule import schedule_service
+from app.services.schedule_service import schedule_service
 from app.schemas.schedule import ScheduleGenerateRequest, ScheduleProposal, SessionCreate, SessionUpdate, SessionResponse, WeeklySchedule
 from uuid import UUID
 from typing import Dict, Any

@@ -6,7 +6,7 @@ from app.models.message import ChatRoom, ChatRoomMember, MessageType, MemberRole
 from app.models.audit_log import AuditAction
 from app.schemas.message import GroupCreateRequest, GroupUpdateRequest, GroupDetailResponse, MemberResponse
 from app.services.cloudinary import upload_and_save_metadata
-from app.services.audit_log import audit_service
+from app.services.audit_log_service import audit_service
 import logging
 
 logger = logging.getLogger(__name__)

@@ -5,7 +5,7 @@ from sqlalchemy import func, or_, and_
 from fastapi import HTTPException
 from app.models.message import Message, ChatRoom, ChatRoomMember, MessageRecipient, MessageType, MemberRole
 from app.models.audit_log import AuditAction
-from app.services.audit_log import audit_service
+from app.services.audit_log_service import audit_service
 from datetime import datetime, timezone
 
 class InteractionService:

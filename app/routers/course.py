@@ -4,7 +4,7 @@ from typing import List
 from app.core.database import get_db
 from app.dependencies import get_current_admin_user
 from app.models.academic import Course
-from app.services.course import course_service
+from app.services.course_service import course_service
 from app.routers.generator import create_crud_router
 
 # Generate base CRUD

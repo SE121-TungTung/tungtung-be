@@ -38,7 +38,7 @@ class MessageSenderService:
             """
 
             from app.services.websocket import websocket_manager as manager
-            from app.services.notification import notification_service
+            from app.services.notification_service import notification_service
 
             # Validate input
             room_id = getattr(message_data, 'room_id', None)
