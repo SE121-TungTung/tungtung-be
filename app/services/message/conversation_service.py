@@ -7,6 +7,8 @@ from app.models.message import Message, ChatRoom, ChatRoomMember, MessageType
 from app.models.user import User
 from app.schemas.message import ConversationResponse
 
+from app.repositories.message import recipient_repository as recipient_repo
+
 class ConversationService:
     async def get_user_conversations(
         self,
@@ -324,7 +326,7 @@ class ConversationService:
 
         message_ids = [msg.id for msg in messages_db]
 
-        sparse_statuses = self.recipient_repo.get_statuses_for_user(
+        sparse_statuses = recipient_repo.get_statuses_for_user(
             db, current_user_id, message_ids
         )
 

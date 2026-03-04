@@ -12,7 +12,7 @@ from app.core.security import get_current_user # Giả sử bạn có auth
 
 router = APIRouter(prefix="/sessions/{session_id}/attendance", tags=["Attendance"])
 
-@router.get("/", response_model=List[AttendanceResponseItem])
+@router.get("", response_model=List[AttendanceResponseItem])
 def get_attendance_sheet(
     session_id: UUID,
     db: Session = Depends(get_db),
@@ -21,7 +21,7 @@ def get_attendance_sheet(
     # TODO: Thêm check permission (User có phải giáo viên lớp này không?)
     return attendance_service.get_session_attendance_sheet(db, session_id)
 
-@router.put("/", status_code=status.HTTP_200_OK)
+@router.put("", status_code=status.HTTP_200_OK)
 def mark_attendance(
     session_id: UUID,
     payload: BatchAttendanceRequest,

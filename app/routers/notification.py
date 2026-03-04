@@ -13,7 +13,7 @@ from app.models.user import User
 
 router = APIRouter(prefix="/notifications", tags=["Notifications"])
 
-@router.get("/", response_model=NotificationListResponse)
+@router.get("", response_model=NotificationListResponse)
 def get_my_notifications(
     skip: int = 0, 
     limit: int = 50, 

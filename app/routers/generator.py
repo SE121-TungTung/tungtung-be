@@ -101,7 +101,7 @@ class RouteGenerator:
         # LIST endpoint
         if 'list' in active_routes:
             @router.get(
-                "/",
+                "",
                 response_model=ListResponseSchema,  # FIX LỖI Serialization
                 summary=f"List {self.model_plural}",
                 description=f"Retrieve a paginated list of {self.model_plural} with filtering and search",
@@ -130,17 +130,17 @@ class RouteGenerator:
         # GET single item
         if 'get' in active_routes:
             @router.get(
-                "/{item_id}",
+                "/{id}",
                 response_model=ResponseSchema,
                 summary=f"Get {self.model_name}",
                 description=f"Retrieve a single {self.model_name} by ID",
                 dependencies=auth_dep
             )
             async def get_item(
-                item_id: str = Path(..., description=f"{self.model_name.title()} ID"),
+                id: str = Path(..., description=f"{self.model_name.title()} ID"),
                 db: Session = db_dep
             ):
-                db_item = self.crud.get(db, id=item_id)
+                db_item = self.crud.get(db, id=id)
                 if db_item is None:
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
@@ -151,7 +151,7 @@ class RouteGenerator:
         # CREATE endpoint
         if 'create' in active_routes:
             @router.post(
-                "/",
+                "",
                 response_model=ResponseSchema,
                 status_code=status.HTTP_201_CREATED,
                 summary=f"Create {self.model_name}",
@@ -171,19 +171,19 @@ class RouteGenerator:
         # UPDATE endpoint
         if 'update' in active_routes:
             @router.put(
-                "/{item_id}",
+                "/{id}",
                 response_model=ResponseSchema,
                 summary=f"Update {self.model_name}",
                 description=f"Update an existing {self.model_name}",
                 dependencies=auth_dep
             )
             async def update_item(
-                item_id: str = Path(..., description=f"{self.model_name.title()} ID"),
+                id: str = Path(..., description=f"{self.model_name.title()} ID"),
                 # FIX LỖI CÚ PHÁP: Dùng Any làm placeholder.
                 item: Any = Body(..., description=f"The {self.model_name} data to update"),
                 db: Session = db_dep
             ):
-                db_item = self.crud.get(db, id=item_id)
+                db_item = self.crud.get(db, id=id)
                 if db_item is None:
                     raise HTTPException(
                         status_code=status.HTTP_404_NOT_FOUND,
@@ -197,25 +197,25 @@ class RouteGenerator:
         # DELETE endpoint
         if 'delete' in active_routes:
             @router.delete(
-                "/{item_id}",
+                "/{id}",
                 summary=f"Delete {self.model_name}",
                 description=f"Delete a {self.model_name}",
                 dependencies=auth_dep
             )
             async def delete_item(
-                item_id: str = Path(..., description=f"{self.model_name.title()} ID"),
+                id: str = Path(..., description=f"{self.model_name.title()} ID"),
                 soft: bool = Query(True, description="Perform soft delete if supported"),
                 db: Session = db_dep
             ):
                 if soft:
-                    deleted_item = self.crud.soft_delete(db=db, id=item_id)
+                    deleted_item = self.crud.soft_delete(db=db, id=id)
                 else:
-                    deleted_item = self.crud.delete(db=db, id=item_id)
+                    deleted_item = self.crud.delete(db=db, id=id)
                 
                 return JSONResponse(
                     content={
                         "message": f"{self.model_name.title()} deleted successfully",
-                        "id": str(item_id)
+                        "id": str(id)
                     },
                     status_code=status.HTTP_200_OK
                 )

@@ -70,7 +70,7 @@ async def change_password(
     await user_service.change_password(db, current_user, password_update)
     return {"message": "Password changed successfully"}
 
-@router.post("/", response_model=UserResponse)
+@router.post("", response_model=UserResponse)
 async def create_user(
     user_create: UserCreate,
     background_tasks: BackgroundTasks,
@@ -94,7 +94,7 @@ async def bulk_create_users(
     """Bulk create users from a list with auto-generated passwords and email notifications (admin only)."""
     return await user_service.bulk_create_users(db, request, current_user.id)
 
-@router.get("/", response_model=UserListResponse)
+@router.get("", response_model=UserListResponse)
 async def list_users(
     commons: CommonQueryParams = Depends(),
     role: Optional[UserRole] = Query(None, description="Filter by user role"),

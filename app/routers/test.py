@@ -42,7 +42,7 @@ router = APIRouter(tags=["Tests"], prefix="/tests")
 # ============================================================
 # LIST TESTS
 # ============================================================
-@router.get("/", response_model=TestListPageResponse)
+@router.get("", response_model=TestListPageResponse)
 def list_tests(
     skip: int = 0,
     limit: int = 20,

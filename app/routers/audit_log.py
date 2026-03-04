@@ -10,7 +10,7 @@ from app.models.user import User
 
 router = APIRouter(prefix="/audit_logs", tags=["Audit Logs"])
 
-@router.get("/", response_model=AuditLogListResponse)
+@router.get("", response_model=AuditLogListResponse)
 async def get_audit_logs(
     # Pagination
     skip: int = Query(0, ge=0, description="Số lượng bản ghi bỏ qua"),
