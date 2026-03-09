@@ -3,10 +3,6 @@ from typing import List, Optional, Any
 from datetime import datetime
 from app.models.test import SkillArea, DifficultyLevel
 
-# ---------------------------
-# Base / Student-facing schemas
-# ---------------------------
-
 class QuestionResponse(BaseModel):
     id: UUID4
     title: Optional[str] = None
@@ -73,7 +69,7 @@ class SectionResponse(BaseModel):
     }
 
 
-class TestResponse(BaseModel):
+class TestDetailResponse(BaseModel):
     id: UUID4
     title: str
     description: Optional[str]
@@ -102,7 +98,7 @@ class TestResponse(BaseModel):
 # Teacher/Admin schemas (extend base)
 # ---------------------------
 
-class QuestionTeacherResponse(QuestionResponse):
+class TeacherQuestionResponse(QuestionResponse):
     # teacher-only fields
     correct_answer: Optional[Any] = None
     rubric: Optional[Any] = None
@@ -119,19 +115,19 @@ class QuestionTeacherResponse(QuestionResponse):
         "from_attributes": True
     }
 
-class QuestionGroupTeacherResponse(QuestionGroupResponse):
-    questions: List[QuestionTeacherResponse]
+class TeacherQuestionGroupResponse(QuestionGroupResponse):
+    questions: List[TeacherQuestionResponse]
 
-class PartTeacherResponse(PartResponse):
+class TeacherPartResponse(PartResponse):
     structure_part_id: Optional[UUID4] = None
-    question_groups: List[QuestionGroupTeacherResponse]
+    question_groups: List[TeacherQuestionGroupResponse]
 
     model_config = {
         "from_attributes": True
     }
 
-class SectionTeacherResponse(SectionResponse):
-    parts: List[PartTeacherResponse]
+class TeacherSectionResponse(SectionResponse):
+    parts: List[TeacherPartResponse]
     # optional: original structure link
     structure_section_id: Optional[UUID4] = None
 
@@ -139,8 +135,8 @@ class SectionTeacherResponse(SectionResponse):
         "from_attributes": True
     }
 
-class TestTeacherResponse(TestResponse):
-    sections: Optional[List[SectionTeacherResponse]] = None
+class TeacherTestDetailResponse(TestDetailResponse):
+    sections: Optional[List[TeacherSectionResponse]] = None
     created_by: Optional[UUID4] = None
     updated_by: Optional[UUID4] = None
     created_at: Optional[datetime] = None
@@ -159,33 +155,45 @@ class TestTeacherResponse(TestResponse):
     }
 
 # ---------------------------
-# Additional schemas for listing tests
+# Schemas for listing tests
 # ---------------------------
 
-class TestListResponse(BaseModel):
+class TestListBase(BaseModel):
     id: UUID4
     title: str
     description: Optional[str] = None
     skill: SkillArea
     difficulty: DifficultyLevel
     test_type: Optional[str] = None
-    duration_minutes: int
+    
+    duration_minutes: int 
+    
     total_questions: int
     created_at: datetime
+    status: str
 
+    model_config = {
+        "from_attributes": True
+    }   
+
+class TeacherTestListResponse(TestListBase):
+    """Schema dành cho API get list của Teacher/Admin"""
     pending_attempts_count: int = 0
     total_attempts_count: int = 0
-    
-    class Config:
-        from_attributes = True
 
-class TestListPageResponse(BaseModel):
-    total: int
-    skip: int
-    limit: int
-    tests: list[TestListResponse]
 
-# --- 2. Schema cho Attempt Detail ---
+class StudentTestListResponse(TestListBase):
+    """Schema dành cho API get list của Student"""
+    total_points: float = 0.0
+    passing_score: float = 0.0
+    attempts_count: int = 0
+    max_attempts: int = 1
+    can_attempt: bool = True
+
+# ---------------------------
+#  Schema for Attempt Detail
+#---------------------------
+
 class QuestionResultResponse(BaseModel):
     question_id: UUID4
     question_text: str

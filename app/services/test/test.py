@@ -5,9 +5,12 @@ from fastapi import HTTPException
 from typing import Optional, List
 from datetime import datetime
 
+from app.schemas.base_schema import PaginationResponse, PaginationMetadata
 from app.schemas.test.test_create import TestCreate
-from app.schemas.test.test_read import TestResponse, TestTeacherResponse, TestListResponse, TestListPageResponse
+from app.schemas.test.test_read import TestDetailResponse, TeacherTestDetailResponse, TeacherTestListResponse, StudentTestListResponse
 from app.models.test import ContentPassage
+from app.core.exceptions import APIException
+import math
 
 from app.services.audit_log_service import audit_service
 from app.models.audit_log import AuditAction
@@ -31,17 +34,13 @@ from app.models.test import (
 from app.schemas.test.test_create import TestUpdate
 from datetime import datetime, timezone
 
-class TestService:
-
-    # ============================================================
-    # CREATE TEST
-    # ============================================================
-    from app.services.cloudinary import upload_and_save_metadata
+from app.services.cloudinary import upload_and_save_metadata
 from app.models.file_upload import UploadType, AccessLevel
 
 class TestService:
-    # ...
-
+    # ============================================================
+    # CREATE TEST
+    # ============================================================
     async def create_test(
         self,
         db: Session,
@@ -405,11 +404,11 @@ class TestService:
     # ============================================================
     def get_test_for_student(self, db: Session, test_id: UUID):
         test = self._load_test_structure(db, test_id, for_student=True)
-        return TestResponse.model_validate(self.build_test_response(test))
+        return TestDetailResponse.model_validate(self.build_test_response(test))
 
     def get_test_for_teacher(self, db: Session, test_id: UUID):
         test = self._load_test_structure(db, test_id, for_student=False)
-        return TestTeacherResponse.model_validate(self.build_test_response(test))
+        return TeacherTestDetailResponse.model_validate(self.build_test_response(test))
 
     # ============================================================
     # LIST TESTS
@@ -425,17 +424,12 @@ class TestService:
         skill: Optional[str] = None
     ):
         try:
-            # ============================================================
-            # 1. BASE QUERY (NO JOIN)
-            # ============================================================
+            # 1. BASE QUERY
             base_query = db.query(Test).filter(Test.deleted_at.is_(None))
-
             if class_id:
                 base_query = base_query.filter(Test.class_id == class_id)
-
             if status:
                 base_query = base_query.filter(Test.status == status)
-
             if skill:
                 base_query = base_query.filter(
                     Test.id.in_(
@@ -444,14 +438,22 @@ class TestService:
                     )
                 )
 
-            # ============================================================
             # 2. TOTAL COUNT
-            # ============================================================
             total = base_query.count()
+            
+            # Tính toán phân trang
+            page = (skip // limit) + 1 if limit > 0 else 1
+            total_pages = math.ceil(total / limit) if limit > 0 else 1
 
-            # ============================================================
+            # Khởi tạo Metadata chuẩn
+            meta = PaginationMetadata(
+                page=page,
+                limit=limit,
+                total=total,
+                total_pages=total_pages
+            )
+
             # 3. DATA QUERY
-            # ============================================================
             tests = (
                 base_query
                 .options(
@@ -464,19 +466,13 @@ class TestService:
                 .all()
             )
 
+            # --- SỬA CHỖ NÀY: Trả về PaginationResponse nếu rỗng ---
             if not tests:
-                return {
-                    "total": total,
-                    "skip": skip,
-                    "limit": limit,
-                    "tests": []
-                }
+                return PaginationResponse(data=[], meta=meta)
 
             test_ids = [t.id for t in tests]
 
-            # ============================================================
-            # 4. BATCH ATTEMPT STATS
-            # ============================================================
+            # 4. BATCH ATTEMPT STATS (Giữ nguyên)
             attempt_rows = (
                 db.query(
                     TestAttempt.test_id,
@@ -501,47 +497,39 @@ class TestService:
                 for r in attempt_rows
             }
 
-            # ============================================================
             # 5. BUILD RESPONSE
-            # ============================================================
             results = []
-
             for test in tests:
                 skill_area = (
                     test.sections[0].skill_area
                     if test.sections
                     else SkillArea.READING
                 )
+                attempt_info = attempts_map.get(test.id, {"total": 0, "pending": 0})
 
-                attempt_info = attempts_map.get(
-                    test.id,
-                    {"total": 0, "pending": 0}
-                )
+                results.append(TeacherTestListResponse(
+                    id=test.id,
+                    title=test.title,
+                    description=test.description,
+                    skill=skill_area,
+                    difficulty=DifficultyLevel.MEDIUM,
+                    test_type=test.test_type.value if hasattr(test.test_type, 'value') else test.test_type,
+                    duration_minutes=test.time_limit_minutes or 0,
+                    total_questions=len(test.questions),
+                    created_at=test.created_at,
+                    status=test.status.value if hasattr(test.status, 'value') else test.status,
+                    
+                    pending_attempts_count=attempt_info["pending"],
+                    total_attempts_count=attempt_info["total"],
+                ))
 
-                results.append({
-                    "id": test.id,
-                    "title": test.title,
-                    "description": test.description,
-                    "skill": skill_area,
-                    "difficulty": DifficultyLevel.MEDIUM,
-                    "test_type": test.test_type,
-                    "duration_minutes": test.time_limit_minutes or 0,
-                    "total_questions": len(test.questions),
-                    "created_at": test.created_at,
-                    "pending_attempts_count": attempt_info["pending"],
-                    "total_attempts_count": attempt_info["total"],
-                })
-
-            return {
-                "total": total,
-                "skip": skip,
-                "limit": limit,
-                "tests": results
-            }
+            return PaginationResponse(
+                data=results,
+                meta=meta
+            )
 
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
+            raise APIException(status_code=500, code="LIST_TESTS_ERROR", message=None)
 
 
     def list_tests_for_student(
@@ -581,9 +569,21 @@ class TestService:
                 )
 
             # ============================================================
-            # 2. TOTAL
+            # 2. TOTAL & METADATA
             # ============================================================
             total = base_query.count()
+            
+            # Tính toán phân trang
+            page = (skip // limit) + 1 if limit > 0 else 1
+            total_pages = math.ceil(total / limit) if limit > 0 else 1
+
+            # Khởi tạo Metadata chuẩn
+            meta = PaginationMetadata(
+                page=page,
+                limit=limit,
+                total=total,
+                total_pages=total_pages
+            )
 
             # ============================================================
             # 3. DATA QUERY
@@ -604,12 +604,7 @@ class TestService:
             )
 
             if not tests:
-                return {
-                    "total": total,
-                    "skip": skip,
-                    "limit": limit,
-                    "tests": []
-                }
+                return PaginationResponse(data=[], meta=meta)
 
             test_ids = [t.id for t in tests]
 
@@ -641,7 +636,7 @@ class TestService:
             # ============================================================
             # 5. BUILD RESPONSE
             # ============================================================
-            results = []
+            results = [] # FIX LỖI: Trả về list rỗng, không phải [TestDetailResponse]
 
             for test in tests:
                 skill_area = (
@@ -658,32 +653,32 @@ class TestService:
                 max_attempts = test.max_attempts or 1
                 can_attempt = attempt_info["count"] < max_attempts
 
-                results.append({
-                    "id": test.id,
-                    "title": test.title,
-                    "description": test.description,
-                    "skill": skill_area,
-                    "difficulty": DifficultyLevel.MEDIUM,
-                    "test_type": test.test_type.value if test.test_type else None,
-                    "time_limit_minutes": test.time_limit_minutes,
-                    "total_questions": len(test.questions),
-                    "total_points": float(test.total_points or 0),
-                    "passing_score": float(test.passing_score or 0),
-                    "attempts_count": attempt_info["count"],
-                    "max_attempts": max_attempts,
-                    "can_attempt": can_attempt,
-                    "status": test.status,
-                })
+                results.append(StudentTestListResponse(
+                    id=test.id,
+                    title=test.title,
+                    description=test.description,
+                    skill=skill_area,
+                    difficulty=DifficultyLevel.MEDIUM,
+                    test_type=test.test_type.value if hasattr(test.test_type, 'value') else test.test_type,
+                    duration_minutes=test.time_limit_minutes or 0,
+                    total_questions=len(test.questions),
+                    created_at=test.created_at,
+                    status=test.status.value if hasattr(test.status, 'value') else test.status,
+                    
+                    total_points=float(test.total_points or 0),
+                    passing_score=float(test.passing_score or 0),
+                    attempts_count=attempt_info["count"],
+                    max_attempts=max_attempts,
+                    can_attempt=can_attempt
+                ))
 
-            return {
-                "total": total,
-                "skip": skip,
-                "limit": limit,
-                "tests": results
-            }
+            return PaginationResponse(
+                data=results,
+                meta=meta
+            )
 
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            raise APIException(status_code=500, code="LIST_TESTS_ERROR", message=None)
 
     def get_test_summary(self, db: Session, test_id: UUID):
         """

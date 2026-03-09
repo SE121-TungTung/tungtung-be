@@ -1,24 +1,30 @@
 # app/services/test/test_attempt_service.py
 
+import math
+
 from sqlalchemy.orm import Session, joinedload
 from fastapi import HTTPException, UploadFile
 from uuid import UUID
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from app.models.user import User
+from app.core.exceptions import APIException
+from app.models.user import User, UserRole
 from app.models.test import (
     Test, TestAttempt, TestQuestion, 
     TestResponse, QuestionBank, 
     AttemptStatus, QuestionType
 )
+from app.schemas.base_schema import PaginationMetadata, PaginationResponse
+from app.schemas.base_schema import PaginationResponse
 from app.services.test.ai_grade import ai_grade_service
 from app.schemas.test.test_attempt import (
     StartAttemptResponse,
     SubmitAttemptRequest,
     SubmitAttemptResponse,
     QuestionResult,
-    GradeAttemptRequest
+    GradeAttemptRequest,
+    TestAttemptSummaryResponse
 )
 from app.schemas.test.test_read import TestAttemptDetailResponse, QuestionResultResponse
 
@@ -360,9 +366,35 @@ class AttemptService:
         self,
         db: Session,
         test_id: UUID,
-        teacher_id: UUID
+        user_id: UUID,
+        user_role: UserRole = None,
+        skip: int = 0,    
+        limit: int = 20   
     ):
-        rows = (
+        # ============================================================
+        # 1. KIỂM TRA SỰ TỒN TẠI VÀ QUYỀN SỞ HỮU CỦA TEST
+        # ============================================================
+        test = db.query(Test).filter(Test.id == test_id, Test.deleted_at.is_(None)).first()
+        
+        if not test:
+            raise APIException(
+                status_code=404, 
+                code="TEST_NOT_FOUND", 
+                message="Bài thi không tồn tại hoặc đã bị xóa."
+            )
+
+        if user_role == UserRole.TEACHER:
+            if test.created_by != user_id:
+                raise APIException(
+                    status_code=403, 
+                    code="FORBIDDEN_TEST_ACCESS", 
+                    message="Bạn không có quyền xem danh sách làm bài của bài thi không do bạn tạo."
+                )
+
+        # ============================================================
+        # 2. KHỞI TẠO BASE QUERY 
+        # ============================================================
+        base_query = (
             db.query(
                 TestAttempt,
                 User.first_name,
@@ -373,23 +405,49 @@ class AttemptService:
                 TestAttempt.test_id == test_id,
                 TestAttempt.deleted_at.is_(None)
             )
+        )
+
+        # ============================================================
+        # 3. ĐẾM TỔNG SỐ VÀ TÍNH METADATA
+        # ============================================================
+        total = base_query.count()
+        page = (skip // limit) + 1 if limit > 0 else 1
+        total_pages = math.ceil(total / limit) if limit > 0 else 1
+
+        meta = PaginationMetadata(
+            page=page, limit=limit, total=total, total_pages=total_pages
+        )
+
+        # ============================================================
+        # 4. TRUY VẤN DỮ LIỆU CÓ PHÂN TRANG
+        # ============================================================
+        rows = (
+            base_query
             .order_by(TestAttempt.started_at.desc())
+            .offset(skip)
+            .limit(limit)
             .all()
         )
 
-        return [
-            {
-                "id": attempt.id,
-                "student_id": attempt.student_id,
-                "student_name": f"{first_name} {last_name}".strip(),
-                "status": attempt.status,
-                "score": attempt.band_score,
-                "started_at": attempt.started_at,
-                "submitted_at": attempt.submitted_at,
-            }
-            for attempt, first_name, last_name in rows
-        ]
+        # ============================================================
+        # 5. CHUẨN HÓA DATA THEO SCHemas
+        # ============================================================
+        results = []
+        for attempt, first_name, last_name in rows:
+            results.append(TestAttemptSummaryResponse(
+                id=attempt.id,
+                student_id=attempt.student_id,
+                student_name=f"{first_name} {last_name}".strip(),
+                status=attempt.status.value if hasattr(attempt.status, 'value') else attempt.status,
+                score=attempt.band_score,
+                started_at=attempt.started_at,
+                submitted_at=attempt.submitted_at,
+            ))
 
+        return PaginationResponse(
+            data=results,
+            meta=meta
+        )
     
     async def grade_attempt(
         self,

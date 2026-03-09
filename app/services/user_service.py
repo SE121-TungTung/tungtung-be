@@ -35,9 +35,9 @@ from app.schemas.user import (
     UserUpdate,
     UserPasswordUpdate,
     BulkImportRequest,
-    UserResponse,
-    UserListResponse,
+    UserResponse
 )
+from app.schemas.base_schema import PaginationMetadata, PaginationResponse
 from app.schemas.notification import NotificationCreate
 
 from app.repositories.user import user_repository
@@ -223,36 +223,43 @@ class UserService(BaseService):
         return self.repository.get_by_email(db, email)
     
     async def get_list_user(
-            commons: CommonQueryParams, 
-            role: UserRole, 
-            search: str, 
-            db: Session, 
-            current_user: User):
+        self,
+        commons: CommonQueryParams, 
+        role: Optional[UserRole], 
+        search: Optional[str], 
+        db: Session, 
+        current_user: User
+    ) -> PaginationResponse:
+        
+        query = db.query(User).filter(User.deleted_at.is_(None))
+
         if search:
-            users = await user_service.search_users(db, search, commons.skip, commons.limit)
             search_filter = or_(
                 User.first_name.ilike(f"%{search}%"),
                 User.last_name.ilike(f"%{search}%"),
                 User.email.ilike(f"%{search}%")
             )
-            total = db.query(User).filter(search_filter, User.deleted_at.is_(None)).count()
-        elif role:
-            users = await user_service.get_users_by_role(db, role, commons.skip, commons.limit)
-            total = db.query(User).filter(User.role == role, User.deleted_at.is_(None)).count()
-        else:
-            users = await user_service.get_all(db, commons.skip, commons.limit)
-            total = db.query(User).filter(User.deleted_at.is_(None)).count()
+            query = query.filter(search_filter)
 
-        pages = (total + commons.limit - 1) // commons.limit
+        if role:
+            query = query.filter(User.role == role)
 
-        users_schema = [UserResponse.model_validate(u) for u in users]
+        total = query.count()
 
-        return UserListResponse(
-            users=[u.model_dump(mode="json") for u in users_schema],
+        users = query.offset(commons.skip).limit(commons.limit).all()
+
+        user_responses = [UserResponse.model_validate(user) for user in users]
+        total_pages = (total + commons.limit - 1) // commons.limit
+        meta = PaginationMetadata(
+            page=commons.page,
+            limit=commons.limit,
             total=total,
-            page=(commons.skip // commons.limit) + 1,
-            size=commons.limit,
-            pages=pages
+            total_pages=total_pages
+        )
+        
+        return PaginationResponse(
+            data=user_responses, 
+            meta=meta
         )
     
     async def update_user(self, db: Session, user_id: uuid.UUID, user_update: UserUpdate, avatar_file: Optional[UploadFile], id_updated_by) -> User:

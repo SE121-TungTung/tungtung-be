@@ -18,23 +18,6 @@ from app.services.message.interaction_service import message_interaction_service
 from app.services.message.group_service import message_group_service
 
 logger = logging.getLogger(__name__)
-
-base_message_router = create_crud_router(
-    model=Message,
-    db_dependency=get_db,
-    auth_dependency=get_current_active_user,
-    tag_prefix="Messages (CRUD)",
-    prefix=""
-)
-
-base_recepient_router = create_crud_router(
-    model=MessageRecipient,
-    db_dependency=get_db,
-    auth_dependency=get_current_active_user,
-    tag_prefix="MessageRecipients (CRUD)",
-    prefix=""
-)
-
 router = APIRouter(tags=["Messaging"], prefix="/messaging")
 
 @router.post("/send")
@@ -202,7 +185,7 @@ async def delete_chat_room(
         current_user_id=current_user.id
     )
 
-@router.post("/edit_message/{message_id}")
+@router.post("/edit-message/{message_id}")
 async def edit_message(
     message_id: UUID,
     new_content: str = Query(..., description="New content for the message"),
@@ -214,7 +197,7 @@ async def edit_message(
         db, message_id, new_content, current_user.id,
     )
 
-@router.get("/search_messages")
+@router.get("/search-messages")
 async def search_messages(
     query: str = Query(..., description="Search query string"),
     room_id: UUID = Query(None, description="Optional room ID to filter messages"),

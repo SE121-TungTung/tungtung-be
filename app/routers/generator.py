@@ -1,3 +1,5 @@
+import math
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -6,6 +8,9 @@ from pydantic import BaseModel, create_model, Field
 import inflect
 from app.schemas.generator import generate_model_schemas
 from app.routers.generic_crud import CRUDBase
+
+from app.schemas.base_schema import ApiResponse, PaginationResponse, PaginationMetadata
+from app.core.route import ResponseWrapperRoute
 
 # Initialize inflect for proper pluralization
 inflector = inflect.engine()
@@ -53,13 +58,13 @@ class RouteGenerator:
         
         include_routes = include_routes or ['list', 'get', 'create', 'update', 'delete']
         exclude_routes = exclude_routes or []
-        
-        # Filter routes
         active_routes = [route for route in include_routes if route not in exclude_routes]
         
+        # --- BƯỚC 1: THÊM RESPONSE WRAPPER VÀO ROUTER ---
         router = APIRouter(
             prefix=self.prefix,
-            tags=[self.tag_name]
+            tags=[self.tag_name],
+            route_class=ResponseWrapperRoute  # Tự động bọc ApiResponse
         )
         
         # Lấy các Pydantic Model Class ra khỏi dictionary
@@ -67,34 +72,8 @@ class RouteGenerator:
         CreateSchema = self.schemas['create']
         UpdateSchema = self.schemas['update']
         
-        # --- FIX LỖI PydanticUserError BẰNG CÁCH DÙNG MODEL BASE ---
+        # XÓA BỎ HOÀN TOÀN: PaginatedBase và ListResponseSchema tự chế ở đây
         
-        # 1. Định nghĩa Base Model cho Phân trang (chứa model_config)
-        class PaginatedBase(BaseModel):
-            """Base model for paginated responses, defining common fields and config."""
-            # Cài đặt model_config (from_attributes=True) là thuộc tính của Class
-            model_config = {'from_attributes': True}
-            
-            # Định nghĩa các trường phân trang (chúng ta có thể ghi đè chúng trong create_model)
-            total: int = 0
-            page: int = 1
-            size: int = 100
-            pages: int = 1
-            has_next: bool = False
-            has_prev: bool = False
-        
-        # 2. Tạo ListResponseSchema bằng cách thừa kế từ PaginatedBase
-        ListResponseSchema = create_model(
-            f"{self.model_name.title()}ListResponse",
-            # Sử dụng __base__ để thừa kế các trường và model_config
-            __base__=PaginatedBase, 
-            # Định nghĩa trường 'items' (Trường mới duy nhất)
-            items=(List[ResponseSchema], Field(..., description=f"List of {self.model_plural}")),
-            # KHÔNG cần truyền model_config ở đây
-        )
-        # -------------------------------------------------------
-        
-        # Conditional dependencies
         auth_dep = [Depends(self.auth_dependency)] if self.auth_dependency else []
         db_dep = Depends(self.get_db)
 
@@ -102,13 +81,13 @@ class RouteGenerator:
         if 'list' in active_routes:
             @router.get(
                 "",
-                response_model=ListResponseSchema,  # FIX LỖI Serialization
+                response_model=PaginationResponse[ResponseSchema], # --- CẬP NHẬT SWAGGER ---
                 summary=f"List {self.model_plural}",
-                description=f"Retrieve a paginated list of {self.model_plural} with filtering and search",
+                description=f"Retrieve a paginated list of {self.model_plural}",
                 dependencies=auth_dep
             )
             async def list_items(
-                skip: int = Query(0, ge=0, description="Number of records to skip"),
+                page: int = Query(1, ge=1, description="Current page"), # Đổi skip thành page cho chuẩn UI
                 limit: int = Query(100, ge=1, le=1000, description="Max records to return"),
                 sort_by: Optional[str] = Query(None, description="Field to sort by"),
                 sort_order: str = Query("asc", regex="^(asc|desc)$", description="Sort order"),
@@ -116,24 +95,33 @@ class RouteGenerator:
                 include_deleted: bool = Query(False, description="Set true to include soft-deleted records"),
                 db: Session = db_dep
             ):
+                skip = (page - 1) * limit
+                
+                # CRUD trả về kiểu dict cũ {"items": [...], "total": ...}
                 result = self.crud.get_multi(
-                    db,
-                    skip=skip,
-                    limit=limit,
-                    search=search,
-                    sort_by=sort_by,
-                    sort_order=sort_order,
-                    include_deleted=include_deleted
+                    db, skip=skip, limit=limit, search=search,
+                    sort_by=sort_by, sort_order=sort_order, include_deleted=include_deleted
                 )
-                return result
+                
+                # --- FIX LỖI PYDANTIC V2: Serialize ORM sang Pydantic ---
+                validated_items = [ResponseSchema.model_validate(item) for item in result["items"]]
+                
+                # --- CHUẨN HÓA THÀNH PaginationResponse ---
+                total = result["total"]
+                meta = PaginationMetadata(
+                    page=page,
+                    limit=limit,
+                    total=total,
+                    total_pages=math.ceil(total / limit) if limit > 0 else 1
+                )
+                return PaginationResponse(data=validated_items, meta=meta)
         
         # GET single item
         if 'get' in active_routes:
             @router.get(
                 "/{id}",
-                response_model=ResponseSchema,
+                response_model=ApiResponse[ResponseSchema], # --- CẬP NHẬT SWAGGER ---
                 summary=f"Get {self.model_name}",
-                description=f"Retrieve a single {self.model_name} by ID",
                 dependencies=auth_dep
             )
             async def get_item(
@@ -142,83 +130,64 @@ class RouteGenerator:
             ):
                 db_item = self.crud.get(db, id=id)
                 if db_item is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"{self.model_name.title()} not found"
-                    )
-                return db_item
+                    # Chuyển sang ném Exception chuẩn của bạn nếu muốn, hoặc giữ nguyên
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+                return db_item # Trả thẳng ORM, Wrapper sẽ bọc lại
         
         # CREATE endpoint
         if 'create' in active_routes:
             @router.post(
                 "",
-                response_model=ResponseSchema,
+                response_model=ApiResponse[ResponseSchema], # --- CẬP NHẬT SWAGGER ---
                 status_code=status.HTTP_201_CREATED,
                 summary=f"Create {self.model_name}",
-                description=f"Create a new {self.model_name}",
                 dependencies=auth_dep
             )
             async def create_item(
-                # FIX LỖI CÚ PHÁP: Dùng Any làm placeholder.
-                item: Any = Body(..., description=f"The {self.model_name} data to create"), 
-                db: Session = db_dep
+                item: Any = Body(...), db: Session = db_dep
             ):
                 return self.crud.create(db=db, obj_in=item)
-            
-            # Gán kiểu dữ liệu động sau khi hàm được định nghĩa
             _update_type_hints(create_item, {"item": CreateSchema})
         
         # UPDATE endpoint
         if 'update' in active_routes:
             @router.put(
                 "/{id}",
-                response_model=ResponseSchema,
+                response_model=ApiResponse[ResponseSchema], # --- CẬP NHẬT SWAGGER ---
                 summary=f"Update {self.model_name}",
-                description=f"Update an existing {self.model_name}",
                 dependencies=auth_dep
             )
             async def update_item(
-                id: str = Path(..., description=f"{self.model_name.title()} ID"),
-                # FIX LỖI CÚ PHÁP: Dùng Any làm placeholder.
-                item: Any = Body(..., description=f"The {self.model_name} data to update"),
-                db: Session = db_dep
+                id: str = Path(...), item: Any = Body(...), db: Session = db_dep
             ):
                 db_item = self.crud.get(db, id=id)
                 if db_item is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"{self.model_name.title()} not found"
-                    )
+                    raise HTTPException(status_code=404, detail="Not found")
                 return self.crud.update(db=db, db_obj=db_item, obj_in=item)
-            
-            # Gán kiểu dữ liệu động sau khi hàm được định nghĩa
             _update_type_hints(update_item, {"item": UpdateSchema})
         
         # DELETE endpoint
         if 'delete' in active_routes:
             @router.delete(
                 "/{id}",
+                response_model=ApiResponse[Dict], # --- CẬP NHẬT SWAGGER ---
                 summary=f"Delete {self.model_name}",
-                description=f"Delete a {self.model_name}",
                 dependencies=auth_dep
             )
             async def delete_item(
-                id: str = Path(..., description=f"{self.model_name.title()} ID"),
-                soft: bool = Query(True, description="Perform soft delete if supported"),
-                db: Session = db_dep
+                id: str = Path(...), soft: bool = Query(True), db: Session = db_dep
             ):
                 if soft:
-                    deleted_item = self.crud.soft_delete(db=db, id=id)
+                    self.crud.soft_delete(db=db, id=id)
                 else:
-                    deleted_item = self.crud.delete(db=db, id=id)
+                    self.crud.delete(db=db, id=id)
                 
-                return JSONResponse(
-                    content={
-                        "message": f"{self.model_name.title()} deleted successfully",
-                        "id": str(id)
-                    },
-                    status_code=status.HTTP_200_OK
-                )
+                # --- KHÔNG DÙNG JSONResponse NỮA ---
+                # Chỉ cần trả về Dict, Wrapper sẽ tự bọc thành {success: true, data: {...}}
+                return {
+                    "message": f"{self.model_name.title()} deleted successfully",
+                    "id": str(id)
+                }
         
         return router
 

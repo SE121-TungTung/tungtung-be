@@ -1,20 +1,25 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
-
-from app.core.database import get_db
-from app.dependencies import get_current_user
-from app.models.user import UserRole
-
 import json
 from pydantic import ValidationError
 
+from app.core.database import get_db
+from app.dependencies import get_current_user, CommonQueryParams
+from app.models.user import UserRole
+from app.models.file_upload import UploadType, AccessLevel
+
+from app.core.route import ResponseWrapperRoute
+from app.schemas.base_schema import ApiResponse, PaginationResponse
+from app.core.exceptions import APIException # Đã cập nhật path core.exceptions
+
 from app.schemas.test.test_create import TestCreate, TestUpdate
 from app.schemas.test.test_read import (
-    TestResponse,
-    TestTeacherResponse,
-    TestListPageResponse,
+    TeacherTestListResponse,
+    StudentTestListResponse,
+    TestDetailResponse,
+    TeacherTestDetailResponse,
     TestAttemptDetailResponse
 )
 from app.schemas.test.test_attempt import (
@@ -35,17 +40,15 @@ from app.schemas.test.speaking import (
 )
 from app.services.test.speaking_service import speaking_service
 from app.services.cloudinary import upload_and_save_metadata
-from app.models.file_upload import UploadType, AccessLevel
 
-router = APIRouter(tags=["Tests"], prefix="/tests")
+router = APIRouter(tags=["Tests"], prefix="/tests", route_class=ResponseWrapperRoute)
 
 # ============================================================
 # LIST TESTS
 # ============================================================
-@router.get("", response_model=TestListPageResponse)
+@router.get("", response_model=PaginationResponse[TeacherTestListResponse])
 def list_tests(
-    skip: int = 0,
-    limit: int = 20,
+    params: CommonQueryParams = Depends(),
     class_id: Optional[UUID] = None,
     status: Optional[str] = None,
     skill: Optional[str] = None,
@@ -58,21 +61,20 @@ def list_tests(
         UserRole.CENTER_ADMIN,
         UserRole.SYSTEM_ADMIN,
     ):
-        raise HTTPException(status_code=403, detail="Not authorized")
+        raise APIException(status_code=403, code="FORBIDDEN", message="Not authorized")
 
     return test_service.list_tests(
         db=db,
-        skip=skip,
-        limit=limit,
+        skip=params.skip,
+        limit=params.limit,
         class_id=class_id,
         status=status,
         skill=skill
     )
 
-@router.get("/student")
-def list_tests(
-    skip: int = 0,
-    limit: int = 20,
+@router.get("/student", response_model=PaginationResponse[StudentTestListResponse])
+def list_tests_student(
+    params: CommonQueryParams = Depends(),
     class_id: Optional[UUID] = None,
     skill: Optional[str] = None,
     db: Session = Depends(get_db),
@@ -83,46 +85,38 @@ def list_tests(
         student_id=current_user.id,
         class_id=class_id,
         skill=skill,
-        skip=skip,
-        limit=limit
+        skip=params.skip,
+        limit=params.limit
     )
 
 # ============================================================
-# CREATE TEST (ADMIN)
+# CREATE / UPDATE / DELETE / PUBLISH
 # ============================================================
-@router.post("/create", response_model=TestTeacherResponse)
+@router.post("/create", response_model=ApiResponse[TeacherTestDetailResponse])
 async def create_test(
-    # Nhận JSON string và parse thủ công
     test_data_str: str = Form(..., description="JSON string of TestCreate schema"),
-    # Nhận list files (optional)
     files: List[UploadFile] = File(None),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    if current_user.role not in (
-        UserRole.TEACHER,
-        UserRole.CENTER_ADMIN
-    ):
-        raise HTTPException(status_code=403, detail="Not authorized")
+    if current_user.role not in (UserRole.TEACHER, UserRole.CENTER_ADMIN):
+        raise APIException(status_code=403, code="FORBIDDEN", message="Not authorized")
+    
     try:
-        # 1. Parse JSON string thành Dict
         test_data_dict = json.loads(test_data_str)
-        # 2. Validate bằng Pydantic
         data = TestCreate(**test_data_dict)
     except (json.JSONDecodeError, ValidationError) as e:
-        raise HTTPException(status_code=422, detail=f"Invalid test data format: {str(e)}")
+        raise APIException(status_code=422, code="VALIDATION_ERROR", message=f"Invalid test data format: {str(e)}")
 
-    # 3. Gọi Service
     test = await test_service.create_test(
         db=db,
         data=data,
-        files=files, # Truyền thêm files
+        files=files,
         created_by=current_user.id
     )
-    
-    return test_service.get_test_for_teacher(db, test.id)
+    return ApiResponse(data=test_service.get_test_for_teacher(db, test.id))
 
-@router.patch("/{test_id}", response_model=TestTeacherResponse)
+@router.patch("/{test_id}", response_model=ApiResponse[TeacherTestDetailResponse])
 async def update_test(
     test_id: UUID,
     test_data_str: str = Form(...),
@@ -130,18 +124,14 @@ async def update_test(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    if current_user.role not in (
-        UserRole.TEACHER,
-        UserRole.CENTER_ADMIN,
-        UserRole.SYSTEM_ADMIN
-    ):
-        raise HTTPException(status_code=403, detail="Not authorized")
+    if current_user.role not in (UserRole.TEACHER, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN):
+        raise APIException(status_code=403, code="FORBIDDEN", message="Not authorized")
 
     try:
         payload_dict = json.loads(test_data_str)
         payload = TestUpdate(**payload_dict)
     except Exception as e:
-        raise HTTPException(400, f"Invalid test data: {e}")
+        raise APIException(status_code=400, code="BAD_REQUEST", message=f"Invalid test data: {e}")
 
     updated_test = await test_service.update_test(
         db=db,
@@ -150,172 +140,85 @@ async def update_test(
         user_id=current_user.id,
         files=files
     )
+    return ApiResponse(data=test_service.get_test_for_teacher(db, updated_test.id))
 
-    return test_service.get_test_for_teacher(db, updated_test.id)
-
-@router.post("/{test_id}/publish", response_model=TestTeacherResponse)
+@router.post("/{test_id}/publish", response_model=ApiResponse[TeacherTestDetailResponse])
 def publish_test(
     test_id: UUID,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    """
-    Validate and switch test status to PUBLISHED.
-    """
     if current_user.role not in (UserRole.TEACHER, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN):
-        raise HTTPException(status_code=403, detail="Not authorized")
+        raise APIException(status_code=403, code="FORBIDDEN", message="Not authorized")
 
-    published_test = test_service.publish_test(
-        db=db,
-        test_id=test_id,
-        user_id=current_user.id
-    )
+    published_test = test_service.publish_test(db=db, test_id=test_id, user_id=current_user.id)
+    return ApiResponse(data=test_service.get_test_for_teacher(db, published_test.id))
 
-    return test_service.get_test_for_teacher(db, published_test.id)
-
-@router.delete("/{test_id}")
+@router.delete("/{test_id}", response_model=ApiResponse[bool])
 def delete_test(
     test_id: UUID,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    """
-    Delete test (soft delete):
-    - Only for TEACHER / ADMIN
-    - Cannot delete test with attempts
-    """
-    if current_user.role not in (
-        UserRole.TEACHER,
-        UserRole.CENTER_ADMIN,
-        UserRole.SYSTEM_ADMIN,
-    ):
-        raise HTTPException(status_code=403, detail="Not authorized")
+    if current_user.role not in (UserRole.TEACHER, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN):
+        raise APIException(status_code=403, code="FORBIDDEN", message="Not authorized")
 
-    test_service.delete_test(db, test_id, current_user.id)
-    return {"success": True}
+    result = test_service.delete_test(db, test_id, current_user.id)
+    return ApiResponse(data=result)
 
 # ============================================================
-# GET TEST - STUDENT
+# STUDENT VIEW & ATTEMPTS
 # ============================================================
-@router.get("/{test_id}", response_model=TestResponse)
+@router.get("/{test_id}", response_model=ApiResponse[TestDetailResponse])
 def get_test_student(
     test_id: UUID,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    """
-    Student view:
-    - Only PUBLISHED tests
-    - No correct answers
-    """
-    return test_service.get_test_for_student(db, test_id)
+    data = test_service.get_test_for_student(db, test_id)
+    return ApiResponse(data=data)
 
-# ============================================================
-# GET TEST - TEACHER / ADMIN
-# ============================================================
-@router.get("/admin/{test_id}", response_model=TestTeacherResponse)
+@router.get("/admin/{test_id}", response_model=ApiResponse[TeacherTestDetailResponse])
 def get_test_teacher(
     test_id: UUID,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    if current_user.role not in (
-        UserRole.TEACHER,
-        UserRole.OFFICE_ADMIN,
-        UserRole.CENTER_ADMIN,
-        UserRole.SYSTEM_ADMIN,
-    ):
-        raise HTTPException(status_code=403, detail="Not authorized")
+    if current_user.role not in (UserRole.TEACHER, UserRole.OFFICE_ADMIN, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN):
+        raise APIException(status_code=403, code="FORBIDDEN", message="Not authorized")
 
-    return test_service.get_test_for_teacher(db, test_id)
+    data = test_service.get_test_for_teacher(db, test_id)
+    return ApiResponse(data=data)
 
-# ============================================================
-# START ATTEMPT
-# ============================================================
-@router.post("/{test_id}/start", response_model=StartAttemptResponse)
+@router.post("/{test_id}/start", response_model=ApiResponse[StartAttemptResponse])
 def start_test_attempt(
     test_id: UUID,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    """
-    Start attempt:
-    - Test must be published
-    - No active attempt
-    - Not exceed max_attempts
-    """
-    return attempt_service.start_attempt(
-        db=db,
-        test_id=test_id,
-        student_id=current_user.id
-    )
+    return ApiResponse(data=attempt_service.start_attempt(db=db, test_id=test_id, student_id=current_user.id))
 
-# ============================================================
-# SUBMIT ATTEMPT
-# ============================================================
-@router.post("/attempts/{attempt_id}/submit", response_model=SubmitAttemptResponse)
+@router.post("/attempts/{attempt_id}/submit", response_model=ApiResponse[SubmitAttemptResponse])
 async def submit_test_attempt(
     attempt_id: UUID,
     payload: SubmitAttemptRequest,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    """
-    Submit full attempt:
-    - Ownership check
-    - Attempt must be IN_PROGRESS
-    - Auto grading only where allowed
-    """
-    return await attempt_service.submit_attempt(
-        db=db,
-        attempt_id=attempt_id,
-        data=payload,
-        user_id=current_user.id
-    )
+    result = await attempt_service.submit_attempt(db=db, attempt_id=attempt_id, data=payload, user_id=current_user.id)
+    return ApiResponse(data=result)
 
-# ────────────────────────────────────────────────────────────
-# STEP 1: PRE-UPLOAD AUDIO FILE
-# ────────────────────────────────────────────────────────────
-
-@router.post(
-    "/attempts/{attempt_id}/speaking/upload/{question_id}",
-    response_model=PreUploadResponse,
-    summary="Pre-upload speaking audio file",
-    description="""
-    Upload a single audio file for a speaking question.
-    
-    This is step 1 of the 2-step speaking submission process:
-    1. Upload each audio file as student records (this endpoint)
-    2. Batch submit all file_upload_ids for grading
-    
-    **Benefits:**
-    - Progressive upload (better UX)
-    - No timeout issues with slow connections
-    - Resume capability if interrupted
-    - Student sees progress immediately
-    
-    **Returns:** file_upload_id to use in batch submit
-    """
-)
+# ============================================================
+# SPEAKING PROCESS
+# ============================================================
+@router.post("/attempts/{attempt_id}/speaking/upload/{question_id}", response_model=ApiResponse[PreUploadResponse])
 async def pre_upload_speaking_audio(
     attempt_id: UUID,
     question_id: UUID,
-    audio: UploadFile = File(..., description="Audio file (mp3, wav, webm, ogg)"),
+    audio: UploadFile = File(...),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    """
-    Pre-upload single speaking audio file
-    
-    Example usage:
-    ```bash
-    curl -X POST "http://localhost:8000/tests/attempts/{attempt_id}/speaking/upload/{question_id}" \
-      -H "Authorization: Bearer {token}" \
-      -F "audio=@recording.mp3"
-    ```
-    """
-    
-    # 1. Upload file to Cloudinary
     try:
         file_meta = await upload_and_save_metadata(
             db=db,
@@ -325,163 +228,75 @@ async def pre_upload_speaking_audio(
             access_level_value=AccessLevel.PRIVATE.value
         )
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to upload file: {str(e)}"
-        )
+        raise APIException(status_code=500, code="UPLOAD_FAILED", message=f"Failed to upload file: {str(e)}")
     
-    # 2. Process with speaking service
     result = await speaking_service.pre_upload_audio(
-        db=db,
-        attempt_id=attempt_id,
-        question_id=question_id,
-        file_meta=file_meta,
-        user_id=current_user.id
+        db=db, attempt_id=attempt_id, question_id=question_id, file_meta=file_meta, user_id=current_user.id
     )
-    
-    return result
+    return ApiResponse(data=result)
 
-
-# ────────────────────────────────────────────────────────────
-# STEP 2: BATCH SUBMIT ALL SPEAKING RESPONSES
-# ────────────────────────────────────────────────────────────
-
-@router.post(
-    "/attempts/{attempt_id}/speaking/batch-submit",
-    response_model=BatchSubmitSpeakingResponse,
-    summary="Batch submit all speaking responses",
-    description="""
-    Submit all speaking responses for AI grading at once.
-    
-    This is step 2 of the speaking submission process.
-    All files must be pre-uploaded using the upload endpoint first.
-    
-    **What happens:**
-    1. Validates all file_upload_ids and questions
-    2. AI grades all questions in parallel (fast!)
-    3. Calculates overall IELTS speaking scores
-    4. Returns comprehensive results with feedback
-    
-    **Note:** Final scores require teacher review.
-    This endpoint provides AI suggestions only.
-    """
-)
+@router.post("/attempts/{attempt_id}/speaking/batch-submit", response_model=ApiResponse[BatchSubmitSpeakingResponse])
 async def batch_submit_speaking(
     attempt_id: UUID,
     request: BatchSubmitSpeakingRequest,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    """
-    Batch submit all speaking responses
-    
-    Example request body:
-    ```json
-    {
-      "responses": [
-        {
-          "question_id": "q1-uuid",
-          "file_upload_id": "file1-uuid",
-          "duration_seconds": 30
-        },
-        {
-          "question_id": "q2-uuid",
-          "file_upload_id": "file2-uuid",
-          "duration_seconds": 45
-        }
-      ]
-    }
-    ```
-    
-    Example curl:
-    ```bash
-    curl -X POST "http://localhost:8000/tests/attempts/{attempt_id}/speaking/batch-submit" \
-      -H "Authorization: Bearer {token}" \
-      -H "Content-Type: application/json" \
-      -d '{"responses": [...]}'
-    ```
-    """
-    
-    result = await speaking_service.batch_submit_speaking(
-        db=db,
-        attempt_id=attempt_id,
-        request=request,
-        user_id=current_user.id
-    )
-    
-    return result
+    result = await speaking_service.batch_submit_speaking(db=db, attempt_id=attempt_id, request=request, user_id=current_user.id)
+    return ApiResponse(data=result)
 
-@router.get("/{test_id}/attempts", response_model=list[TestAttemptSummaryResponse])
+@router.get("/{test_id}/attempts", response_model=PaginationResponse[TestAttemptSummaryResponse])
 def list_test_attempts_for_teacher(
     test_id: UUID,
+    params: CommonQueryParams = Depends(),
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    if current_user.role not in (
-        UserRole.TEACHER,
-        UserRole.CENTER_ADMIN,
-        UserRole.SYSTEM_ADMIN,
-    ):
-        raise HTTPException(403, "Not authorized")
+    if current_user.role not in (UserRole.TEACHER, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN):
+        raise APIException(status_code=403, code="FORBIDDEN", message="Not authorized")
 
     return attempt_service.list_attempts_for_teacher(
         db=db,
         test_id=test_id,
-        teacher_id=current_user.id
+        user_id=current_user.id,
+        user_role=current_user.role,
+        skip=params.skip,
+        limit=params.limit
     )
 
 # ============================================================
-# GET ATTEMPT DETAIL
+# ATTEMPT DETAIL & GRADING
 # ============================================================
-@router.get("/attempts/{attempt_id}", response_model=TestAttemptDetailResponse)
+@router.get("/attempts/{attempt_id}", response_model=ApiResponse[TestAttemptDetailResponse])
 def get_attempt_detail(
     attempt_id: UUID,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    return attempt_service.get_attempt_detail(
-        db=db,
-        attempt_id=attempt_id,
-        user_id=current_user.id
-    )
+    return ApiResponse(data=attempt_service.get_attempt_detail(db=db, attempt_id=attempt_id, user_id=current_user.id))
 
-# Teacher view attempt
-@router.get("/attempts/{attempt_id}/teacher")
+@router.get("/attempts/{attempt_id}/teacher", response_model=ApiResponse[TestAttemptDetailResponse])
 def teacher_view_attempt(
     attempt_id: UUID,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    if current_user.role not in (
-        UserRole.TEACHER,
-        UserRole.CENTER_ADMIN
-    ):
-        raise HTTPException(403, "Not authorized")
+    if current_user.role not in (UserRole.TEACHER, UserRole.CENTER_ADMIN):
+        raise APIException(status_code=403, code="FORBIDDEN", message="Not authorized")
 
-    return attempt_service.get_attempt_detail_for_teacher(
-        db=db,
-        attempt_id=attempt_id
-    )
+    return ApiResponse(data=attempt_service.get_attempt_detail_for_teacher(db=db, attempt_id=attempt_id))
 
-
-# Teacher grade attempt
-@router.post("/attempts/{attempt_id}/grade")
+@router.post("/attempts/{attempt_id}/grade", response_model=ApiResponse[TestAttemptDetailResponse])
 async def grade_attempt(
     attempt_id: UUID,
     payload: GradeAttemptRequest,
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
-    if current_user.role not in (
-        UserRole.TEACHER,
-        UserRole.CENTER_ADMIN
-    ):
-        raise HTTPException(403, "Not authorized")
+    if current_user.role not in (UserRole.TEACHER, UserRole.CENTER_ADMIN):
+        raise APIException(status_code=403, code="FORBIDDEN", message="Not authorized")
 
-    return await attempt_service.grade_attempt(
-        db=db,
-        attempt_id=attempt_id,
-        teacher_id=current_user.id,
-        data=payload
+    result = await attempt_service.grade_attempt(
+        db=db, attempt_id=attempt_id, teacher_id=current_user.id, data=payload
     )
-
+    return ApiResponse(data=result)

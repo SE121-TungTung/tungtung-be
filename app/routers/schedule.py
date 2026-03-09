@@ -86,5 +86,3 @@ async def delete_session(
 ):
     """UC MF.3.4: Cancel/Soft Delete session"""
     return schedule_service.delete_session(db, session_id)
-
-# END OF app/api/v1/endpoints/schedule.py
