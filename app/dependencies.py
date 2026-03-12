@@ -92,7 +92,7 @@ async def get_current_user_from_token(token: str):
         if email is None:
             raise HTTPException(401, "Invalid token")
         
-        from app.services.user import user_service
+        from app.services.user_service import user_service
         from sqlalchemy.orm import Session
         from app.core.database import SessionLocal
         
@@ -112,8 +112,13 @@ async def get_current_user_from_token(token: str):
 class CommonQueryParams:
     def __init__(
         self,
-        skip: int = Query(0, ge=0, description="Number of records to skip"),
-        limit: int = Query(100, ge=1, le=100, description="Number of records to return"),
+        page: int = Query(1, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
+        limit: int = Query(20, ge=1, le=100, description="Số lượng bản ghi trên mỗi trang"),
     ):
-        self.skip = skip
+        self.page = page
         self.limit = limit
+
+    @property
+    def skip(self) -> int:
+        """Tự động tính toán offset cho SQLAlchemy"""
+        return (self.page - 1) * self.limit

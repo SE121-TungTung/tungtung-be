@@ -25,7 +25,7 @@ from app.schemas.test.speaking import (
     QuestionGradingResult,
     OverallSpeakingScores
 )
-from app.services.audit_log import audit_service
+from app.services.audit_log_service import audit_service
 from app.models.audit_log import AuditAction
 
 class SpeakingService:

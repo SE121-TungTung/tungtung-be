@@ -4,7 +4,7 @@ from uuid import UUID
 
 from app.repositories.notification import notification_repo
 from app.schemas.notification import NotificationCreate
-from app.services.websocket import manager as websocket_manager
+from app.services.websocket import websocket_manager
 
 import asyncio
 
@@ -61,7 +61,7 @@ class NotificationService:
     ) -> dict:
         
         updated_count = notification_repo.mark_all_as_read(db, user_id)
-
+        db.commit()
         return {
             "success": True,
             "message": f"Marked {updated_count} notifications as read",

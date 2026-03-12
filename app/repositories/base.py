@@ -9,7 +9,7 @@ class BaseRepository(Generic[T]):
 
     def get(self, db: Session, id: int) -> Optional[T]:
         obj = db.get(self.model, id)
-        if obj and obj.deleted_at is None:
+        if obj and ((not hasattr(obj, 'deleted_at') or obj.deleted_at is None)):
             return obj
         return None
 

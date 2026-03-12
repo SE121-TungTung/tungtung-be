@@ -1,35 +1,40 @@
 # app/services/test/test_attempt_service.py
 
+import math
+
 from sqlalchemy.orm import Session, joinedload
 from fastapi import HTTPException, UploadFile
 from uuid import UUID
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from app.models.user import User
+from app.core.exceptions import APIException
+from app.models.user import User, UserRole
 from app.models.test import (
     Test, TestAttempt, TestQuestion, 
     TestResponse, QuestionBank, 
     AttemptStatus, QuestionType
 )
+from app.schemas.base_schema import PaginationMetadata, PaginationResponse
+from app.schemas.base_schema import PaginationResponse
 from app.services.test.ai_grade import ai_grade_service
 from app.schemas.test.test_attempt import (
     StartAttemptResponse,
     SubmitAttemptRequest,
     SubmitAttemptResponse,
     QuestionResult,
-    GradeAttemptRequest
+    GradeAttemptRequest,
+    TestAttemptSummaryResponse
 )
 from app.schemas.test.test_read import TestAttemptDetailResponse, QuestionResultResponse
-from app.services.cloudinary import upload_and_save_metadata
-from app.models.file_upload import UploadType, AccessLevel
 
-from app.services.audit_log import audit_service
+from app.services.audit_log_service import audit_service
 from app.models.audit_log import AuditAction
 
-from app.services.notification import notification_service
+from app.services.notification_service import notification_service
 from app.schemas.notification import NotificationCreate
 from app.models.notification import NotificationType, NotificationPriority
+from app.services.test.test_grader_service import get_grader
 
 class AttemptService:
     
@@ -136,6 +141,13 @@ class AttemptService:
         any_manual_grading_required = False
         question_results = []
 
+        # Check if response exists (e.g. from Speaking submission)
+        existing_resp = db.query(TestResponse).filter(
+            TestResponse.attempt_id == attempt.id,
+            TestResponse.question_id == q_id
+        ).first()
+
+
         # 3. Process Each Question
         for q_id, (qb, max_points) in q_map.items():
             submission = answers_map.get(q_id)
@@ -225,12 +237,6 @@ class AttemptService:
                 # If they exist here, it might be just text notes or placeholders
 
             # 4. Save Response to DB
-            # Check if response exists (e.g. from Speaking submission)
-            existing_resp = db.query(TestResponse).filter(
-                TestResponse.attempt_id == attempt.id,
-                TestResponse.question_id == q_id
-            ).first()
-
             if existing_resp:
                 # Update logic if needed, usually we overwrite or skip
                 pass 
@@ -277,29 +283,7 @@ class AttemptService:
             )
 
         # 6. Finalize Attempt Status & Score
-        attempt.total_score = total_points_earned
-        
-        # Calculate percentage
-        if max_total_points > 0:
-            attempt.percentage_score = round((total_points_earned / max_total_points) * 100, 2)
-        else:
-            attempt.percentage_score = 0.0
-            
-        # Determine Status & Band Score
-        if any_manual_grading_required:
-            attempt.status = AttemptStatus.SUBMITTED # Chờ Teacher chấm tiếp
-            attempt.band_score = None # Chưa có band cuối cùng
-            attempt.passed = None
-        else:
-            # Fully auto-graded
-            attempt.status = AttemptStatus.GRADED
-            attempt.passed = attempt.percentage_score >= float(attempt.test.passing_score)
-            # Calculate band score if applicable (Simulation)
-            attempt.band_score = self._calculate_band_score(attempt.percentage_score)
-
-        graded_by = attempt.graded_by if isinstance(attempt.graded_by, UUID) else None
-        ai_feedback = attempt.ai_feedback if isinstance(attempt.ai_feedback, dict) else None
-        teacher_feedback = attempt.teacher_feedback if isinstance(attempt.teacher_feedback, str) else None
+        ai_feedback, graded_by, teacher_feedback = self.finalize_score(attempt, total_points_earned, max_total_points, any_manual_grading_required)
 
         audit_service.log(
             db=db,
@@ -341,148 +325,6 @@ class AttemptService:
         )
 
     # ============================================================
-    # 3. SUBMIT SPEAKING (Audio)
-    # ============================================================
-    async def submit_speaking(
-        self,
-        db: Session,
-        attempt_id: UUID,
-        question_id: UUID,
-        file: UploadFile,
-        user_id: UUID
-    ):
-        # 1. Validate
-        attempt = db.query(TestAttempt).filter(TestAttempt.id == attempt_id).first()
-        if not attempt:
-            raise HTTPException(404, "Attempt not found")
-        if attempt.student_id != user_id:
-            raise HTTPException(403, "Not authorized")
-        
-        question = db.query(QuestionBank).filter(QuestionBank.id == question_id).first()
-        if not question:
-            raise HTTPException(404, "Question not found")
-            
-        # Fix #6: Check correct Speaking types
-        if question.question_type not in [
-            QuestionType.SPEAKING_PART_1,
-            QuestionType.SPEAKING_PART_2,
-            QuestionType.SPEAKING_PART_3
-        ]:
-            raise HTTPException(400, "Not a speaking question")
-
-        # 2. Upload to Cloudinary
-        file_meta = await upload_and_save_metadata(
-            db=db,
-            file=file,
-            uploader_id=user_id,
-            upload_type=UploadType.AUDIO,
-            access_level=AccessLevel.PRIVATE
-        )
-
-        # 3. Get Max Points for this question in this test
-        tq = db.query(TestQuestion).filter(
-            TestQuestion.test_id == attempt.test_id,
-            TestQuestion.question_id == question_id
-        ).first()
-        max_points = float(tq.points) if tq else 1.0
-
-        # 4. AI Grading
-        ai_points_earned = 0
-        ai_band_score = None
-        ai_rubric_scores = None
-        ai_feedback = None
-        
-        try:
-            # Call AI Service (assumes it handles audio url or file)
-            # Here passing file_url. AI Service needs to handle speech-to-text then grade.
-            ai_result = await ai_grade_service.ai_grade_speaking(
-                question=question,
-                audio_url=file_meta.file_path
-            )
-            raw = ai_result.get("raw", {})
-            
-            # Extract
-            ai_band_score = float(raw.get("overallScore", 0))
-            ai_rubric_scores = raw.get("rubricScores", {})
-            ai_feedback = raw.get("detailedFeedback")
-            
-            # Convert
-            if ai_band_score > 0:
-                ai_points_earned = round((ai_band_score / 9.0) * max_points, 2)
-                
-        except Exception as e:
-            print(f"AI Speaking Grade Error: {e}")
-
-        # 5. Save/Update TestResponse
-        response = db.query(TestResponse).filter(
-            TestResponse.attempt_id == attempt_id,
-            TestResponse.question_id == question_id
-        ).first()
-
-        response_data = {
-            "file_upload_id": str(file_meta.id),
-            "audio_url": file_meta.file_path
-        }
-
-        if response:
-            response.response_data = response_data
-            response.audio_response_url = file_meta.file_path
-            
-            # Update AI suggestions
-            response.ai_points_earned = ai_points_earned
-            response.ai_band_score = ai_band_score
-            response.ai_rubric_scores = ai_rubric_scores
-            response.ai_feedback = ai_feedback
-            
-            # Reset Manual scores (wait for teacher)
-            response.points_earned = 0
-            response.band_score = None
-            response.auto_graded = False 
-        else:
-            response = TestResponse(
-                attempt_id=attempt_id,
-                question_id=question_id,
-                response_data=response_data,
-                audio_response_url=file_meta.file_path,
-                
-                points_earned=0, # Wait for teacher
-                auto_graded=False,
-                
-                # AI Suggestions
-                ai_points_earned=ai_points_earned,
-                ai_band_score=ai_band_score,
-                ai_rubric_scores=ai_rubric_scores,
-                ai_feedback=ai_feedback
-            )
-            db.add(response)
-
-        # 6. Update Attempt Status
-        # Fix #8: Do not calculate score yet, just mark as submitted
-        attempt.status = AttemptStatus.SUBMITTED
-
-        audit_service.log(
-            db=db,
-            user_id=user_id,
-            action=AuditAction.SUBMIT,
-            table_name="test_responses",
-            record_id=response.id,
-            new_values={
-                "attempt_id": str(attempt_id),
-                "question_id": str(question_id),
-                "audio_response_url": file_meta.file_path
-            }
-        )
-
-        db.commit()
-        
-        return {
-            "status": "success",
-            "audio_url": file_meta.file_path,
-            "ai_feedback": ai_feedback,
-            "ai_band_score": ai_band_score
-        }
-
-    # ============================================================
     # 4. GET ATTEMPT DETAIL
     # ============================================================
     def get_attempt_detail(self, db: Session, attempt_id: UUID, user_id: UUID) -> TestAttemptDetailResponse:
@@ -490,140 +332,69 @@ class AttemptService:
         Get detailed attempt information including all responses
         """
         # 1. Load attempt with test info
-        attempt = (
-            db.query(TestAttempt)
-            .options(joinedload(TestAttempt.test))
-            .filter(TestAttempt.id == attempt_id)
-            .first()
-        )
+        attempt = db.query(TestAttempt).options(
+            joinedload(TestAttempt.test),
+            joinedload(TestAttempt.responses).joinedload(TestResponse.question)
+        ).filter(TestAttempt.id == attempt_id).first()
         
         if not attempt:
             raise HTTPException(404, "Attempt not found")
         
         # 2. Authorization
         if attempt.student_id != user_id:
-            # TODO: Add logic to allow Teachers/Admins to view
             raise HTTPException(403, "Not authorized to view this attempt")
 
-        # 3. Load responses with Question info
-        responses_query = (
-            db.query(TestResponse, QuestionBank, TestQuestion.points)
-            .join(QuestionBank, TestResponse.question_id == QuestionBank.id)
-            .join(TestQuestion, (TestQuestion.test_id == attempt.test_id) & (TestQuestion.question_id == QuestionBank.id))
-            .filter(TestResponse.attempt_id == attempt_id)
-            .all()
-        )
-
-        # 4. Build response details
-        details_list = []
-        for resp, qb, max_pts in responses_query:
-            
-            detail = QuestionResultResponse(
-                question_id=resp.question_id,
-                question_text=qb.question_text,
-                question_type=qb.question_type.value if hasattr(qb.question_type, 'value') else str(qb.question_type),
-                
-                user_answer=resp.response_text,
-                response_data=resp.response_data,
-                audio_response_url=resp.audio_response_url,
-                
-                is_correct=resp.is_correct,
-                auto_graded=resp.auto_graded,
-                
-                points_earned=float(resp.points_earned or 0),
-                max_points=float(max_pts or 0),
-                band_score=float(resp.teacher_band_score) if resp.teacher_band_score else (float(resp.ai_band_score) if resp.ai_band_score else None),
-                
-                rubric_scores=resp.teacher_rubric_scores if resp.teacher_rubric_scores else resp.ai_rubric_scores,
-                
-                ai_points_earned=float(resp.ai_points_earned) if resp.ai_points_earned is not None else None,
-                ai_band_score=float(resp.ai_band_score) if resp.ai_band_score is not None else None,
-                ai_rubric_scores=resp.ai_rubric_scores,
-                ai_feedback=resp.ai_feedback,
-                
-                teacher_points_earned=float(resp.teacher_points_earned) if resp.teacher_points_earned is not None else None,
-                teacher_band_score=float(resp.teacher_band_score) if resp.teacher_band_score is not None else None,
-                teacher_rubric_scores=resp.teacher_rubric_scores,
-                teacher_feedback=resp.teacher_feedback,
-                
-                time_spent_seconds=resp.time_spent_seconds,
-                flagged_for_review=resp.flagged_for_review
-            )
-            details_list.append(detail)
-        
-        # 5. Return Full Response
-        return TestAttemptDetailResponse(
-            id=attempt.id,
-            test_id=attempt.test_id,
-            test_title=attempt.test.title,
-            student_id=attempt.student_id,
-            
-            # --- FIX 1: Thêm attempt_number ---
-            attempt_number=attempt.attempt_number, 
-
-            # --- FIX 2: Đổi start_time thành started_at cho đúng schema ---
-            started_at=attempt.started_at, 
-            
-            # Giữ lại submitted_at
-            submitted_at=attempt.submitted_at,
-            
-            # Nếu schema của bạn có trường end_time thì giữ dòng này, nếu không thì bỏ đi
-            # end_time=attempt.submitted_at, 
-            
-            time_taken_seconds=attempt.time_taken_seconds,
-            
-            total_score=float(attempt.total_score or 0),
-            percentage_score=float(attempt.percentage_score or 0),
-            band_score=float(attempt.band_score) if attempt.band_score else None,
-            passed=attempt.passed,
-            status=attempt.status.value,
-            
-            ai_feedback=attempt.ai_feedback,
-            teacher_feedback=attempt.teacher_feedback,
-            graded_by=attempt.graded_by,
-            
-            ip_address=str(attempt.ip_address) if attempt.ip_address else None,
-            user_agent=attempt.user_agent,
-            
-            details=details_list
-        )
+        return self._build_full_attempt_response(db=db, attempt=attempt)
     
     def get_attempt_detail_for_teacher(
         self,
         db: Session,
         attempt_id: UUID
     ):
-        attempt = (
-            db.query(TestAttempt, User)
-            .join(User, User.id == TestAttempt.student_id)
-            .options(
-                joinedload(TestAttempt.responses)
-                .joinedload(TestResponse.question),
-                joinedload(TestAttempt.test)
-                .joinedload(Test.questions)
-            )
-            .filter(TestAttempt.id == attempt_id)
-            .first()
-        )
+        attempt = db.query(TestAttempt).options(
+            joinedload(TestAttempt.test),
+            joinedload(TestAttempt.responses).joinedload(TestResponse.question)
+        ).filter(TestAttempt.id == attempt_id).first()
 
         if not attempt:
             raise HTTPException(404, "Attempt not found")
 
-        attempt_obj, student = attempt
-
-        if not attempt:
-            raise HTTPException(404, "Attempt not found")
-
-        return self._build_attempt_detail(attempt=attempt_obj, include_answers=True, student=student)
+        return self._build_full_attempt_response(db=db, attempt=attempt)
 
     
     def list_attempts_for_teacher(
         self,
         db: Session,
         test_id: UUID,
-        teacher_id: UUID
+        user_id: UUID,
+        user_role: UserRole = None,
+        skip: int = 0,    
+        limit: int = 20   
     ):
-        rows = (
+        # ============================================================
+        # 1. KIỂM TRA SỰ TỒN TẠI VÀ QUYỀN SỞ HỮU CỦA TEST
+        # ============================================================
+        test = db.query(Test).filter(Test.id == test_id, Test.deleted_at.is_(None)).first()
+        
+        if not test:
+            raise APIException(
+                status_code=404, 
+                code="TEST_NOT_FOUND", 
+                message="Bài thi không tồn tại hoặc đã bị xóa."
+            )
+
+        if user_role == UserRole.TEACHER:
+            if test.created_by != user_id:
+                raise APIException(
+                    status_code=403, 
+                    code="FORBIDDEN_TEST_ACCESS", 
+                    message="Bạn không có quyền xem danh sách làm bài của bài thi không do bạn tạo."
+                )
+
+        # ============================================================
+        # 2. KHỞI TẠO BASE QUERY 
+        # ============================================================
+        base_query = (
             db.query(
                 TestAttempt,
                 User.first_name,
@@ -634,23 +405,49 @@ class AttemptService:
                 TestAttempt.test_id == test_id,
                 TestAttempt.deleted_at.is_(None)
             )
+        )
+
+        # ============================================================
+        # 3. ĐẾM TỔNG SỐ VÀ TÍNH METADATA
+        # ============================================================
+        total = base_query.count()
+        page = (skip // limit) + 1 if limit > 0 else 1
+        total_pages = math.ceil(total / limit) if limit > 0 else 1
+
+        meta = PaginationMetadata(
+            page=page, limit=limit, total=total, total_pages=total_pages
+        )
+
+        # ============================================================
+        # 4. TRUY VẤN DỮ LIỆU CÓ PHÂN TRANG
+        # ============================================================
+        rows = (
+            base_query
             .order_by(TestAttempt.started_at.desc())
+            .offset(skip)
+            .limit(limit)
             .all()
         )
 
-        return [
-            {
-                "id": attempt.id,
-                "student_id": attempt.student_id,
-                "student_name": f"{first_name} {last_name}".strip(),
-                "status": attempt.status,
-                "score": attempt.band_score,
-                "started_at": attempt.started_at,
-                "submitted_at": attempt.submitted_at,
-            }
-            for attempt, first_name, last_name in rows
-        ]
+        # ============================================================
+        # 5. CHUẨN HÓA DATA THEO SCHemas
+        # ============================================================
+        results = []
+        for attempt, first_name, last_name in rows:
+            results.append(TestAttemptSummaryResponse(
+                id=attempt.id,
+                student_id=attempt.student_id,
+                student_name=f"{first_name} {last_name}".strip(),
+                status=attempt.status.value if hasattr(attempt.status, 'value') else attempt.status,
+                score=attempt.band_score,
+                started_at=attempt.started_at,
+                submitted_at=attempt.submitted_at,
+            ))
 
+        return PaginationResponse(
+            data=results,
+            meta=meta
+        )
     
     async def grade_attempt(
         self,
@@ -674,21 +471,26 @@ class AttemptService:
         total_points = 0
         max_points = 0
 
+        # Fetch all TestQuestion records once
+        test_questions = db.query(TestQuestion).filter(
+            TestQuestion.test_id == attempt.test_id
+        ).all()
+        points_map = {tq.question_id: float(tq.points) for tq in test_questions}
+        
+        # Fetch all responses once
+        responses_map = {
+            resp.question_id: resp 
+            for resp in db.query(TestResponse).filter(
+            TestResponse.attempt_id == attempt_id
+            ).all()
+        }
+        
         for item in data.questions:
-            resp = db.query(TestResponse).filter(
-                TestResponse.attempt_id == attempt_id,
-                TestResponse.question_id == item.question_id
-            ).first()
-
+            resp = responses_map.get(item.question_id)
             if not resp:
                 continue
 
-            tq = db.query(TestQuestion).filter(
-                TestQuestion.test_id == attempt.test_id,
-                TestQuestion.question_id == item.question_id
-            ).first()
-
-            max_q_points = float(tq.points) if tq else 0
+            max_q_points = points_map.get(item.question_id, 0)
             max_points += max_q_points
 
             resp.teacher_points_earned = item.teacher_points_earned
@@ -698,11 +500,8 @@ class AttemptService:
 
             resp.points_earned = item.teacher_points_earned
             total_points += item.teacher_points_earned
-
-        attempt.total_score = total_points
-        attempt.percentage_score = (total_points / max_points) * 100 if max_points else 0
-        attempt.band_score = self._calculate_band_score(attempt.percentage_score)
-        attempt.passed = attempt.percentage_score >= float(attempt.test.passing_score)
+        
+        self.finalize_score(attempt, total_points, max_points, False)
 
         attempt.teacher_feedback = data.overall_feedback
         attempt.graded_by = teacher_id
@@ -764,94 +563,12 @@ class AttemptService:
         question_type: QuestionType
     ) -> bool:
         """
-        Check if user answer is correct based on question type
+        Check if user answer is correct using the appropriate grading strategy
         """
-        if not correct_answer:
-            return False
-        
-        # Normalize correct answer
-        correct_normalized = str(correct_answer).strip().lower()
-        
-        # Normalize User Answer
-        if user_answer is None:
-            return False
-            
-        # ===========================
-        # MULTIPLE CHOICE
-        # ===========================
-        if question_type == QuestionType.MULTIPLE_CHOICE:
-            if isinstance(user_answer, list):
-                # Multiple answers: ["A", "B"]
-                correct_list = [ans.strip().lower() for ans in correct_normalized.split(",")]
-                user_list = [ans.strip().lower() for ans in user_answer]
-                return set(user_list) == set(correct_list)
-            else:
-                # Single answer: "A"
-                return str(user_answer).strip().lower() == correct_normalized
-        
-        # ===========================
-        # TRUE/FALSE/NOT GIVEN
-        # ===========================
-        elif question_type in [
-            QuestionType.TRUE_FALSE_NOT_GIVEN,
-            QuestionType.YES_NO_NOT_GIVEN
-        ]:
-            user_normalized = str(user_answer).strip().lower()
-            # Handle cases where frontend sends "True" or "T"
-            map_val = {"t": "true", "f": "false", "ng": "not given", 
-                       "y": "yes", "n": "no"}
-            user_mapped = map_val.get(user_normalized, user_normalized)
-            correct_mapped = map_val.get(correct_normalized, correct_normalized)
-            return user_mapped == correct_mapped
-        
-        # ===========================
-        # MATCHING (Headings, Information, Features)
-        # ===========================
-        elif question_type in [
-            QuestionType.MATCHING_HEADINGS,
-            QuestionType.MATCHING_INFORMATION,
-            QuestionType.MATCHING_FEATURES
-        ]:
-            # Format: "A" hoặc "i" hoặc "1"
-            user_normalized = str(user_answer).strip().lower()
-            return user_normalized == correct_normalized
-        
-        # ===========================
-        # SHORT ANSWER / COMPLETION
-        # ===========================
-        elif question_type in [
-            QuestionType.SHORT_ANSWER,
-            QuestionType.SENTENCE_COMPLETION,
-            QuestionType.SUMMARY_COMPLETION,
-            QuestionType.NOTE_COMPLETION,
-            QuestionType.DIAGRAM_LABELING
-        ]:
-            # Flexible matching: accept variations
-            user_normalized = str(user_answer).strip().lower()
-            
-            # Check exact match
-            if user_normalized == correct_normalized:
-                return True
-            
-            # Check if correct answer has multiple acceptable answers
-            # Format: "answer1|answer2|answer3" or "answer1 / answer2"
-            delimiters = ["|", "/"]
-            acceptable_answers = [correct_normalized]
-            
-            for delim in delimiters:
-                if delim in correct_normalized:
-                    acceptable_answers = [
-                        ans.strip() 
-                        for ans in correct_normalized.split(delim)
-                    ]
-                    break
-                    
-            return user_normalized in acceptable_answers
-        
-        # Default: exact match
-        else:
-            user_normalized = str(user_answer).strip().lower()
-            return user_normalized == correct_normalized
+        # 1. Lấy bộ chấm điểm tương ứng với loại câu hỏi
+        grader = get_grader(question_type)
+        # 2. Thực hiện chấm điểm
+        return grader.check(user_answer, correct_answer)
 
     def _calculate_band_score(self, percentage: float) -> float:
         """
@@ -868,87 +585,106 @@ class AttemptService:
         score = (percentage / 100) * 9
         
         # Round to nearest 0.5
-        # Example: 6.2 -> 6.0, 6.3 -> 6.5, 6.7 -> 6.5, 6.8 -> 7.0
         band = round(score * 2) / 2
         return band
     
-    def _build_attempt_detail(
-        self,
-        attempt: TestAttempt,
-        include_answers: bool,
-        student: Optional[User]
-    ):
-        responses_query = (
-            attempt.responses
+    def finalize_score(self, attempt, total_points_earned, max_total_points, any_manual_grading_required):
+        attempt.total_score = total_points_earned
+        
+        # Calculate percentage
+        if max_total_points > 0:
+            attempt.percentage_score = round((total_points_earned / max_total_points) * 100, 2)
+        else:
+            attempt.percentage_score = 0.0
+            
+        # Determine Status & Band Score
+        if any_manual_grading_required:
+            attempt.status = AttemptStatus.SUBMITTED # Chờ Teacher chấm tiếp
+            attempt.band_score = None # Chưa có band cuối cùng
+            attempt.passed = None
+        else:
+            # Fully auto-graded
+            attempt.status = AttemptStatus.GRADED
+            attempt.passed = attempt.percentage_score >= float(attempt.test.passing_score)
+            # Calculate band score if applicable (Simulation)
+            attempt.band_score = self._calculate_band_score(attempt.percentage_score)
+
+        graded_by = attempt.graded_by if isinstance(attempt.graded_by, UUID) else None
+        ai_feedback = attempt.ai_feedback if isinstance(attempt.ai_feedback, dict) else None
+        teacher_feedback = attempt.teacher_feedback if isinstance(attempt.teacher_feedback, str) else None
+        return ai_feedback,graded_by,teacher_feedback
+    
+    def _map_response_to_result_schema(self, resp: TestResponse, max_points: float) -> QuestionResultResponse:
+        """Hàm chuẩn hóa 1 dòng dữ liệu DB thành 1 Model Pydantic"""
+        q_text = resp.question.question_text if hasattr(resp, 'question') and resp.question else None
+        q_type = resp.question.question_type if hasattr(resp, 'question') and resp.question else None
+        q_type_str = q_type.value if hasattr(q_type, 'value') else str(q_type)
+
+        return QuestionResultResponse(
+            question_id=resp.question_id,
+            question_text=q_text,
+            question_type=q_type_str,
+            user_answer=resp.response_text,
+            response_data=resp.response_data,
+            audio_response_url=resp.audio_response_url,
+            is_correct=resp.is_correct,
+            auto_graded=resp.auto_graded,
+            
+            points_earned=float(resp.points_earned or 0),
+            max_points=float(max_points or 0),
+            band_score=float(resp.teacher_band_score) if resp.teacher_band_score else (float(resp.ai_band_score) if resp.ai_band_score else None),
+            rubric_scores=resp.teacher_rubric_scores if resp.teacher_rubric_scores else resp.ai_rubric_scores,
+            
+            ai_points_earned=float(resp.ai_points_earned) if resp.ai_points_earned is not None else None,
+            ai_band_score=float(resp.ai_band_score) if resp.ai_band_score is not None else None,
+            ai_rubric_scores=resp.ai_rubric_scores,
+            ai_feedback=resp.ai_feedback,
+            
+            teacher_points_earned=float(resp.teacher_points_earned) if resp.teacher_points_earned is not None else None,
+            teacher_band_score=float(resp.teacher_band_score) if resp.teacher_band_score is not None else None,
+            teacher_rubric_scores=resp.teacher_rubric_scores,
+            teacher_feedback=resp.teacher_feedback,
+            
+            time_spent_seconds=resp.time_spent_seconds,
+            flagged_for_review=resp.flagged_for_review
         )
 
-        details = []
+    def _build_full_attempt_response(self, db: Session, attempt: TestAttempt) -> TestAttemptDetailResponse:
+        """Hàm duy nhất để build toàn bộ Response cho API Get Detail (O(1) memory lookup)"""
+        # 1. Lấy bản đồ điểm cực nhanh (Bulk Query)
+        test_questions = db.query(TestQuestion).filter(TestQuestion.test_id == attempt.test_id).all()
+        points_map = {tq.question_id: float(tq.points) for tq in test_questions}
+        
+        # 2. Map dữ liệu
+        details_list = [
+            self._map_response_to_result_schema(resp, points_map.get(resp.question_id, 0.0))
+            for resp in attempt.responses
+        ]
 
-        for resp in responses_query:
-            qb = resp.question
-            tq = next(
-                (tq for tq in attempt.test.questions if tq.question_id == qb.id),
-                None
-            )
-            max_points = float(tq.points) if tq else 0
-
-            detail = {
-                "question_id": qb.id,
-                "question_type": qb.question_type.value,
-                "max_points": max_points,
-
-                # Student visible
-                "points_earned": float(resp.points_earned or 0),
-                "band_score": float(resp.band_score) if resp.band_score else None,
-                "auto_graded": resp.auto_graded,
-                "flagged_for_review": resp.flagged_for_review,
-                "audio_response_url": resp.audio_response_url,
-            }
-
-            if include_answers:
-                detail.update({
-                    # Student answer
-                    "response_text": resp.response_text,
-                    "response_data": resp.response_data,
-
-                    # Correct answer
-                    "correct_answer": qb.correct_answer,
-
-                    # AI grading
-                    "ai_points_earned": float(resp.ai_points_earned) if resp.ai_points_earned else None,
-                    "ai_band_score": float(resp.ai_band_score) if resp.ai_band_score else None,
-                    "ai_rubric_scores": resp.ai_rubric_scores,
-                    "ai_feedback": resp.ai_feedback,
-
-                    # Teacher grading
-                    "teacher_points_earned": float(resp.teacher_points_earned) if resp.teacher_points_earned else None,
-                    "teacher_band_score": float(resp.teacher_band_score) if resp.teacher_band_score else None,
-                    "teacher_rubric_scores": resp.teacher_rubric_scores,
-                    "teacher_feedback": resp.teacher_feedback,
-                })
-
-            details.append(detail)
-        student_name = None
-        if student:
-            student_name = f"{student.first_name} {student.last_name}".strip()
-        return {
-            "attempt_id": attempt.id,
-            "test_id": attempt.test_id,
-            "student_id": attempt.student_id,
-            "student_name": student_name,
-            "status": attempt.status.value,
-
-            "total_score": float(attempt.total_score or 0),
-            "percentage_score": float(attempt.percentage_score or 0),
-            "band_score": float(attempt.band_score) if attempt.band_score else None,
-            "passed": attempt.passed,
-
-            "started_at": attempt.started_at,
-            "submitted_at": attempt.submitted_at,
-            "time_taken_seconds": attempt.time_taken_seconds,
-
-            "details": details
-        }
+        return TestAttemptDetailResponse(
+            id=attempt.id,
+            test_id=attempt.test_id,
+            test_title=attempt.test.title if attempt.test else None,
+            student_id=attempt.student_id,
+            attempt_number=attempt.attempt_number, 
+            started_at=attempt.started_at, 
+            submitted_at=attempt.submitted_at,
+            time_taken_seconds=attempt.time_taken_seconds,
+            
+            total_score=float(attempt.total_score or 0),
+            percentage_score=float(attempt.percentage_score or 0),
+            band_score=float(attempt.band_score) if attempt.band_score else None,
+            passed=attempt.passed,
+            status=attempt.status.value if attempt.status else None,
+            
+            ai_feedback=attempt.ai_feedback,
+            teacher_feedback=attempt.teacher_feedback,
+            graded_by=attempt.graded_by,
+            ip_address=str(attempt.ip_address) if attempt.ip_address else None,
+            user_agent=attempt.user_agent,
+            
+            details=details_list
+        )
 
 
 attempt_service = AttemptService()

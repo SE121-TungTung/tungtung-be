@@ -1,12 +1,13 @@
 import asyncio
 from typing import Dict, Set, Any, List, Optional, Tuple
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect, HTTPException, status
 from uuid import UUID
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict, deque
 import logging
 import secrets
-
+from app.core.database import SessionLocal
+from app.dependencies import get_current_user_from_token
 from sqlalchemy.orm import Session
 from app.models.message import ChatRoom, ChatRoomMember, MessageType
 
@@ -33,6 +34,90 @@ class ConnectionManager:
     # =====================================================
     # HEARTBEAT
     # =====================================================
+    async def websocket_connect(self, websocket: WebSocket, token: str):
+        connection_id = None
+        user_id = None
+
+        try:
+            # 1. ACCEPT
+            await websocket.accept()
+
+            # 2. AUTH
+            try:
+                user = await get_current_user_from_token(token)
+                user_id = user.id
+            except HTTPException as e:
+                await websocket.send_json({
+                    "type": "error",
+                    "code": "AUTH_FAILED",
+                    "message": "Authentication failed",
+                    "detail": e.detail,
+                })
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
+
+            # 3. CONNECT
+            connection_id = await self.connect(websocket, user_id)
+
+            await websocket.send_json({
+                "type": "connected",
+                "user_id": str(user_id),
+                "connection_id": connection_id,
+            })
+
+            # 4. LOOP
+            while True:
+                data = await websocket.receive_json()
+                msg_type = data.get("type")
+
+                if msg_type == "ping":
+                    await self.handle_ping(connection_id)
+                    await websocket.send_json({"type": "pong"})
+
+                elif msg_type == "typing":
+                    room_id = data.get("room_id")
+                    if room_id:
+                        await self.send_typing_indicator(
+                            user_id=user_id,
+                            room_id=UUID(room_id),
+                            is_typing=bool(data.get("is_typing", False)),
+                        )
+
+                elif msg_type == "message":
+                    from app.services.message.sender_service import message_sender_service as sender_service
+                    db = SessionLocal()
+                    try:
+                        await sender_service.handle_new_message(
+                            db=db,
+                            sender_id=user_id,
+                            message_data=data,
+                        )
+                    except Exception:
+                        logger.exception("Failed to handle WS message")
+                        await websocket.send_json({
+                            "type": "error",
+                            "code": "MESSAGE_FAILED",
+                            "message": "Failed to send message",
+                        })
+                    finally:
+                        db.close()
+
+                else:
+                    await websocket.send_json({
+                        "type": "error",
+                        "code": "UNKNOWN_TYPE",
+                        "message": f"Unknown type: {msg_type}",
+                    })
+
+        except WebSocketDisconnect:
+            logger.info("WS disconnected user=%s", user_id)
+
+        except Exception:
+            logger.exception("WebSocket fatal error")
+
+        finally:
+            if connection_id and user_id:
+                await self.disconnect(connection_id, user_id)
 
     def start_heartbeat(self):
         if not self._heartbeat_task or self._heartbeat_task.done():
@@ -340,4 +425,4 @@ class ConnectionManager:
             return user_id in self.active_connections and len(self.active_connections[user_id]) > 0
 
 
-manager = ConnectionManager()
+websocket_manager = ConnectionManager()

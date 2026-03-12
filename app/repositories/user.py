@@ -5,7 +5,7 @@ from app.repositories.base import BaseRepository
 from app.models.user import User, UserRole, UserStatus
 from app.core.security import get_password_hash, verify_password
 
-from app.services.enrollment import class_enrollment_service
+from app.services.enrollment_service import class_enrollment_service
 
 from fastapi import HTTPException, status
 
@@ -55,8 +55,6 @@ class UserRepository(BaseRepository[User]):
         user.password_hash = get_password_hash(new_password)
         user.must_change_password = False
         user.is_first_login = False
-        db.commit()
-        db.refresh(user)
         return user
     
     def get_users_by_role(self, db: Session, role: UserRole, skip: int = 0, limit: int = 100) -> List[User]:

@@ -23,7 +23,7 @@ from app.repositories.class_session import class_repository
 from app.repositories.class_session import class_session_repository
 from app.core import config
 
-from app.services.notification import notification_service
+from app.services.notification_service import notification_service
 from app.schemas.notification import NotificationCreate
 from app.models.notification import NotificationType, NotificationPriority
 

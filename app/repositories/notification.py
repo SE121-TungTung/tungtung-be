@@ -33,8 +33,6 @@ class NotificationRepository(BaseRepository[Notification]):
             {self.model.read_at: func.now()},
             synchronize_session=False # Tối ưu hiệu năng cho bulk update
         )
-        
-        db.commit()
         return result
 
 notification_repo = NotificationRepository(Notification)

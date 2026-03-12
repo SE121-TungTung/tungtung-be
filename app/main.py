@@ -1,6 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.exceptions import RequestValidationError
 import app.core.database as database
 from app.core.config import settings
+from app.core.exceptions import APIException, api_exception_handler, http_exception_handler, global_exception_handler, validation_exception_handler
 from app.routers import (
     auth, users, 
     room, course, classes, enrollment, class_session,
@@ -17,6 +19,11 @@ app = FastAPI(
     #,
     #openapi_url=f"{settings.API_V1_STR}/openapi.json"
 )
+
+app.add_exception_handler(APIException, api_exception_handler)
+app.add_exception_handler(HTTPException, http_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(Exception, global_exception_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,7 +61,7 @@ async def health_check():
 
 api_router = APIRouter()
 
-api_router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+api_router.include_router(auth.router)
 api_router.include_router(users.router, prefix="/users", tags=["Users"])
 api_router.include_router(room.router)
 api_router.include_router(course.router) 
@@ -64,8 +71,6 @@ api_router.include_router(class_session.router)
 api_router.include_router(attendance.router)
 api_router.include_router(schedule.router)
 api_router.include_router(message.router)
-api_router.include_router(message.base_message_router, prefix="/messages", tags=["Messages (CRUD)"])
-api_router.include_router(message.base_recepient_router, prefix="/message-recipients", tags=["MessageRecipients (CRUD)"])
 api_router.include_router(test.router)
 api_router.include_router(notification.router)
 api_router.include_router(chatbot.router, prefix="/chatbot", tags=["AI Chat"])

@@ -1,105 +1,113 @@
-import asyncio
-from fastapi import APIRouter, HTTPException, status, File, UploadFile, Form, Query # Thêm HTTPException và status
-from app.core.database import get_db, SessionLocal
-from app.dependencies import get_current_active_user, get_current_user, get_current_user_from_token
-import logging
-from app.models.message import Message, MessageRecipient
-from app.schemas.message import MessageCreate, ConversationResponse, GroupCreateRequest, GroupDetailResponse, MemberResponse, AddMembersRequest, GroupUpdateRequest
-from app.routers.generator import create_crud_router
-from app.services.message import message_service
-from app.services.websocket import manager
-from fastapi import WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, BackgroundTasks, status, File, UploadFile, Form, Query, WebSocket, Depends
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import List, Optional
-from app.models.message import ChatRoom
-from app.schemas.message import ConversationResponse, GroupDetailResponse, MemberResponse
+import logging
 
+from app.core.database import get_db
+from app.dependencies import get_current_user, CommonQueryParams
+from app.models.user import UserRole
 
+# Step 1: Import core components
+from app.core.route import ResponseWrapperRoute
+from app.schemas.base_schema import ApiResponse, PaginationResponse
+from app.core.exceptions import APIException
+
+from app.schemas.message import (
+    MessageCreate, 
+    ConversationResponse, 
+    GroupCreateRequest, 
+    AddMembersRequest, 
+    GroupUpdateRequest,
+    MessageResponse,
+    UnreadCountResponse,
+    MessageEditRequest
+)
+
+from app.services.websocket import websocket_manager
+from app.services.message.sender_service import message_sender_service
+from app.services.message.conversation_service import message_conversation_service
+from app.services.message.interaction_service import message_interaction_service
+from app.services.message.group_service import message_group_service
 
 logger = logging.getLogger(__name__)
 
+# Step 1: Khai báo Router với ResponseWrapperRoute
+router = APIRouter(tags=["Messaging"], prefix="/messaging", route_class=ResponseWrapperRoute)
 
-message_service = message_service
+# ============================================================
+# SEND & HISTORY
+# ============================================================
 
-base_message_router = create_crud_router(
-    model=Message,
-    db_dependency=get_db,
-    auth_dependency=get_current_active_user,
-    tag_prefix="Messages (CRUD)",
-    prefix=""
-)
-
-base_recepient_router = create_crud_router(
-    model=MessageRecipient,
-    db_dependency=get_db,
-    auth_dependency=get_current_active_user,
-    tag_prefix="MessageRecipients (CRUD)",
-    prefix=""
-)
-
-router = APIRouter(tags=["Messaging"], prefix="/messaging")
-
-@router.post("/send")
+@router.post("/send", response_model=ApiResponse[MessageResponse])
 async def send_message_rest(
     message_data: MessageCreate,
+    background_tasks: BackgroundTasks, 
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    return await message_service.handle_new_message(
-        db,
+    result = await message_sender_service.handle_new_message(
+        db=db,
         sender_id=current_user.id,
-        message_data=message_data
+        message_data=message_data,
+        background_tasks=background_tasks
     )
+    return ApiResponse(data=result)
 
-@router.get("/rooms/{room_id}/history")
+@router.get("/rooms/{room_id}/history", response_model=PaginationResponse[MessageResponse])
 async def get_history(
     room_id: UUID,
-    skip: int = 0,
-    limit: int = 50,
+    params: CommonQueryParams = Depends(),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    """Get chat history for a room"""
-    return await message_service.get_chat_history(
-        db, room_id, current_user.id, skip, limit
+    """Get chat history for a room with pagination"""
+    return await message_conversation_service.get_chat_history(
+        db, room_id, current_user.id, params.page, params.limit
     )
 
+# ============================================================
+# CONVERSATIONS
+# ============================================================
 
-@router.get("/conversations/direct/{other_user_id}")
+@router.get("/conversations/direct/{other_user_id}", response_model=ApiResponse[ConversationResponse])
 async def get_direct_conversation(
     other_user_id: UUID,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    """Get or create a direct conversation between current user and another user"""
-    return await message_service.get_or_create_direct_conversation(
+    """Get or create a direct conversation"""
+    result = await message_conversation_service.get_or_create_direct_conversation(
         db, current_user.id, other_user_id
     )
+    return ApiResponse(data=result)
 
-@router.get("/conversations/all", response_model=List[ConversationResponse])
+@router.get("/conversations/all", response_model=PaginationResponse[ConversationResponse])
 async def get_conversations(
+    params: CommonQueryParams = Depends(),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    """Get list of conversations for the current user"""
-    return await message_service.get_user_conversations(
-        db, current_user.id
+    """Get list of conversations for the current user with pagination"""
+    return await message_conversation_service.get_user_conversations(
+        db, current_user.id, params.skip, params.limit
     )
 
-@router.post("/conversations/{room_id}/read")
+@router.post("/conversations/{room_id}/read", response_model=ApiResponse[bool])
 async def mark_conversation_read(
     room_id: UUID,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    """
-    Mark all messages in a conversation as read.
-    Frontend should call this when user opens a chat room.
-    """
-    return await message_service.mark_conversation_as_read(db, room_id, current_user.id)
+    """Mark all messages in a conversation as read"""
+    result = await message_interaction_service.mark_conversation_as_read(db, room_id, current_user.id)
+    return ApiResponse(data=result)
 
-@router.post("/groups", status_code=status.HTTP_201_CREATED)
+# ============================================================
+# GROUPS
+# ============================================================
+
+@router.post("/groups", status_code=status.HTTP_201_CREATED, response_model=ApiResponse[ConversationResponse])
 async def create_group(
     title: str = Form(...),
     description: Optional[str] = Form(None),
@@ -109,11 +117,10 @@ async def create_group(
     current_user=Depends(get_current_user),
 ):
     """Create a new group chat"""
-
     try:
         parsed_member_ids = [UUID(m_id.strip()) for m_id in member_ids.split(",") if m_id.strip()]
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid UUID format in member_ids")
+        raise APIException(status_code=400, code="INVALID_UUID", message="Invalid UUID format in member_ids")
 
     data = GroupCreateRequest(
         title=title,
@@ -121,48 +128,25 @@ async def create_group(
         member_ids=parsed_member_ids
     )
 
-    return await message_service.create_group_chat(
+    result = await message_group_service.create_group_chat(
         db=db,
         group_data=data,
         avatar=avatar,
         creator_id=current_user.id
     )
+    return ApiResponse(data=result)
 
-@router.get("/groups/{room_id}")
+@router.get("/groups/{room_id}", response_model=ApiResponse[ConversationResponse])
 async def get_group_details(
     room_id: UUID,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
     """Get group details and members"""
-    members_data = await message_service.get_group_members(db, room_id, current_user.id)
-    
-    # Get room info
-    room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()
-    if not room:
-        raise HTTPException(status_code=404, detail="Group not found")
-    
-    return GroupDetailResponse(
-        id=room.id,
-        title=room.title,
-        description=room.description,
-        avatar_url=room.avatar_url,
-        room_type=room.room_type.value,
-        created_at=room.created_at,
-        member_count=len(members_data),
-        members=[MemberResponse(
-            user_id=m['user_id'],
-            role=m['role'],
-            joined_at=m['joined_at'],
-            nickname=m.get('nickname'),
-            full_name=m.get('full_name'),
-            avatar_url=m.get('avatar_url'),
-            email=m.get('email'),
-            is_online=m.get('is_online')
-        ) for m in members_data]
-    )
+    result = await message_group_service.get_group_details(db, room_id, current_user.id)
+    return ApiResponse(data=result)
 
-@router.post("/groups/{room_id}/members")
+@router.post("/groups/{room_id}/members", response_model=ApiResponse[bool])
 async def add_group_members(
     room_id: UUID,
     request: AddMembersRequest,
@@ -170,24 +154,26 @@ async def add_group_members(
     current_user = Depends(get_current_user)
 ):
     """Add members to group"""
-    return await message_service.add_members_to_group(
+    result = await message_group_service.add_members_to_group(
         db, room_id, current_user.id, request.user_ids
     )
+    return ApiResponse(data=result)
 
-@router.delete("/groups/{room_id}/members/{user_id}")
+@router.delete("/groups/{room_id}/members/{user_id}", response_model=ApiResponse[bool])
 async def remove_group_member(
     room_id: UUID,
     user_id: UUID,
-    new_admin_id: Optional[UUID],
+    new_admin_id: Optional[UUID] = Query(None),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
     """Remove a member from group"""
-    return await message_service.remove_member_from_group(
+    result = await message_group_service.remove_member_from_group(
         db, room_id, current_user.id, user_id, new_admin_id
     )
+    return ApiResponse(data=result)
 
-@router.put("/groups/{room_id}")
+@router.put("/groups/{room_id}", response_model=ApiResponse[ConversationResponse])
 async def update_group(
     room_id: UUID,
     title: Optional[str] = Form(None),
@@ -196,172 +182,101 @@ async def update_group(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    """Update group information (room admin only, support avatar upload)"""
-
-    update_data = GroupUpdateRequest(
-        title=title,
-        description=description
-    )
-
-    return await message_service.update_group_info(
+    """Update group information"""
+    update_data = GroupUpdateRequest(title=title, description=description)
+    result = await message_group_service.update_group_info(
         db=db,
         room_id=room_id,
         updater_id=current_user.id,
         update_data=update_data,
         avatar=avatar
     )
+    return ApiResponse(data=result)
 
+# ============================================================
+# INTERACTION & SETTINGS
+# ============================================================
 
-@router.delete(
-    "/rooms/{room_id}",
-    status_code=status.HTTP_200_OK,
-    summary="Delete a chat room"
-)
+@router.delete("/rooms/{room_id}", response_model=ApiResponse[bool])
 async def delete_chat_room(
     room_id: UUID,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
-    return await message_service.delete_chat_room(
+    result = await message_interaction_service.delete_chat_room(
         db=db,
         room_id=room_id,
         current_user_id=current_user.id
     )
+    return ApiResponse(data=result)
 
-@router.post("/edit_message/{message_id}")
+@router.put("/messages/{message_id}", response_model=ApiResponse[MessageResponse])
 async def edit_message(
     message_id: UUID,
-    new_content: str = Query(..., description="New content for the message"),
+    payload: MessageEditRequest, # Lấy nội dung từ Body thay vì Query
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
     """Edit a previously sent message"""
-    return await message_service.edit_message(
-        db, message_id, new_content, current_user.id,
+    result = await message_interaction_service.edit_message(
+        db=db, 
+        message_id=message_id, 
+        new_content=payload.new_content, 
+        user_id=current_user.id
     )
+    return ApiResponse(data=result)
 
-@router.get("/search_messages")
+@router.get("/search-messages", response_model=PaginationResponse[MessageResponse])
 async def search_messages(
     query: str = Query(..., description="Search query string"),
     room_id: UUID = Query(None, description="Optional room ID to filter messages"),
-    skip: int = 0,
-    limit: int = 50,
+    params: CommonQueryParams = Depends(),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    """Search messages containing the query string, optionally within a specific room"""
-    return await message_service.search_messages(
-        db, query, current_user.id, room_id, skip, limit
+    """Search messages with pagination"""
+    return await message_interaction_service.search_messages(
+        db=db, 
+        query_text=query, 
+        user_id=current_user.id, 
+        room_id=room_id, 
+        page=params.page,
+        limit=params.limit
     )
 
-@router.get("/unread-count")
+@router.get("/unread-count", response_model=ApiResponse[UnreadCountResponse])
 async def get_total_unread_count(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    count = message_service.get_total_unread_count(db, current_user.id)
-    return {"unread_count": count}
+    count = message_interaction_service.get_total_unread_count(db, current_user.id)
+    return ApiResponse(data=UnreadCountResponse(unread_count=count))
 
-@router.post("/rooms/{room_id}/mute")
+@router.post("/rooms/{room_id}/mute", response_model=ApiResponse[bool])
 async def mute_conversation(
     room_id: UUID,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    return await message_service.toggle_mute(db, room_id, current_user.id, True)
+    result = await message_interaction_service.toggle_mute(db, room_id, current_user.id, True)
+    return ApiResponse(data=result)
 
-@router.post("/rooms/{room_id}/unmute")
+@router.post("/rooms/{room_id}/unmute", response_model=ApiResponse[bool])
 async def unmute_conversation(
     room_id: UUID,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    return await message_service.toggle_mute(db, room_id, current_user.id, False)
+    result = await message_interaction_service.toggle_mute(db, room_id, current_user.id, False)
+    return ApiResponse(data=result)
+
+# ============================================================
+# WEBSOCKET
+# ============================================================
 
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
     token: str = Query(..., description="JWT token")
 ):
-    connection_id = None
-    user_id = None
-
-    try:
-        # 1. ACCEPT
-        await websocket.accept()
-
-        # 2. AUTH
-        try:
-            user = await get_current_user_from_token(token)
-            user_id = user.id
-        except HTTPException as e:
-            await websocket.send_json({
-                "type": "error",
-                "code": "AUTH_FAILED",
-                "message": "Authentication failed",
-                "detail": e.detail,
-            })
-            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-            return
-
-        # 3. CONNECT
-        connection_id = await manager.connect(websocket, user_id)
-
-        await websocket.send_json({
-            "type": "connected",
-            "user_id": str(user_id),
-            "connection_id": connection_id,
-        })
-
-        # 4. LOOP
-        while True:
-            data = await websocket.receive_json()
-            msg_type = data.get("type")
-
-            if msg_type == "ping":
-                await manager.handle_ping(connection_id)
-                await websocket.send_json({"type": "pong"})
-
-            elif msg_type == "typing":
-                room_id = data.get("room_id")
-                if room_id:
-                    await manager.send_typing_indicator(
-                        user_id=user_id,
-                        room_id=UUID(room_id),
-                        is_typing=bool(data.get("is_typing", False)),
-                    )
-
-            elif msg_type == "message":
-                db = SessionLocal()
-                try:
-                    await message_service.handle_new_message(
-                        db=db,
-                        sender_id=user_id,
-                        message_data=data,
-                    )
-                except Exception:
-                    logger.exception("Failed to handle WS message")
-                    await websocket.send_json({
-                        "type": "error",
-                        "code": "MESSAGE_FAILED",
-                        "message": "Failed to send message",
-                    })
-                finally:
-                    db.close()
-
-            else:
-                await websocket.send_json({
-                    "type": "error",
-                    "code": "UNKNOWN_TYPE",
-                    "message": f"Unknown type: {msg_type}",
-                })
-
-    except WebSocketDisconnect:
-        logger.info("WS disconnected user=%s", user_id)
-
-    except Exception:
-        logger.exception("WebSocket fatal error")
-
-    finally:
-        if connection_id and user_id:
-            await manager.disconnect(connection_id, user_id)
+    websocket_manager.websocket_connect(websocket=websocket, token=token)

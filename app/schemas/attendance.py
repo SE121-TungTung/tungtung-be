@@ -25,8 +25,9 @@ class AttendanceResponseItem(BaseModel):
     notes: Optional[str] = None
     check_in_time: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }
 
 class StudentCheckInRequest(BaseModel):
     session_id: UUID

@@ -1,19 +1,34 @@
-# app/api/v1/endpoints/schedule.py
-
-from fastapi import APIRouter, Depends, status, Path, Query, BackgroundTasks
+from fastapi import APIRouter, Depends, Path, Query, BackgroundTasks, status
 from datetime import date
-from typing import Optional
+from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
+from uuid import UUID
+
 from app.core.database import get_db
 from app.dependencies import get_current_admin_user, get_current_week_range
-from app.services.schedule import schedule_service
-from app.schemas.schedule import ScheduleGenerateRequest, ScheduleProposal, SessionCreate, SessionUpdate, SessionResponse, WeeklySchedule
-from uuid import UUID
-from typing import Dict, Any
+from app.services.schedule_service import schedule_service
+from app.schemas.schedule import (
+    ScheduleGenerateRequest, 
+    ScheduleProposal, 
+    SessionCreate, 
+    SessionUpdate, 
+    SessionResponse, 
+    WeeklySchedule
+)
 
-router = APIRouter(prefix="/schedule", tags=["Schedule Management"])
+# Step 1: Import core components
+from app.core.route import ResponseWrapperRoute
+from app.schemas.base_schema import ApiResponse
+from app.core.exceptions import APIException
 
-@router.post("/generate", response_model=ScheduleProposal)
+# Step 1: Khai báo Router với ResponseWrapperRoute
+router = APIRouter(prefix="/schedule", tags=["Schedule Management"], route_class=ResponseWrapperRoute)
+
+# ============================================================
+# SCHEDULE GENERATION & APPLY
+# ============================================================
+
+@router.post("/generate", response_model=ApiResponse[ScheduleProposal])
 async def generate_schedule_proposal(
     request: ScheduleGenerateRequest,
     db: Session = Depends(get_db),
@@ -23,10 +38,10 @@ async def generate_schedule_proposal(
     UC MF.3: Auto-schedule. 
     Generate schedule proposal để admin review (Hard Constraints check).
     """
-    # LƯU Ý: Phải có instance schedule_service được định nghĩa bên ngoài
-    return schedule_service.generate_schedule(db, request)
+    result = schedule_service.generate_schedule(db, request)
+    return ApiResponse(data=result)
 
-@router.post("/apply", status_code=status.HTTP_201_CREATED, response_model=Dict[str, Any])
+@router.post("/apply", status_code=status.HTTP_201_CREATED, response_model=ApiResponse[Dict[str, Any]])
 async def apply_schedule_proposal(
     proposal: ScheduleProposal,
     db: Session = Depends(get_db),
@@ -36,39 +51,25 @@ async def apply_schedule_proposal(
     UC MF.5: Admin confirm và apply proposal. 
     Thực hiện lưu Session và Trigger Notifications.
     """
-    return schedule_service.apply_proposal(db, proposal)
+    result = schedule_service.apply_proposal(db, proposal)
+    return ApiResponse(data=result)
 
-@router.post("/sessions", response_model=SessionResponse, status_code=status.HTTP_201_CREATED)
+# ============================================================
+# MANUAL SESSION MANAGEMENT
+# ============================================================
+
+@router.post("/sessions", status_code=status.HTTP_201_CREATED, response_model=ApiResponse[SessionResponse])
 async def create_session(
     data: SessionCreate,
-    background_tasks: BackgroundTasks, # Inject BackgroundTasks
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_admin_user)
 ):
     """UC MF.3.1: Tạo session thủ công với Conflict Check"""
-    # Truyền background_tasks vào service
-    return await schedule_service.create_session_manual(db, data, background_tasks)
+    result = await schedule_service.create_session_manual(db, data, background_tasks)
+    return ApiResponse(data=result)
 
-@router.get("/weekly", response_model=WeeklySchedule, tags=["Schedule Viewing"])
-async def get_weekly_schedule_view(
-    start_date: Optional[date] = Query(None, description="Ngày bắt đầu của tuần (YYYY-MM-DD)"),
-    end_date: Optional[date] = Query(None, description="Ngày kết thúc của tuần (YYYY-MM-DD)"),
-    class_id: Optional[UUID] = Query(None, description="Lọc theo ID lớp học"),
-    db: Session = Depends(get_db),
-    # Cho phép xem TKBiểu cá nhân
-    user_id: Optional[UUID] = Query(None, description="Lọc theo ID người dùng (Giáo viên)"),
-):
-    """
-    Lấy thời khóa biểu chi tiết dạng tuần, có thể lọc theo lớp hoặc giáo viên.
-    """
-    # Nếu user_id không được cung cấp, sử dụng ID của người dùng hiện tại (nếu cần)
-    if not (start_date and end_date):
-        start_date, end_date = get_current_week_range()
-    return schedule_service.get_weekly_schedule(
-        db, start_date, end_date, class_id=class_id, user_id=user_id
-    )
-
-@router.put("/sessions/{session_id}", response_model=SessionResponse)
+@router.put("/sessions/{session_id}", response_model=ApiResponse[SessionResponse])
 async def update_session(
     data: SessionUpdate,
     session_id: UUID = Path(..., description="ID của Session cần cập nhật"),
@@ -76,15 +77,38 @@ async def update_session(
     current_user = Depends(get_current_admin_user)
 ):
     """UC MF.3.3: Update session với Conflict Check"""
-    return schedule_service.update_session(db, session_id, data)
+    result = schedule_service.update_session(db, session_id, data)
+    return ApiResponse(data=result)
 
-@router.delete("/sessions/{session_id}", response_model=Dict[str, Any])
+@router.delete("/sessions/{session_id}", response_model=ApiResponse[Dict[str, Any]])
 async def delete_session(
     session_id: UUID = Path(..., description="ID của Session cần hủy"),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_admin_user)
 ):
     """UC MF.3.4: Cancel/Soft Delete session"""
-    return schedule_service.delete_session(db, session_id)
+    result = schedule_service.delete_session(db, session_id)
+    return ApiResponse(data=result)
 
-# END OF app/api/v1/endpoints/schedule.py
+# ============================================================
+# SCHEDULE VIEWING
+# ============================================================
+
+@router.get("/weekly", tags=["Schedule Viewing"], response_model=ApiResponse[WeeklySchedule])
+async def get_weekly_schedule_view(
+    start_date: Optional[date] = Query(None, description="Ngày bắt đầu của tuần (YYYY-MM-DD)"),
+    end_date: Optional[date] = Query(None, description="Ngày kết thúc của tuần (YYYY-MM-DD)"),
+    class_id: Optional[UUID] = Query(None, description="Lọc theo ID lớp học"),
+    user_id: Optional[UUID] = Query(None, description="Lọc theo ID người dùng (Giáo viên)"),
+    db: Session = Depends(get_db)
+):
+    """
+    Lấy thời khóa biểu chi tiết dạng tuần, có thể lọc theo lớp hoặc giáo viên.
+    """
+    if not (start_date and end_date):
+        start_date, end_date = get_current_week_range()
+        
+    result = schedule_service.get_weekly_schedule(
+        db, start_date, end_date, class_id=class_id, user_id=user_id
+    )
+    return ApiResponse(data=result)

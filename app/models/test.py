@@ -14,11 +14,6 @@ import enum
 # ENUMS
 # =========================
 
-# File: app/models/test.py
-import enum
-# Giả định SkillArea đã được import từ cùng module hoặc module khác
-# from .somewhere import SkillArea 
-
 class QuestionType(enum.Enum):
     """Các dạng câu hỏi THỰC TẾ trong IELTS"""
     # === READING & LISTENING (dùng chung) ===

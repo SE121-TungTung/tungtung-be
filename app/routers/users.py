@@ -1,17 +1,22 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, UploadFile, File, Form
+from fastapi import APIRouter, Depends, status, Query, BackgroundTasks, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from app.core.database import get_db
 from app.dependencies import get_current_active_user, get_current_admin_user, get_current_user, CommonQueryParams
 from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest, UserUpdateForm, ClassWithMembersResponse
-from app.services.user import user_service
+from app.services.user_service import user_service
 from app.models.user import User, UserRole, UserStatus
 from app.models.academic import ClassEnrollment, Class
 import json
 from uuid import UUID
 from app.routers.generator import create_crud_router
 from app.models.session_attendance import ClassSession
+
+# --- IMPORT MỚI THÊM VÀO ---
+from app.schemas.base_schema import ApiResponse, PaginationResponse
+from app.core.route import ResponseWrapperRoute
+from app.core.exceptions import APIException
 
 delete_user_router = create_crud_router(
     model=User,
@@ -21,17 +26,18 @@ delete_user_router = create_crud_router(
     prefix=""
 )
 
-router = APIRouter()
+router = APIRouter(route_class=ResponseWrapperRoute)
 router.include_router(delete_user_router, prefix="")
 
-@router.get("/me", response_model=UserResponse)
+
+@router.get("/me", response_model=ApiResponse[UserResponse])
 async def read_user_me(
     current_user: User = Depends(get_current_active_user)
 ):
     """Get current user profile"""
     return current_user
 
-@router.put("/me")
+@router.put("/me", response_model=ApiResponse[UserResponse])
 async def update_me(
     first_name: str | None = Form(None),
     last_name: str | None = Form(None),
@@ -52,15 +58,16 @@ async def update_me(
         preferences=json.loads(preferences) if preferences else None,
     )
 
-    return await user_service.update_user(
+    data = await user_service.update_user(
         db=db,
         user_id=current_user.id,
         user_update=user_update,
         avatar_file=avatar_file,
         id_updated_by=current_user.id
     )
+    return data 
 
-@router.post("/me/change-password")
+@router.post("/me/change-password", response_model=ApiResponse[str])
 async def change_password(
     password_update: UserPasswordUpdate,
     db: Session = Depends(get_db),
@@ -68,9 +75,9 @@ async def change_password(
 ):
     """Change current user password"""
     await user_service.change_password(db, current_user, password_update)
-    return {"message": "Password changed successfully"}
+    return ApiResponse(message="Password changed successfully")
 
-@router.post("/", response_model=UserResponse)
+@router.post("", response_model=ApiResponse[UserResponse])
 async def create_user(
     user_create: UserCreate,
     background_tasks: BackgroundTasks,
@@ -80,21 +87,22 @@ async def create_user(
     ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
-    
 ):
     """Create new user (admin only)"""
-    return await user_service.create_user(db, user_create, current_user.id, default_class_id=default_class_id, background_tasks=background_tasks)
+    data = await user_service.create_user(db, user_create, current_user.id, default_class_id=default_class_id, background_tasks=background_tasks)
+    return data
 
-@router.post("/bulk", response_model=List[UserResponse], status_code=status.HTTP_201_CREATED)
+@router.post("/bulk", response_model=ApiResponse[List[UserResponse]], status_code=status.HTTP_201_CREATED)
 async def bulk_create_users(
     request: BulkImportRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """Bulk create users from a list with auto-generated passwords and email notifications (admin only)."""
-    return await user_service.bulk_create_users(db, request, current_user.id)
+    data = await user_service.bulk_create_users(db, request, current_user.id)
+    return data
 
-@router.get("/", response_model=UserListResponse)
+@router.get("", response_model=PaginationResponse[UserResponse])
 async def list_users(
     commons: CommonQueryParams = Depends(),
     role: Optional[UserRole] = Query(None, description="Filter by user role"),
@@ -103,42 +111,19 @@ async def list_users(
     current_user: User = Depends(get_current_active_user)
 ):
     """List users with filters (admin only)"""
-    if search:
-        users = await user_service.search_users(db, search, commons.skip, commons.limit)
-        search_filter = or_(
-            User.first_name.ilike(f"%{search}%"),
-            User.last_name.ilike(f"%{search}%"),
-            User.email.ilike(f"%{search}%")
-        )
-        total = db.query(User).filter(search_filter, User.deleted_at.is_(None)).count()
-    elif role:
-        users = await user_service.get_users_by_role(db, role, commons.skip, commons.limit)
-        total = db.query(User).filter(User.role == role, User.deleted_at.is_(None)).count()
-    else:
-        users = await user_service.get_all(db, commons.skip, commons.limit)
-        total = db.query(User).filter(User.deleted_at.is_(None)).count()
+    data = await user_service.get_list_user(commons=commons, role=role, search=search, db=db, current_user=current_user)
+    return data
 
-    pages = (total + commons.limit - 1) // commons.limit
-
-    users_schema = [UserResponse.model_validate(u) for u in users]
-
-    return UserListResponse(
-        users=[u.model_dump(mode="json") for u in users_schema],
-        total=total,
-        page=(commons.skip // commons.limit) + 1,
-        size=commons.limit,
-        pages=pages
-    )
-
-@router.get("/overview", response_model=dict)
+@router.get("/overview", response_model=ApiResponse[dict])
 async def get_user_overview(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
     """Get user overview statistics"""
-    return user_service.get_user_overview(db, current_user=current_user)
+    data = user_service.get_user_overview(db, current_user=current_user)
+    return data
 
-@router.get("/{user_id}", response_model=UserResponse)
+@router.get("/{user_id}", response_model=ApiResponse[UserResponse])
 async def get_user(
     user_id: UUID,
     db: Session = Depends(get_db),
@@ -147,112 +132,25 @@ async def get_user(
     """Get user by ID (admin only)"""
     user = await user_service.get(db, user_id)
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found"
+        raise APIException(
+            status_code=404,
+            code="USER_NOT_FOUND",
+            message="User not found"
         )
     return user
 
-@router.get("/me/classes", response_model=list[ClassWithMembersResponse])
+@router.get("/me/classes", response_model=ApiResponse[List[ClassWithMembersResponse]])
 async def get_my_classes(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
     """
-    Lấy danh sách lớp mà user hiện tại tham gia:
-    - Student: lớp đã enroll
-    - Teacher: lớp đang giảng dạy
-    Trả về kèm giáo viên, danh sách học sinh và sessions
+    Lấy danh sách lớp mà user hiện tại tham gia
     """
+    data = user_service.get_my_classes(db=db, current_user=current_user)
+    return data
 
-    class_ids: set = set()
-
-    # Student
-    enrollments = (
-        db.query(ClassEnrollment)
-        .filter(
-            ClassEnrollment.student_id == current_user.id,
-            ClassEnrollment.deleted_at.is_(None)
-        )
-        .all()
-    )
-
-    for enrollment in enrollments:
-        class_ids.add(enrollment.class_id)
-
-    # Teacher
-    teaching_classes = (
-        db.query(Class)
-        .filter(
-            Class.teacher_id == current_user.id,
-            Class.deleted_at.is_(None)
-        )
-        .all()
-    )
-
-    for class_ in teaching_classes:
-        class_ids.add(class_.id)
-
-    if not class_ids:
-        return []
-    
-    classes = (
-        db.query(Class)
-        .filter(
-            Class.id.in_(list(class_ids)),
-            Class.deleted_at.is_(None)
-        )
-        .all()
-    )
-
-    result = []
-
-    for class_ in classes:
-        classmates = (
-            db.query(User)
-            .join(ClassEnrollment, ClassEnrollment.student_id == User.id)
-            .filter(
-                ClassEnrollment.class_id == class_.id,
-                User.deleted_at.is_(None),
-                ClassEnrollment.deleted_at.is_(None)
-            )
-            .all()
-        )
-
-        sessions = (
-            db.query(ClassSession)
-            .filter(ClassSession.class_id == class_.id)
-            .order_by(ClassSession.session_date, ClassSession.start_time)
-            .all()
-        )
-
-        result.append({
-            "id": class_.id,
-            "name": class_.name,
-            "teacher": {
-                "id": class_.teacher.id if class_.teacher else None,
-                "full_name": (
-                    f"{class_.teacher.first_name} {class_.teacher.last_name}"
-                    if class_.teacher else None
-                ),
-                "email": class_.teacher.email if class_.teacher else None,
-                "avatar_url": class_.teacher.avatar_url if class_.teacher and class_.teacher.avatar_url else None
-            },
-            "students": [
-                {
-                    "id": student.id,
-                    "full_name": f"{student.first_name} {student.last_name}",
-                    "email": student.email,
-                    "avatar_url": student.avatar_url if student.avatar_url else None
-                }
-                for student in classmates if student.id != current_user.id
-            ],
-            "sessions": sessions
-        })
-
-    return result
-
-@router.put("/{user_id}", response_model=UserResponse)
+@router.put("/{user_id}", response_model=ApiResponse[UserResponse])
 async def update_user(
     user_id: UUID,
     update_form: UserUpdateForm = Depends(),
@@ -262,4 +160,5 @@ async def update_user(
 ):
     """Update user (admin only)"""
     user_update = update_form.to_update_schema(UserUpdate)
-    return await user_service.update_user(db, user_id, user_update, avatar_file, id_updated_by=current_user.id)
+    data = await user_service.update_user(db, user_id, user_update, avatar_file, id_updated_by=current_user.id)
+    return data

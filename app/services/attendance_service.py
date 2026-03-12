@@ -1,15 +1,19 @@
+from typing import List
+
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from uuid import UUID
 from datetime import datetime
 from fastapi import HTTPException
 from app.models.session_attendance import ClassSession, AttendanceRecord, AttendanceStatus
+from app.schemas.attendance import AttendanceResponseItem
 from app.schemas.attendance import BatchAttendanceRequest
+from app.core.exceptions import APIException
 from app.models.user import User
 from app.models.academic import ClassEnrollment, EnrollmentStatus
 from datetime import timedelta
 
-from app.services.audit_log import audit_service
+from app.services.audit_log_service import audit_service
 from app.models.audit_log import AuditAction
 
 ALLOWED_EARLY_MINUTES = 15  # Được điểm danh sớm 15p
@@ -17,17 +21,25 @@ GRACE_PERIOD_MINUTES = 5
 
 class AttendanceService():
 
-    def get_session_attendance_sheet(self, db: Session, session_id: UUID) -> list:
-
+    def get_session_attendance_sheet(self, db: Session, session_id: UUID) -> List[AttendanceResponseItem]:
+        
         session = db.query(ClassSession).filter(ClassSession.id == session_id).first()
         if not session:
-            raise HTTPException(status_code=404, detail="Session not found")
+            # Thay thế bằng APIException chuẩn
+            raise APIException(
+                status_code=404, 
+                code="SESSION_NOT_FOUND", 
+                message="Session not found"
+            )
 
+        # Lấy dữ liệu từ DB
         results = db.query(
             User.id.label("student_id"),
             User.first_name,
             User.last_name,
             User.avatar_url,
+            # Bổ sung query student_code nếu model User của bạn có trường này:
+            # User.student_code, 
             AttendanceRecord.status,
             AttendanceRecord.late_minutes,
             AttendanceRecord.notes,
@@ -47,19 +59,24 @@ class AttendanceService():
 
         attendance_list = []
         for row in results:
+            # Xử lý logic hiển thị
             final_status = row.status if row.status else AttendanceStatus.PRESENT
-            
             full_name = f"{row.first_name} {row.last_name}".strip()
 
-            attendance_list.append({
-                "student_id": row.student_id,
-                "student_name": full_name,
-                "avatar_url": row.avatar_url,
-                "status": final_status,
-                "late_minutes": row.late_minutes or 0,
-                "notes": row.notes,
-                "check_in_time": row.check_in_time
-            })
+            # ÉP KIỂU TƯỜNG MINH BẰNG SCHEMA (Explicit Mapping)
+            attendance_list.append(AttendanceResponseItem(
+                student_id=row.student_id,
+                student_name=full_name,
+                
+                # Nếu bạn đã query student_code ở trên thì uncomment dòng dưới:
+                # student_code=row.student_code, 
+                
+                avatar_url=row.avatar_url,
+                status=final_status,
+                late_minutes=row.late_minutes or 0,
+                notes=row.notes,
+                check_in_time=row.check_in_time
+            ))
             
         return attendance_list
     

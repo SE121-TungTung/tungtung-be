@@ -141,6 +141,7 @@ class ChatRoomMember(Base):
     
     joined_at = Column(TIMESTAMP(timezone=True), default=func.now())
     last_read_at = Column(TIMESTAMP(timezone=True))
+    last_cleared_at = Column(TIMESTAMP(timezone=True))  # Mốc clear chat cá nhân
     is_muted = Column(Boolean, default=False)
     nickname = Column(String(100))  # Custom nickname in group
     
