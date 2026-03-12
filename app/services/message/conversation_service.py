@@ -1,13 +1,18 @@
+import math
 from uuid import UUID
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session, joinedload
 from fastapi import HTTPException
 
+from app.core.exceptions import APIException
 from app.models.message import Message, ChatRoom, ChatRoomMember, MessageType
 from app.models.user import User
-from app.schemas.message import ConversationResponse
+from app.schemas.base_schema import PaginationMetadata, PaginationResponse
+from app.schemas.base_schema import PaginationResponse
+from app.schemas.message import ConversationResponse, MessageResponse
 
 from app.repositories.message import recipient_repository as recipient_repo
+from app.schemas.user import UserMiniResponse
 
 class ConversationService:
     async def get_user_conversations(
@@ -265,9 +270,15 @@ class ConversationService:
         db: Session, 
         room_id: UUID, 
         current_user_id: UUID, 
-        skip: int = 0, 
-        limit: int = 50
-    ) -> List[Dict[str, Any]]:
+        page: int = 1,     
+        limit: int = 50    
+    ) -> PaginationResponse[MessageResponse]: 
+        
+        skip = (page - 1) * limit
+        
+        # =====================
+        # 1. TÌM PHÒNG & KIỂM TRA QUYỀN
+        # =====================
         room = db.query(ChatRoom).filter(
             ChatRoom.id == room_id,
             ChatRoom.deleted_at.is_(None),
@@ -275,16 +286,13 @@ class ConversationService:
         ).first()
 
         if not room:
-            raise HTTPException(status_code=404, detail="Room not found")
+            raise APIException(status_code=404, code="ROOM_NOT_FOUND", message="Room not found")
 
-        # =====================
-        # CHECK ACCESS
-        # =====================
         member = None
         if room.room_type == MessageType.DIRECT:
             if current_user_id not in [room.participant1_id, room.participant2_id]:
-                raise HTTPException(403, "Access denied")
-
+                raise APIException(status_code=403, code="ACCESS_DENIED", message="Access denied")
+            
             member = db.query(ChatRoomMember).filter(
                 ChatRoomMember.chat_room_id == room_id,
                 ChatRoomMember.user_id == current_user_id
@@ -296,10 +304,10 @@ class ConversationService:
             ).first()
 
             if not member:
-                raise HTTPException(403, "Access denied")
+                raise APIException(status_code=403, code="ACCESS_DENIED", message="Access denied")
 
         # =====================
-        # BUILD MESSAGE QUERY
+        # 2. XÂY DỰNG QUERY & METADATA PHÂN TRANG
         # =====================
         query = db.query(Message).options(
             joinedload(Message.sender)
@@ -307,12 +315,20 @@ class ConversationService:
             Message.chat_room_id == room_id
         )
 
-        # ⬅️ CORE LOGIC: chỉ lấy message sau mốc clear/read
-        if member and member.last_read_at:
+        if member and member.last_cleared_at:
             query = query.filter(
-                Message.created_at > member.last_read_at
+                Message.created_at > member.last_cleared_at
             )
+        
+        total = query.count()
+        meta = PaginationMetadata(
+            page=page,
+            limit=limit,
+            total=total,
+            total_pages=math.ceil(total / limit) if limit > 0 else 1
+        )
 
+        # Lấy tin nhắn mới nhất xếp trước (Giúp lấy đúng 50 tin nhắn gần nhất)
         messages_db = (
             query
             .order_by(Message.created_at.desc())
@@ -322,39 +338,59 @@ class ConversationService:
         )
 
         if not messages_db:
-            return []
+            return PaginationResponse(data=[], meta=meta)
 
+        # =====================
+        # 3. LẤY TRẠNG THÁI (READ/STARRED/DELETED) & ÉP KIỂU
+        # =====================
         message_ids = [msg.id for msg in messages_db]
-
+        
+        # Giả định recipient_repo của bạn có hàm này
         sparse_statuses = recipient_repo.get_statuses_for_user(
             db, current_user_id, message_ids
         )
 
-        history = []
+        results = []
         for msg in messages_db:
             status = sparse_statuses.get(msg.id, {})
 
+            # ⬅️ ĐÂY LÀ NƠI XỬ LÝ "CLEAR HISTORY": Ẩn tin nhắn mà user đã xóa
             if status.get("deleted"):
                 continue
 
-            sender_name = "System"
-            if msg.sender:
-                sender_name = f"{msg.sender.first_name} {msg.sender.last_name}"
+            # Map thủ công các trường sang Pydantic Model
+            msg_resp = MessageResponse(
+                id=msg.id,
+                sender_id=msg.sender_id,
+                chat_room_id=msg.chat_room_id,
+                sender=UserMiniResponse(
+                    id=msg.sender.id,
+                    full_name=f"{msg.sender.first_name} {msg.sender.last_name}",
+                    email=msg.sender.email,
+                    avatar_url=msg.sender.avatar_url
+                ) if msg.sender else None,
+                
+                message_type=msg.message_type.value if hasattr(msg.message_type, 'value') else msg.message_type,
+                content=msg.content,
+                attachments=msg.attachments or [],
+                priority=msg.priority.value if hasattr(msg.priority, 'value') else msg.priority,
+                status=msg.status.value if hasattr(msg.status, 'value') else msg.status,
+                created_at=msg.created_at,
+                updated_at=msg.updated_at,
+                
+                # Các cờ phụ trợ UI
+                is_read=status.get("read_at") is not None,
+                is_starred=status.get("starred", False),
+                is_edited=(msg.updated_at != msg.created_at)
+            )
+            
+            results.append(msg_resp)
 
-            history.append({
-                "message_id": str(msg.id),
-                "sender_id": str(msg.sender_id) if msg.sender_id else None,
-                "sender_name": sender_name,
-                "content": msg.content,
-                "message_type": msg.message_type.value,
-                "timestamp": msg.created_at.isoformat(),
-                "attachments": msg.attachments or [],
-                "is_read": status.get("read_at") is not None,
-                "is_starred": status.get("starred", False),
-                "is_edited": msg.updated_at != msg.created_at
-            })
+        results.reverse()
 
-        history.reverse()
-        return history
+        return PaginationResponse(
+            data=results,
+            meta=meta
+        )
     
 message_conversation_service = ConversationService()

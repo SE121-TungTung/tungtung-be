@@ -1,10 +1,12 @@
 from sqlalchemy.orm import Session
 from typing import Optional, Dict, Any
 from uuid import UUID
-
-from app.models.audit_log import AuditLog, AuditAction
+import math
+from app.models.audit_log import AuditLog, AuditAction, AuditLogResponse
 from sqlalchemy import or_
 import logging
+
+from app.schemas.base_schema import PaginationMetadata, PaginationResponse
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ class AuditService:
         self,
         db: Session,
         *,
-        skip: int = 0,
+        page: int = 1,
         limit: int = 20,
         user_id: Optional[UUID] = None,
         action: Optional[AuditAction] = None,
@@ -71,16 +73,12 @@ class AuditService:
         # ============================================================
         if user_id:
             query = query.filter(AuditLog.user_id == user_id)
-
         if action:
             query = query.filter(AuditLog.action == action)
-
         if table_name:
             query = query.filter(AuditLog.table_name == table_name)
-
         if record_id:
             query = query.filter(AuditLog.record_id == record_id)
-
         if success is not None:
             query = query.filter(AuditLog.success == success)
 
@@ -98,9 +96,18 @@ class AuditService:
             )
 
         # ============================================================
-        # Count trước pagination
+        # Count & Metadata Phân trang (MỚI)
         # ============================================================
         total = query.count()
+        skip = (page - 1) * limit
+        total_pages = math.ceil(total / limit) if limit > 0 else 1
+
+        meta = PaginationMetadata(
+            page=page,
+            limit=limit,
+            total=total,
+            total_pages=total_pages
+        )
 
         # ============================================================
         # Pagination + ordering
@@ -113,12 +120,16 @@ class AuditService:
             .all()
         )
 
-        return {
-            "total": total,
-            "skip": skip,
-            "limit": limit,
-            "items": items
-        }
+        # ============================================================
+        # Explicit Mapping & Return (MỚI)
+        # ============================================================
+        # Chuyển đổi từ SQLAlchemy ORM sang Pydantic Model
+        results = [AuditLogResponse.model_validate(item) for item in items]
+
+        return PaginationResponse(
+            data=results,
+            meta=meta
+        )
 
 
 audit_service = AuditService()

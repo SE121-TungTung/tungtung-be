@@ -88,10 +88,3 @@ class AuditLogResponse(pyBase):
     model_config = {
         "from_attributes": True
     }
-
-
-class AuditLogListResponse(pyBase):
-    total: int
-    skip: int
-    limit: int
-    items: list[AuditLogResponse]

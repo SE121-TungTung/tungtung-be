@@ -1,32 +1,31 @@
-# TEMPORARY NOT USED
-# 
-# from pydantic import BaseModel, Field, validator
-# from typing import Optional, List, Dict, Any
-# from decimal import Decimal
-# from datetime import datetime
-# from app.models.academic import CourseLevel, CourseType, CourseStatus
-# import uuid
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional, List, Dict, Any
+from decimal import Decimal
+from datetime import datetime
+from app.models.academic import CourseLevel, CourseType, CourseStatus
+import uuid
 
-# class CourseBase(BaseModel):
-#     name: str = Field(..., min_length=1, max_length=255)
-#     description: Optional[str] = None
-#     level: CourseLevel
-#     course_type: CourseType = CourseType.GENERAL_ENGLISH
-#     duration_hours: int = Field(..., gt=0)
-#     max_students: int = Field(25, ge=5, le=30)
-#     min_students: int = Field(8, ge=3)
-#     fee_amount: Decimal = Field(..., ge=0)
-#     currency: str = Field("VND", max_length=3)
-#     syllabus: Optional[Dict[str, Any]] = None
-#     learning_objectives: Optional[List[str]] = []
-#     prerequisites: Optional[List[str]] = []
-#     status: CourseStatus = CourseStatus.ACTIVE
+class CourseBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=255)
+    description: Optional[str] = None
+    level: CourseLevel
+    course_type: CourseType = CourseType.GENERAL_ENGLISH
+    duration_hours: int = Field(..., gt=0)
+    max_students: int = Field(25, ge=5, le=30)
+    min_students: int = Field(8, ge=3)
+    fee_amount: Decimal = Field(..., ge=0)
+    currency: str = Field("VND", max_length=3)
+    syllabus: Optional[Dict[str, Any]] = None
+    learning_objectives: Optional[List[str]] = []
+    prerequisites: Optional[List[str]] = []
+    status: CourseStatus = CourseStatus.ACTIVE
     
-#     @validator('min_students')
-#     def validate_min_students(cls, v, values):
-#         if 'max_students' in values and v > values['max_students']:
-#             raise ValueError('min_students must be <= max_students')
-#         return v
+    @field_validator('min_students')
+    @classmethod
+    def validate_min_students(cls, v, info):
+        if 'max_students' in info.data and v > info.data['max_students']:
+            raise ValueError('min_students must be <= max_students')
+        return v
 
 # class CourseCreate(CourseBase):
 #     pass
@@ -45,17 +44,11 @@
 #     prerequisites: Optional[List[str]] = None
 #     status: Optional[CourseStatus] = None
 
-# class CourseResponse(CourseBase):
-#     id: uuid.UUID
-#     created_at: datetime
-#     updated_at: datetime
+class CourseResponse(CourseBase):
+    id: uuid.UUID
+    created_at: datetime
+    updated_at: datetime
     
-#     class Config:
-#         from_attributes = True
-
-# class CourseListResponse(BaseModel):
-#     items: List[CourseResponse]
-#     total: int
-#     page: int
-#     size: int
-#     pages: int
+    model_config = {
+        "from_attributes": True
+    }

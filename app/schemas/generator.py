@@ -1,4 +1,4 @@
-from pydantic import create_model, Field
+from pydantic import ConfigDict, create_model, Field
 from sqlalchemy.inspection import inspect
 from sqlalchemy import String, Integer, Boolean, DateTime, Float, Text, JSON, UUID
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
@@ -320,7 +320,7 @@ def generate_model_schemas(sqlalchemy_model, exclude_audit_fields: bool = True):
     # Standard fields to exclude
     base_exclude = ['id'] if exclude_audit_fields else []
     audit_exclude = ['created_at', 'updated_at', 'created_by', 'updated_by', 'deleted_at'] if exclude_audit_fields else []
-    
+    model_config = ConfigDict(from_attributes=True)
     # Response schema (include everything)
     response_schema = create_pydantic_model_from_sqlalchemy(
         sqlalchemy_model,

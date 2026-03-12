@@ -1,20 +1,20 @@
 from fastapi import APIRouter, Depends, Query
 from typing import Optional
-from app.models.audit_log import AuditLogListResponse, AuditAction
+from app.models.audit_log import AuditAction, AuditLogResponse
 from sqlalchemy.orm import Session
-from app.dependencies import get_current_admin_user
+from app.dependencies import CommonQueryParams, get_current_admin_user
 from app.core.database import get_db
+from app.schemas.base_schema import PaginationResponse
 from app.services.audit_log_service import audit_service
 from uuid import UUID
 from app.models.user import User
 
 router = APIRouter(prefix="/audit-logs", tags=["Audit Logs"])
 
-@router.get("", response_model=AuditLogListResponse)
+@router.get("", response_model=PaginationResponse[AuditLogResponse])
 async def get_audit_logs(
     # Pagination
-    skip: int = Query(0, ge=0, description="Số lượng bản ghi bỏ qua"),
-    limit: int = Query(20, ge=1, le=100, description="Số lượng bản ghi tối đa mỗi trang"),
+    params: CommonQueryParams = Depends(),
     
     # Filters
     user_id: Optional[UUID] = Query(None, description="Lọc theo ID người thực hiện"),
@@ -35,8 +35,8 @@ async def get_audit_logs(
 
     result = audit_service.list_audit_logs(
         db=db,
-        skip=skip,
-        limit=limit,
+        page=params.page,
+        limit=params.limit,
         user_id=user_id,
         action=action,
         table_name=table_name,
