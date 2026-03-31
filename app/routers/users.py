@@ -26,7 +26,7 @@ delete_user_router = create_crud_router(
     prefix=""
 )
 
-router = APIRouter(route_class=ResponseWrapperRoute)
+router = APIRouter(route_class=ResponseWrapperRoute, prefix="/users", tags=["Users"])
 router.include_router(delete_user_router, prefix="")
 
 
