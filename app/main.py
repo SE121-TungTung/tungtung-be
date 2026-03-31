@@ -8,6 +8,7 @@ from app.routers import (
     room, course, classes, enrollment, class_session,
     attendance, schedule, test, 
     message, notification,
+    kpi,
     chatbot, audit_log)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
@@ -62,7 +63,7 @@ async def health_check():
 api_router = APIRouter()
 
 api_router.include_router(auth.router)
-api_router.include_router(users.router, prefix="/users", tags=["Users"])
+api_router.include_router(users.router)
 api_router.include_router(room.router)
 api_router.include_router(course.router) 
 api_router.include_router(classes.router)
@@ -73,7 +74,8 @@ api_router.include_router(schedule.router)
 api_router.include_router(message.router)
 api_router.include_router(test.router)
 api_router.include_router(notification.router)
-api_router.include_router(chatbot.router, prefix="/chatbot", tags=["AI Chat"])
+api_router.include_router(kpi.router)
+api_router.include_router(chatbot.router)
 api_router.include_router(audit_log.router)
 
 app.include_router(api_router, prefix="/api/v1")

@@ -1,123 +1,190 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, Path, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, Path, Body, BackgroundTasks
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional, Annotated
 from uuid import UUID
 
 from app.core.database import get_db
-
-from app.schemas.base_schema import ApiResponse
+from app.dependencies import get_current_user, require_role
+from app.schemas.base_schema import ApiResponse, PaginationResponse, PaginationMetadata
+from app.models.user import User
 
 from app.schemas.kpi import (
-    KpiTierResponse, KpiTierUpdate, 
+    KpiTierResponse, KpiTierUpdate,
     KpiCalculationJobCreate, KpiCalculationJobResponse,
-    TeacherMonthlyKpiResponse, TeacherPayrollConfigUpdate, TeacherPayrollConfigResponse
+    TeacherMonthlyKpiResponse, TeacherPayrollConfigUpdate, TeacherPayrollConfigResponse,
+    KpiRawMetricSync,
+    KpiDisputeCreate, KpiDisputeResponse, KpiDisputeResolveRequest,
+    SalaryResponse, SalaryAdjustmentCreate, SalaryAdjustmentResponse,
+    PayrollRunCreate, PayrollRunResponse,
+    PERIOD_REGEX
 )
 
-router = APIRouter(prefix="/api/v1", tags=["KPI & Payroll"])
+router = APIRouter(prefix="", tags=["KPI & Payroll"])
 
-# --- 1 & 2. Cấu hình Bậc KPI (System Settings) ---
+PeriodQuery = Annotated[str, Query(pattern=PERIOD_REGEX)]
+OptionalPeriodQuery = Annotated[Optional[str], Query(pattern=PERIOD_REGEX)]
 
+# ---------------------------------------------------------------------------
+# KPI Settings
+# ---------------------------------------------------------------------------
 @router.get("/settings/kpi-tiers", response_model=ApiResponse[List[KpiTierResponse]])
-async def get_kpi_tiers(db: Session = Depends(get_db)):
-    """Lấy danh sách cấu hình các bậc KPI (A, B, C, D)"""
-    # TODO: Gọi hàm service query DB: db.query(KpiTier).all()
-    tiers = [] # Placeholder: thay bằng dữ liệu thực tế
-    
-    return ApiResponse(
-        success=True, 
-        data=tiers, 
-        message="Lấy danh sách bậc KPI thành công"
-    )
+async def get_kpi_tiers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return ApiResponse(success=True, data=[], message="Thành công")
 
 @router.put("/settings/kpi-tiers", response_model=ApiResponse[List[KpiTierResponse]])
 async def update_kpi_tiers(
-    payload: List[KpiTierUpdate], 
-    db: Session = Depends(get_db)
+    payload: List[KpiTierUpdate],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("system_admin"))
 ):
-    """Cập nhật hàng loạt cấu hình bậc KPI (Cần check overlap khoảng điểm ở đây)"""
-    # TODO: Validate No Overlap, update DB, commit
-    updated_tiers = [] # Placeholder: thay bằng dữ liệu sau khi update
-    
-    return ApiResponse(
-        success=True, 
-        data=updated_tiers, 
-        message="Cập nhật cấu hình bậc KPI thành công"
-    )
+    return ApiResponse(success=True, data=[], message="Thành công")
 
-
-# --- 3 & 4. Tiến trình tính lương (Calculation Jobs) ---
-
+# ---------------------------------------------------------------------------
+# KPI Calculation Jobs
+# ---------------------------------------------------------------------------
 @router.post("/kpi/calculation-jobs", response_model=ApiResponse[KpiCalculationJobResponse])
 async def create_kpi_calculation_job(
-    payload: KpiCalculationJobCreate, 
-    background_tasks: BackgroundTasks, 
-    db: Session = Depends(get_db)
+    payload: KpiCalculationJobCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin_center"))
 ):
-    """Khởi tạo tiến trình tính KPI tháng (Chạy bất đồng bộ)"""
-    # TODO: 
-    # 1. Tạo bản ghi job trong DB với status = PENDING
-    # 2. background_tasks.add_task(calculate_monthly_kpi_service, job_id, payload.period, db)
-    
-    job_info = None # Placeholder
-    
-    return ApiResponse(
-        success=True, 
-        data=job_info, 
-        message=f"Đã khởi tạo tiến trình tính KPI cho kỳ {payload.period}"
-    )
+    return ApiResponse(success=True, data=None, message="Thành công")
 
 @router.get("/kpi/calculation-jobs/{job_id}", response_model=ApiResponse[KpiCalculationJobResponse])
 async def get_kpi_calculation_job(
-    job_id: UUID = Path(..., description="UUID của tiến trình"), 
-    db: Session = Depends(get_db)
+    job_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin_center"))
 ):
-    """Kiểm tra tiến độ tính KPI"""
-    # TODO: Query DB lấy thông tin job
-    job_info = None # Placeholder
-    
-    if not job_info:
-        raise HTTPException(status_code=404, detail="Không tìm thấy tiến trình này")
-        
-    return ApiResponse(
-        success=True, 
-        data=job_info, 
-        message="Thành công"
-    )
+    return ApiResponse(success=True, data=None, message="Thành công")
 
+# ---------------------------------------------------------------------------
+# KPI Metrics Sync
+# ---------------------------------------------------------------------------
+@router.post("/kpi/metrics/sync", response_model=ApiResponse[str])
+async def sync_raw_metrics(
+    payload: KpiRawMetricSync,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("system_admin"))
+):
+    return ApiResponse(success=True, data=None, message="Thành công")
 
-# --- 5 & 6. Dữ liệu Giáo viên (Teacher KPI & Payroll) ---
+# ---------------------------------------------------------------------------
+# KPI Dispute
+# ---------------------------------------------------------------------------
+@router.post("/kpi/dispute", response_model=ApiResponse[KpiDisputeResponse])
+async def create_kpi_dispute(
+    payload: KpiDisputeCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return ApiResponse(success=True, data=None, message="Thành công")
 
+@router.put("/kpi/dispute/{id}/resolve", response_model=ApiResponse[KpiDisputeResponse])
+async def resolve_kpi_dispute(
+    id: UUID = Path(...),
+    payload: KpiDisputeResolveRequest = Body(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin_center")),
+):
+    return ApiResponse(success=True, data=None, message="Thành công")
+
+# ---------------------------------------------------------------------------
+# Teacher KPI & Payroll Config (Static Paths First)
+# ---------------------------------------------------------------------------
+@router.get("/teachers/me/salary-history", response_model=PaginationResponse[SalaryResponse])
+async def get_my_salary_history(
+    period: OptionalPeriodQuery = None,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    meta = PaginationMetadata(page=page, limit=limit, total=0, total_pages=0)
+    return PaginationResponse(success=True, data=[], meta=meta, message="Thành công")
+
+@router.get("/teachers/me/kpi", response_model=ApiResponse[TeacherMonthlyKpiResponse])
+async def get_my_kpi(
+    period: PeriodQuery,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return ApiResponse(success=True, data=None, message="Thành công")
+
+# ---------------------------------------------------------------------------
+# Teacher KPI & Payroll Config (Dynamic Paths)
+# ---------------------------------------------------------------------------
 @router.get("/teachers/{teacher_id}/kpi", response_model=ApiResponse[TeacherMonthlyKpiResponse])
 async def get_teacher_monthly_kpi(
-    teacher_id: int = Path(..., description="ID của giáo viên"),
-    period: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Kỳ lương YYYY-MM"),
-    db: Session = Depends(get_db)
+    teacher_id: UUID = Path(...),
+    period: PeriodQuery = ...,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin_center"))
 ):
-    """Lấy chi tiết điểm KPI của giáo viên trong một tháng"""
-    # TODO: Query DB bảng teacher_monthly_kpis lọc theo teacher_id và period
-    kpi_data = None # Placeholder
-    
-    if not kpi_data:
-        raise HTTPException(status_code=404, detail=f"Không tìm thấy KPI kỳ {period} của giáo viên này")
-        
-    return ApiResponse(
-        success=True, 
-        data=kpi_data, 
-        message="Lấy dữ liệu KPI thành công"
-    )
+    return ApiResponse(success=True, data=None, message="Thành công")
 
 @router.put("/teachers/{teacher_id}/payroll-config", response_model=ApiResponse[TeacherPayrollConfigResponse])
 async def update_teacher_payroll_config(
     payload: TeacherPayrollConfigUpdate,
-    teacher_id: int = Path(..., description="ID của giáo viên"),
-    db: Session = Depends(get_db)
+    teacher_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin_center"))
 ):
-    """Cấu hình lương cơ bản, đơn giá tiết, phụ cấp cố định cho giáo viên"""
-    # TODO: Update DB bảng teacher_payroll_configs
-    updated_config = None # Placeholder
-    
-    return ApiResponse(
-        success=True, 
-        data=updated_config, 
-        message="Cập nhật cấu hình lương giáo viên thành công"
-    )
+    return ApiResponse(success=True, data=None, message="Thành công")
+
+# ---------------------------------------------------------------------------
+# Payroll Runs
+# ---------------------------------------------------------------------------
+@router.post("/payroll-runs", response_model=ApiResponse[PayrollRunResponse])
+async def create_payroll_run(
+    payload: PayrollRunCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin_center"))
+):
+    return ApiResponse(success=True, data=None, message="Thành công")
+
+# ---------------------------------------------------------------------------
+# Salaries
+# ---------------------------------------------------------------------------
+@router.get("/salaries", response_model=PaginationResponse[SalaryResponse])
+async def get_salaries(
+    period: OptionalPeriodQuery = None,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    meta = PaginationMetadata(page=page, limit=limit, total=0, total_pages=0)
+    return PaginationResponse(success=True, data=[], meta=meta, message="Thành công")
+
+@router.get("/salaries/{id}", response_model=ApiResponse[SalaryResponse])
+async def get_salary_detail(
+    id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    return ApiResponse(success=True, data=None, message="Thành công")
+
+@router.post("/salaries/{id}/approve", response_model=ApiResponse[SalaryResponse])
+async def approve_salary(
+    id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin_center")),
+):
+    return ApiResponse(success=True, data=None, message="Thành công")
+
+@router.patch("/salaries/{salary_id}/adjustments", response_model=ApiResponse[SalaryAdjustmentResponse])
+async def add_salary_adjustment(
+    payload: SalaryAdjustmentCreate,
+    salary_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin_center")), # Đổi thành require_role
+):
+    # TODO: Pass current_user.id vào service layer làm created_by
+    # await salary_service.add_adjustment(db, salary_id, payload, created_by=current_user.id)
+    return ApiResponse(success=True, data=None, message="Thành công")

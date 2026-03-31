@@ -1,93 +1,181 @@
-from pydantic import BaseModel, Field, ConfigDict, field_validator
-from typing import List, Optional
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
+from typing import List, Optional, Any, Dict
 from datetime import datetime
 from uuid import UUID
 import re
-import enum
-from app.models.kpi import ContractType, JobStatus, ActiveStatus
 
-# -------------------------------------------------------------------
-# 1. BẬC KPI (KpiTier)
-# -------------------------------------------------------------------
+from app.models.kpi import (
+    ActiveStatus, ContractType, JobStatus,
+    DisputeStatus, SalaryStatus, AdjustmentType,
+)
 
+# ---------------------------------------------------------------------------
+# Shared constants & validators
+# ---------------------------------------------------------------------------
+PERIOD_REGEX = r"^\d{4}-(0[1-9]|1[0-2])$"
+
+# ---------------------------------------------------------------------------
+# KPI Tier
+# ---------------------------------------------------------------------------
 class KpiTierBase(BaseModel):
-    tier_name: str = Field(..., max_length=20, description="Tên bậc KPI (A, B, C, D)")
-    min_score: float = Field(..., ge=0, description="Điểm tối thiểu")
-    max_score: float = Field(..., le=100, description="Điểm tối đa")
-    reward_percentage: float = Field(..., ge=0, description="Phần trăm thưởng (%)")
-    status: ActiveStatus = Field(default=ActiveStatus.ACTIVE, description="Trạng thái kích hoạt")
+    tier_name         : str   = Field(..., max_length=20)
+    min_score         : float = Field(..., ge=0)
+    max_score         : float = Field(..., le=100)
+    reward_percentage : float = Field(..., ge=0)
+    reward_per_lesson : float = Field(default=0, ge=0)
+    status            : ActiveStatus = Field(default=ActiveStatus.ACTIVE)
+
+    @model_validator(mode="after")
+    def validate_score_range(self) -> "KpiTierBase":
+        if self.min_score >= self.max_score:
+            raise ValueError(
+                f"min_score ({self.min_score}) phải nhỏ hơn max_score ({self.max_score})"
+            )
+        return self
 
 class KpiTierUpdate(KpiTierBase):
-    id: Optional[int] = Field(default=None, description="ID của bậc (Truyền ID nếu là cập nhật, bỏ trống nếu tạo mới)")
+    id: Optional[int] = Field(default=None)
 
 class KpiTierResponse(KpiTierBase):
     id: int
-    
     model_config = ConfigDict(from_attributes=True)
 
-# -------------------------------------------------------------------
-# 2. CẤU HÌNH LƯƠNG GIÁO VIÊN (TeacherPayrollConfig)
-# -------------------------------------------------------------------
-
+# ---------------------------------------------------------------------------
+# Teacher Payroll Config
+# ---------------------------------------------------------------------------
 class TeacherPayrollConfigUpdate(BaseModel):
-    contract_type: ContractType = Field(..., description="Loại hợp đồng")
-    base_salary: float = Field(default=0, ge=0, description="Lương cơ bản")
-    lesson_rate: float = Field(default=0, ge=0, description="Đơn giá tiết dạy")
-    max_kpi_bonus: float = Field(default=0, ge=0, description="Quỹ thưởng KPI tối đa (nếu fix cứng cho GV này)")
-    fixed_allowance: float = Field(default=0, ge=0, description="Phụ cấp cố định (xăng xe, điện thoại...)")
+    contract_type   : ContractType
+    base_salary     : float = Field(default=0, ge=0)
+    lesson_rate     : float = Field(default=0, ge=0)
+    max_kpi_bonus   : float = Field(default=0, ge=0)
+    fixed_allowance : float = Field(default=0, ge=0)
 
 class TeacherPayrollConfigResponse(TeacherPayrollConfigUpdate):
-    teacher_id: int
-    updated_at: datetime
-    
+    teacher_id : UUID
+    updated_at : datetime
     model_config = ConfigDict(from_attributes=True)
 
-# -------------------------------------------------------------------
-# 3. TIẾN TRÌNH TÍNH LƯƠNG (KpiCalculationJob)
-# -------------------------------------------------------------------
-
+# ---------------------------------------------------------------------------
+# KPI Calculation Job
+# ---------------------------------------------------------------------------
 class KpiCalculationJobCreate(BaseModel):
-    period: str = Field(..., description="Kỳ lương cần tính toán (Định dạng YYYY-MM)")
-
-    @field_validator('period')
-    @classmethod
-    def validate_period_format(cls, v: str) -> str:
-        if not re.match(r"^\d{4}-(0[1-9]|1[0-2])$", v):
-            raise ValueError('Kỳ lương phải theo định dạng YYYY-MM (Ví dụ: 2026-03)')
-        return v
+    period: str = Field(..., pattern=PERIOD_REGEX)
+    force: bool = Field(default=False, description="Bắt buộc tính lại dù đã có dữ liệu")
 
 class KpiCalculationJobResponse(BaseModel):
-    job_id: UUID
-    period: str
-    status: JobStatus
-    total_teachers: int
-    processed_count: int
-    error_log: Optional[str] = None
-    started_at: datetime
-    finished_at: Optional[datetime] = None
-    
+    job_id          : UUID
+    period          : str
+    status          : JobStatus
+    total_teachers  : int
+    processed_count : int
+    error_log       : Optional[str] = None
+    started_at      : datetime
+    finished_at     : Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
-# -------------------------------------------------------------------
-# 4. KẾT QUẢ KPI HÀNG THÁNG (TeacherMonthlyKpi)
-# -------------------------------------------------------------------
-
+# ---------------------------------------------------------------------------
+# Monthly KPI
+# ---------------------------------------------------------------------------
 class KpiCriteriaScoreItem(BaseModel):
-    code: str = Field(..., description="Mã tiêu chí (VD: ATTENDANCE)")
-    score: float = Field(..., ge=0, description="Điểm đạt được")
-    max_score: float = Field(..., gt=0, description="Điểm tối đa của tiêu chí này")
+    code      : str
+    score     : float = Field(..., ge=0)
+    max_score : float = Field(..., gt=0)
 
 class KpiDetails(BaseModel):
-    criteria_scores: List[KpiCriteriaScoreItem] = Field(..., description="Danh sách điểm chi tiết từng tiêu chí")
+    criteria_scores: List[KpiCriteriaScoreItem]
 
 class TeacherMonthlyKpiResponse(BaseModel):
-    id: int
-    teacher_id: int
-    period: str
-    total_score: float
-    kpi_tier_id: Optional[int] = None
-    kpi_details: KpiDetails
-    calculated_bonus: float
-    created_at: datetime
-    
+    id               : UUID
+    teacher_id       : UUID
+    period           : str
+    total_score      : float
+    kpi_tier_id      : Optional[int] = None
+    kpi_details      : KpiDetails
+    calculated_bonus : float
+    created_at       : datetime
     model_config = ConfigDict(from_attributes=True)
+
+class KpiRawMetricSync(BaseModel):
+    teacher_id    : UUID
+    period        : str = Field(...)
+    source_module : str = Field(..., max_length=50)
+    metric_data   : Dict[str, Any]
+
+# ---------------------------------------------------------------------------
+# KPI Dispute
+# ---------------------------------------------------------------------------
+class KpiDisputeCreate(BaseModel):
+    kpi_id : UUID
+    reason : str = Field(..., min_length=10)
+
+class KpiDisputeResponse(BaseModel):
+    id              : UUID
+    kpi_id          : UUID
+    teacher_id      : UUID
+    reason          : str
+    status          : DisputeStatus
+    resolved_by     : Optional[UUID] = None
+    resolution_note : Optional[str]  = None
+    created_at      : datetime
+    resolved_at     : Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class KpiDisputeResolveRequest(BaseModel):
+    status          : DisputeStatus = Field(..., description="Kết quả xử lý: RESOLVED hoặc REJECTED")
+    resolution_note : str = Field(..., min_length=5, description="Ghi chú kết quả xử lý (bắt buộc)")
+
+    @field_validator("status")
+    @classmethod
+    def must_be_terminal_status(cls, v: DisputeStatus) -> DisputeStatus:
+        if v == DisputeStatus.PENDING:
+            raise ValueError("Không thể resolve dispute với status PENDING")
+        return v
+
+# ---------------------------------------------------------------------------
+# Salary
+# ---------------------------------------------------------------------------
+class SalaryResponse(BaseModel):
+    id                : UUID
+    teacher_id        : UUID
+    period            : str
+    contract_type     : ContractType
+    lesson_count      : int
+    base_salary_calc  : float
+    kpi_bonus_calc    : float
+    fixed_allowance   : float
+    total_adjustments : float
+    net_salary        : float
+    status            : SalaryStatus
+    approved_by       : Optional[UUID] = None
+    approved_at       : Optional[datetime] = None
+    model_config = ConfigDict(from_attributes=True)
+
+class SalaryAdjustmentCreate(BaseModel):
+    adjustment_type : AdjustmentType
+    amount          : float = Field(..., gt=0, description=(
+            "Luôn là số dương. Service tự đổi dấu khi adjustment_type=DEDUCTION "
+            "khi tính net_salary."))
+    reason          : str   = Field(..., max_length=255)
+
+class SalaryAdjustmentResponse(SalaryAdjustmentCreate):
+    id         : UUID
+    salary_id  : UUID
+    created_at : datetime
+    model_config = ConfigDict(from_attributes=True)
+
+# ---------------------------------------------------------------------------
+# Payroll Run
+# ---------------------------------------------------------------------------
+
+class PayrollRunResponse(BaseModel):
+    id              : UUID
+    period          : str
+    status          : JobStatus
+    total_processed : int
+    error_log       : Optional[str]      = None
+    finished_at     : Optional[datetime] = None
+    created_at      : datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class PayrollRunCreate(BaseModel):
+    period: str = Field(..., pattern=PERIOD_REGEX)

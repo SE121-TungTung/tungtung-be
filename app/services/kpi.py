@@ -1,310 +1,449 @@
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from typing import List
 from uuid import UUID
-from fastapi import HTTPException, status
-from datetime import datetime
+from fastapi import HTTPException, status, BackgroundTasks
+from datetime import datetime, timedelta
 from decimal import Decimal
 import logging
 
 from app.core.database import SessionLocal
 from app.core.exceptions import APIException
-from app.models.kpi import KpiTier, KpiCalculationJob, TeacherMonthlyKpi, TeacherPayrollConfig, KpiCriteria, JobStatus
+from app.models.kpi import (
+    DisputeStatus, KpiDispute, KpiTier, KpiCriteria, KpiCalculationJob,
+    TeacherMonthlyKpi, TeacherPayrollConfig,
+    JobStatus, ContractType,
+)
 from app.models.user import User, UserRole
 from app.models.session_attendance import ClassSession, SessionStatus
-from app.schemas.kpi import KpiTierUpdate, KpiCalculationJobCreate
-
-from fastapi import BackgroundTasks
+from app.schemas.kpi import KpiTierUpdate, KpiCalculationJobCreate, KpiDisputeCreate
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# KpiSettingsService
+# ---------------------------------------------------------------------------
 class KpiSettingsService:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_all_tiers(self):
+    def get_all_tiers(self) -> List[KpiTier]:
         return self.db.query(KpiTier).order_by(KpiTier.min_score.asc()).all()
 
-    def bulk_update_tiers(self, tiers_payload: List['KpiTierUpdate']):
-        """
-        Nghiệp vụ: 
-        1. Phải có dữ liệu.
-        2. min_score phải < max_score.
-        3. Các mốc điểm không được chồng chéo (overlap) hoặc có khoảng trống (gap).
-        """
+    def bulk_update_tiers(self, tiers_payload: List[KpiTierUpdate]) -> List[KpiTier]:
         if not tiers_payload:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Dữ liệu cấu hình trống")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Dữ liệu cấu hình trống",
+            )
 
-        # Sắp xếp theo min_score tăng dần
         sorted_tiers = sorted(tiers_payload, key=lambda x: x.min_score)
 
-        # Validate logic nghiệp vụ
-        for i in range(len(sorted_tiers)):
-            current = sorted_tiers[i]
-            
+        if sorted_tiers[0].min_score != 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Bậc đầu tiên phải có min_score = 0",
+            )
+        if sorted_tiers[-1].max_score != 100:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Bậc cuối cùng phải có max_score = 100",
+            )
+
+        for i, current in enumerate(sorted_tiers):
             if current.min_score >= current.max_score:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Bậc {current.tier_name} có min_score lớn hơn hoặc bằng max_score"
+                    detail=f"Bậc '{current.tier_name}': min_score phải nhỏ hơn max_score",
                 )
-                
-            # Kiểm tra gap/overlap với tier tiếp theo
+
             if i < len(sorted_tiers) - 1:
-                next_tier = sorted_tiers[i+1]
+                next_tier = sorted_tiers[i + 1]
                 if current.max_score > next_tier.min_score:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Chồng chéo điểm giữa bậc {current.tier_name} và {next_tier.tier_name}"
+                        detail=(
+                            f"Chồng chéo điểm giữa bậc '{current.tier_name}' "
+                            f"và '{next_tier.tier_name}'"
+                        ),
                     )
                 if current.max_score < next_tier.min_score:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Có khoảng trống điểm giữa bậc {current.tier_name} và {next_tier.tier_name}"
+                        detail=(
+                            f"Khoảng trống điểm giữa bậc '{current.tier_name}' "
+                            f"và '{next_tier.tier_name}'"
+                        ),
                     )
+        existing_ids = {t.id for t in self.db.query(KpiTier.id).all()}
+        payload_ids  = {t.id for t in sorted_tiers if t.id is not None}
+        ids_to_delete = existing_ids - payload_ids
+
+        # Check FK trước khi xóa
+        for del_id in ids_to_delete:
+            in_use = self.db.query(TeacherMonthlyKpi).filter(
+                TeacherMonthlyKpi.kpi_tier_id == del_id
+            ).first()
+            if in_use:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Bậc KPI (ID={del_id}) đang được sử dụng, không thể xóa"
+                )
 
         try:
-            # Logic DB: Thường cấu hình hệ thống người ta hay xóa cũ insert mới cho nhanh
-            # self.db.query(KpiTier).delete()
-            # new_tiers = [KpiTier(**t.model_dump()) for t in sorted_tiers]
-            # self.db.add_all(new_tiers)
-            # self.db.commit()
-            
-            # return new_tiers
-            return sorted_tiers # Dữ liệu mô phỏng trả về
+            # Cập nhật hoặc Thêm mới
+            new_tiers = []
+            for tier_data in sorted_tiers:
+                data_dict = tier_data.model_dump(exclude={"id"})
+                if tier_data.id and tier_data.id in existing_ids:
+                    self.db.query(KpiTier).filter(KpiTier.id == tier_data.id).update(data_dict)
+                else:
+                    new_tier = KpiTier(**data_dict)
+                    self.db.add(new_tier)
+                    new_tiers.append(new_tier)
+
+            # Xóa các id không còn trong cấu hình
+            for del_id in ids_to_delete:
+                self.db.query(KpiTier).filter(KpiTier.id == del_id).delete()
+
+            self.db.commit()
+            return self.db.query(KpiTier).order_by(KpiTier.min_score.asc()).all()
         except Exception as e:
             self.db.rollback()
-            raise APIException(status_code=500, code="INTERNAL_SERVER_ERROR", message="Đã có lỗi xảy ra khi cập nhật cấu hình bậc KPI")
+            logger.error(f"bulk_update_tiers failed: {e}", exc_info=True)
+            raise APIException(
+                status_code=500,
+                code="INTERNAL_SERVER_ERROR",
+                message="Đã có lỗi xảy ra khi cập nhật cấu hình bậc KPI",
+            )
 
+# ---------------------------------------------------------------------------
+# KpiCriteriaService
+# ---------------------------------------------------------------------------
+class KpiCriteriaService:
+    def __init__(self, db: Session):
+        self.db = db
 
+    def validate_total_weight(self, criteria_list) -> None:
+        total = sum(Decimal(str(c.weight_percent)) for c in criteria_list)
+        if total != Decimal("100"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Tổng trọng số tiêu chí KPI phải bằng 100%. Hiện tại: {total}%",
+            )
+
+# ---------------------------------------------------------------------------
+# DisputeService (Bổ sung fix BUG-01)
+# ---------------------------------------------------------------------------
+class KpiDisputeService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def create_dispute(self, teacher_id: UUID, payload: KpiDisputeCreate):
+        kpi_record = self.db.query(TeacherMonthlyKpi).filter(
+            TeacherMonthlyKpi.id == payload.kpi_id,
+            TeacherMonthlyKpi.teacher_id == teacher_id
+        ).first()
+
+        if not kpi_record:
+            raise HTTPException(status_code=404, detail="Không tìm thấy dữ liệu KPI")
+
+        # Nghiệp vụ: Chỉ chấp nhận xử lý dispute khi bảng KPI đang trong trạng thái "draft" (hoặc tương đương)
+        # và không quá deadline 48 giờ.
+        if not kpi_record.finalized_at:
+            raise HTTPException(status_code=403, detail="KPI chưa được chốt, không thể khiếu nại")
+
+        if hasattr(kpi_record, "status") and kpi_record.status != "draft":
+            raise HTTPException(status_code=403, detail="Bảng KPI đã chốt, không thể khiếu nại")
+
+        if hasattr(kpi_record, "finalized_at") and datetime.now() > kpi_record.finalized_at + timedelta(hours=48):
+            raise HTTPException(status_code=403, detail="Hết thời hạn khiếu nại (48h sau khi chốt dữ liệu tạm tính)")
+
+        # ... Create dispute logic
+        # Check không tạo duplicate dispute cho cùng kpi_id đang xử lý
+        existing = self.db.query(KpiDispute).filter(
+            KpiDispute.kpi_id == payload.kpi_id,
+            KpiDispute.teacher_id == teacher_id,
+            KpiDispute.status == DisputeStatus.PENDING,
+        ).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Đã có khiếu nại đang xử lý cho KPI này")
+
+        dispute = KpiDispute(
+            kpi_id=payload.kpi_id,
+            teacher_id=teacher_id,
+            reason=payload.reason,
+            status=DisputeStatus.PENDING,
+        )
+        self.db.add(dispute)
+        self.db.commit()
+        self.db.refresh(dispute)
+        return dispute
+
+# ---------------------------------------------------------------------------
+# KpiCalculationService
+# ---------------------------------------------------------------------------
 class KpiCalculationService:
     def __init__(self, db: Session):
         self.db = db
 
-    def trigger_calculation_job(self, payload: 'KpiCalculationJobCreate', bg_tasks: 'BackgroundTasks'):
-        """Kiểm tra và khởi tạo tiến trình tính lương"""
-        
-        # 1. Business logic: Check xem tháng này đã tính hoặc đang tính chưa?
+    def trigger_calculation_job(
+        self,
+        payload: KpiCalculationJobCreate,
+        bg_tasks: BackgroundTasks,
+    ) -> dict:
         existing_job = self.db.query(KpiCalculationJob).filter(
             KpiCalculationJob.period == payload.period,
-            KpiCalculationJob.status.in_(['PENDING', 'PROCESSING'])
+            KpiCalculationJob.status.in_([JobStatus.PENDING, JobStatus.PROCESSING]),
         ).first()
-        
+
         if existing_job:
             raise APIException(
                 status_code=409,
-                code="JOB_ALREADY_EXISTS", 
-                detail=f"Tiến trình tính lương cho kỳ {payload.period} đang diễn ra."
+                code="JOB_ALREADY_EXISTS",
+                message=f"Tiến trình tính KPI cho kỳ {payload.period} đang diễn ra.",
             )
 
-        # 2. Tạo job mới
-        new_job = KpiCalculationJob(period=payload.period, status="PENDING")
-        self.db.add(new_job)
-        self.db.commit()
-        self.db.refresh(new_job)
-        
-        job_id = new_job.job_id
-
-        # 3. Đẩy task vào background chạy ngầm
-        bg_tasks.add_task(self._execute_calculation, job_id, payload.period)
-
-        return {"job_id": job_id, "period": payload.period, "status": "PENDING"}
-
-    async def _execute_calculation(self, job_id: UUID, period: str):
-        """
-        Hàm này chạy dưới background. Không nên inject self.db trực tiếp từ API request 
-        vì session có thể bị đóng sau khi API trả response.
-        Cần tạo một DB session mới bên trong hàm này.
-        """
-        db = SessionLocal() # Khởi tạo session mới
         try:
-            # 1. Update trạng thái: PENDING -> PROCESSING
-            current_job = db.query(KpiCalculationJob).filter(KpiCalculationJob.job_id == job_id).first()
+            new_job = KpiCalculationJob(period=payload.period, status=JobStatus.PENDING)
+            self.db.add(new_job)
+            self.db.commit()
+            self.db.refresh(new_job)
+        except IntegrityError:
+            self.db.rollback()
+            raise APIException(
+                status_code=409,
+                code="JOB_ALREADY_EXISTS",
+                message=f"Tiến trình tính KPI cho kỳ {payload.period} đã tồn tại.",
+            )
+
+        bg_tasks.add_task(self._execute_calculation, new_job.job_id, payload.period)
+
+        return {
+            "job_id": new_job.job_id,
+            "period": payload.period,
+            "status": JobStatus.PENDING,
+            "total_teachers": 0,
+            "processed_count": 0,
+            "started_at": new_job.started_at,
+        }
+
+    def _execute_calculation(self, job_id: UUID, period: str) -> None:
+        db = SessionLocal()
+        try:
+            current_job = db.query(KpiCalculationJob).filter(
+                KpiCalculationJob.job_id == job_id
+            ).first()
+
             if not current_job:
-                # Log lỗi: Không tìm thấy job
                 logger.error(f"KPI Calculation Job {job_id} not found")
                 return
+
             current_job.status = JobStatus.PROCESSING
             db.commit()
 
-
-            # 2. Lấy Teacher -> Tính toán -> Lưu TeacherMonthlyKpi
-            # Lấy tất cả giáo viên (User với role=TEACHER)
             teachers = db.query(User).filter(User.role == UserRole.TEACHER).all()
             current_job.total_teachers = len(teachers)
             db.commit()
-            
+
             processed_count = 0
-            errors = []
-            
-            for teacher in teachers:
+            errors: List[str] = []
+
+            is_force_calc = current_job.payload.get("force", False) if hasattr(current_job, "payload") else False
+
+            for i, teacher in enumerate(teachers):
                 try:
-                    self._calculate_teacher_kpi(db, teacher.id, period, current_job)
+                    self._calculate_teacher_kpi(db, teacher.id, period, force=is_force_calc)
                     processed_count += 1
+                except Exception as e:
+                    error_msg = f"Teacher {teacher.id}: {str(e)}"
+                    logger.error(f"KPI calc error — {error_msg}")
+                    errors.append(error_msg)
+
+                if (i + 1) % 5 == 0 or (i + 1) == len(teachers):
                     current_job.processed_count = processed_count
                     db.commit()
-                except Exception as e:
-                    error_msg = f"Error calculating KPI for teacher {teacher.id}: {str(e)}"
-                    logger.error(error_msg)
-                    errors.append(error_msg)
-            
-            # 3. Update trạng thái: PROCESSING -> COMPLETED
+
             current_job.status = JobStatus.COMPLETED
             current_job.finished_at = datetime.utcnow()
             if errors:
                 current_job.error_log = "\n".join(errors)
             db.commit()
-            
-            logger.info(f"KPI Calculation Job {job_id} completed. Processed {processed_count}/{len(teachers)} teachers")
-            
+
+            logger.info(
+                f"KPI Job {job_id} completed. Processed {processed_count}/{len(teachers)} teachers."
+            )
+
         except Exception as e:
-            # 4. Update trạng thái: PROCESSING -> FAILED kèm error log
-            logger.error(f"KPI Calculation Job {job_id} failed: {str(e)}", exc_info=True)
+            logger.error(f"KPI Job {job_id} failed: {e}", exc_info=True)
             try:
-                current_job = db.query(KpiCalculationJob).filter(KpiCalculationJob.job_id == job_id).first()
+                current_job = db.query(KpiCalculationJob).filter(
+                    KpiCalculationJob.job_id == job_id
+                ).first()
                 if current_job:
                     current_job.status = JobStatus.FAILED
                     current_job.error_log = str(e)
                     current_job.finished_at = datetime.utcnow()
                     db.commit()
-            except:
+            except Exception:
                 pass
         finally:
             db.close()
-    
-    def _calculate_teacher_kpi(self, db: Session, teacher_id: int, period: str, job):
-        """
-        Tính điểm KPI cho một giáo viên trong một kỳ.
-        
-        Logic tính toán:
-        1. Lấy các tiêu chí KPI
-        2. Tính điểm cho mỗi tiêu chí
-        3. Tính tổng điểm (weighted average)
-        4. Xác định bậc KPI dựa trên điểm
-        5. Tính thưởng KPI dựa trên bậc
-        6. Lưu kết quả vào DB
-        """
-        
-        # Kiểm tra xem đã tính cho kỳ này chưa
-        existing_kpi = db.query(TeacherMonthlyKpi).filter(
+
+    def _calculate_teacher_kpi(self, db: Session, teacher_id: UUID, period: str, force: bool) -> None:
+        existing = db.query(TeacherMonthlyKpi).filter(
             TeacherMonthlyKpi.teacher_id == teacher_id,
-            TeacherMonthlyKpi.period == period
+            TeacherMonthlyKpi.period == period,
         ).first()
-        
-        if existing_kpi:
-            return  # Skip nếu đã tính rồi
-        
-        # Lấy cấu hình lương giáo viên
-        payroll_config = db.query(TeacherPayrollConfig).filter(
+        if existing:
+            if not force:
+                return
+            # Xóa bản ghi cũ nếu force=True để tính lại
+            db.delete(existing)
+            db.flush()
+
+        # Gọi validate dead code
+        criteria_list = db.query(KpiCriteria).filter(KpiCriteria.status == "ACTIVE").all()
+        criteria_service = KpiCriteriaService(db)
+        criteria_service.validate_total_weight(criteria_list)
+
+        payroll_config: TeacherPayrollConfig | None = db.query(TeacherPayrollConfig).filter(
             TeacherPayrollConfig.teacher_id == teacher_id
         ).first()
-        
+
         if not payroll_config:
-            raise ValueError(f"No payroll config found for teacher {teacher_id}")
-        
-        # Lấy tất cả tiêu chí KPI
-        criteria_list = db.query(KpiCriteria).all()
-        
-        # Tính điểm cho mỗi tiêu chí
+            raise ValueError(f"Không tìm thấy cấu hình lương cho giáo viên {teacher_id}")
+
+        criteria_list = db.query(KpiCriteria).filter(KpiCriteria.status == "ACTIVE").all()
+
         criteria_scores = []
-        total_weighted_score = Decimal(0)
-        total_weight = Decimal(0)
-        
+        total_score = Decimal(0)
+
         for criteria in criteria_list:
-            # Tính điểm cho tiêu chí này
             score = self._calculate_criteria_score(db, teacher_id, period, criteria)
-            
+            weight = Decimal(str(criteria.weight_percent))
+
             criteria_scores.append({
-                "code": criteria.criteria_code,
-                "score": float(score),
-                "max_score": 100.0  # Mỗi tiêu chí có max 100 điểm
+                "code":      criteria.criteria_code,
+                "score":     float(score),
+                "max_score": 100.0,
             })
-            
-            # Tính weighted score
-            weight = Decimal(criteria.weight_percent)
-            total_weighted_score += score * weight / 100
-            total_weight += weight
-        
-        # Normalize điểm tổng về thang 0-100
-        if total_weight > 0:
-            total_score = total_weighted_score / total_weight * 100
-        else:
-            total_score = Decimal(0)
-        
-        total_score = float(total_score)
-        
-        # Xác định bậc KPI dựa trên điểm
-        kpi_tier = db.query(KpiTier).filter(
-            KpiTier.min_score <= total_score,
-            KpiTier.max_score >= total_score
+
+            total_score += score * weight / Decimal(100)
+
+        total_score_rounded = total_score.quantize(Decimal("0.01"))
+
+        kpi_tier: KpiTier | None = db.query(KpiTier).filter(
+            KpiTier.min_score <= total_score_rounded,
+            KpiTier.max_score >= total_score_rounded,
         ).first()
-        
-        # Tính thưởng KPI
-        calculated_bonus = Decimal(0)
-        if kpi_tier and payroll_config.max_kpi_bonus:
-            bonus_percentage = Decimal(kpi_tier.reward_percentage)
-            calculated_bonus = Decimal(payroll_config.max_kpi_bonus) * bonus_percentage / 100
-        
-        # Tạo bản ghi TeacherMonthlyKpi
+
+        calculated_bonus = self._calculate_bonus(payroll_config, kpi_tier, db, teacher_id, period)
+
         teacher_kpi = TeacherMonthlyKpi(
-            teacher_id=teacher_id,
-            period=period,
-            total_score=Decimal(str(total_score)),
-            kpi_tier_id=kpi_tier.id if kpi_tier else None,
-            kpi_details={"criteria_scores": criteria_scores},
-            calculated_bonus=calculated_bonus
+            teacher_id       = teacher_id,
+            period           = period,
+            total_score      = total_score_rounded,
+            kpi_tier_id      = kpi_tier.id if kpi_tier else None,
+            kpi_details      = {"criteria_scores": criteria_scores},
+            calculated_bonus = calculated_bonus,
         )
-        
         db.add(teacher_kpi)
-        db.flush()  # Flush để get ID nhưng chưa commit
-    
-    def _calculate_criteria_score(self, db: Session, teacher_id: int, period: str, criteria) -> Decimal:
-        """
-        Tính điểm cho một tiêu chí KPI cụ thể.
-        
-        Hiện tại hỗ trợ các tiêu chí:
-        - ATTENDANCE: Tỉ lệ tham gia dạy trong kỳ
-        - LESSON_COMPLETION: Hoàn thành tiết học theo lịch
-        - STUDENT_SATISFACTION: Mức độ hài lòng của học viên (từ survey)
-        
-        Có thể mở rộng thêm các tiêu chí khác.
-        """
-        
+        db.commit()
+        db.refresh(teacher_kpi)
+
+    def _calculate_bonus(
+        self,
+        payroll_config: TeacherPayrollConfig,
+        kpi_tier: KpiTier | None,
+        db: Session,
+        teacher_id: UUID,
+        period: str,
+    ) -> Decimal:
+        if not kpi_tier:
+            return Decimal(0)
+
+        contract_type = payroll_config.contract_type
+
+        if contract_type == ContractType.FULL_TIME:
+            if not payroll_config.max_kpi_bonus:
+                return Decimal(0)
+            bonus_pct = Decimal(str(kpi_tier.reward_percentage))
+            return Decimal(str(payroll_config.max_kpi_bonus)) * bonus_pct / Decimal(100)
+
+        elif contract_type in (ContractType.PART_TIME, ContractType.NATIVE):
+            lesson_count = self._get_lesson_count(db, teacher_id, period)
+            reward_per_lesson = Decimal(str(kpi_tier.reward_per_lesson or 0))
+            return Decimal(lesson_count) * reward_per_lesson
+
+        return Decimal(0)
+
+    def _get_lesson_count(self, db: Session, teacher_id: UUID, period: str) -> int:
+        period_year, period_month = period.split("-")
+        return (
+            db.query(ClassSession)
+            .filter(
+                ClassSession.teacher_id == teacher_id,
+                ClassSession.status == SessionStatus.COMPLETED,
+                func.extract("year",  ClassSession.session_date) == int(period_year),
+                func.extract("month", ClassSession.session_date) == int(period_month),
+            )
+            .count()
+        )
+
+    def _calculate_criteria_score(
+        self, db: Session, teacher_id: UUID, period: str, criteria
+    ) -> Decimal:
         criteria_code = criteria.criteria_code
-        
+        period_year, period_month = period.split("-")
+
         if criteria_code == "ATTENDANCE":
-            # Tính tỉ lệ tham gia dạy
-            # Lấy số buổi học lên lịch của giáo viên trong kỳ
-            period_year, period_month = period.split('-')
-            
-            scheduled_sessions = db.query(ClassSession).filter(
+            base_filter = [
                 ClassSession.teacher_id == teacher_id,
-                # Filter by period (năm-tháng từ session_date)
-            ).count()
-            
-            # Lấy số buổi hoàn tất
-            completed_sessions = db.query(ClassSession).filter(
-                ClassSession.teacher_id == teacher_id,
-                ClassSession.status == SessionStatus.COMPLETED
-            ).count()
-            
-            # Tính tỉ lệ
-            if scheduled_sessions > 0:
-                score = Decimal(completed_sessions) / Decimal(scheduled_sessions) * 100
+                func.extract("year",  ClassSession.session_date) == int(period_year),
+                func.extract("month", ClassSession.session_date) == int(period_month),
+                ClassSession.status != SessionStatus.CANCELLED  # Lọc bỏ CANCELLED
+            ]
+
+            result = db.query(
+                func.count().label("scheduled"),
+                func.count(case((ClassSession.status == SessionStatus.COMPLETED, 1))).label("completed")
+            ).filter(*base_filter).one()
+
+            scheduled = result.scheduled
+            completed = result.completed
+
+            if scheduled > 0:
+                score = Decimal(completed) / Decimal(scheduled) * Decimal(100)
             else:
-                score = Decimal(100)  # Nếu không có buổi nào lên lịch, cho điểm full
-            
-            return min(score, Decimal(100))  # Cap at 100
-        
+                score = Decimal(100)
+
+            return min(score, Decimal(100))
+
         elif criteria_code == "LESSON_COMPLETION":
-            # Tính tỉ lệ hoàn thành nội dung tiết học
-            # Có thể dựa trên materials uploaded, homework assigned, etc.
-            # Mô phỏng: 85 điểm
-            return Decimal(85)
-        
+            raise NotImplementedError("Criteria LESSON_COMPLETION chưa có data source")
+
         elif criteria_code == "STUDENT_SATISFACTION":
-            # Tính từ đánh giá học viên (nếu có)
-            # Mô phỏng: 90 điểm
-            return Decimal(90)
-        
+            raise NotImplementedError("Criteria STUDENT_SATISFACTION chưa có data source")
+
+        elif criteria_code == "ACADEMIC_QUALITY":
+            raise NotImplementedError("Criteria ACADEMIC_QUALITY chưa có data source")
+
         else:
-            # Trường hợp mặc định: 80 điểm
-            return Decimal(80)
+            raise NotImplementedError(f"Criteria '{criteria_code}' chưa có data source")
+        
+class SalaryService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def get_salary(self, salary_id: UUID, current_user: User):
+        from app.models.kpi import Salary # Giả định import
+        salary = self.db.query(Salary).filter(Salary.id == salary_id).first()
+        if not salary:
+            raise HTTPException(status_code=404, detail="Không tìm thấy phiếu lương")
+
+        if salary.teacher_id != current_user.id and current_user.role != "admin_center":
+            raise HTTPException(status_code=403, detail="Không có quyền xem phiếu lương này")
+
+        return salary

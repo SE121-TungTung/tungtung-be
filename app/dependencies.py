@@ -30,6 +30,16 @@ def get_current_admin_user(
         )
     return current_user
 
+def require_role(required_role: str):
+    def role_checker(current_user: User = Depends(get_current_active_user)) -> User:
+        if current_user.role != required_role:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not enough permissions"
+            )
+        return current_user
+    return role_checker
+
 def get_current_teacher_or_admin(
     current_user: User = Depends(get_current_active_user)
 ) -> User:
