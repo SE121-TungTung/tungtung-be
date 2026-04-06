@@ -50,7 +50,7 @@ async def create_kpi_calculation_job(
     payload: KpiCalculationJobCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("admin_center"))
+    current_user: User = Depends(require_role("center_admin"))
 ):
     return ApiResponse(success=True, data=None, message="Thành công")
 
@@ -58,7 +58,7 @@ async def create_kpi_calculation_job(
 async def get_kpi_calculation_job(
     job_id: UUID = Path(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("admin_center"))
+    current_user: User = Depends(require_role("center_admin"))
 ):
     return ApiResponse(success=True, data=None, message="Thành công")
 
@@ -89,7 +89,7 @@ async def resolve_kpi_dispute(
     id: UUID = Path(...),
     payload: KpiDisputeResolveRequest = Body(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("admin_center")),
+    current_user: User = Depends(require_role("center_admin")),
 ):
     return ApiResponse(success=True, data=None, message="Thành công")
 
@@ -123,7 +123,7 @@ async def get_teacher_monthly_kpi(
     teacher_id: UUID = Path(...),
     period: PeriodQuery = ...,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("admin_center"))
+    current_user: User = Depends(require_role("center_admin"))
 ):
     return ApiResponse(success=True, data=None, message="Thành công")
 
@@ -132,7 +132,7 @@ async def update_teacher_payroll_config(
     payload: TeacherPayrollConfigUpdate,
     teacher_id: UUID = Path(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("admin_center"))
+    current_user: User = Depends(require_role("center_admin"))
 ):
     return ApiResponse(success=True, data=None, message="Thành công")
 
@@ -144,7 +144,7 @@ async def create_payroll_run(
     payload: PayrollRunCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("admin_center"))
+    current_user: User = Depends(require_role("center_admin"))
 ):
     return ApiResponse(success=True, data=None, message="Thành công")
 
@@ -174,7 +174,7 @@ async def get_salary_detail(
 async def approve_salary(
     id: UUID = Path(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("admin_center")),
+    current_user: User = Depends(require_role("center_admin")),
 ):
     return ApiResponse(success=True, data=None, message="Thành công")
 
@@ -183,7 +183,7 @@ async def add_salary_adjustment(
     payload: SalaryAdjustmentCreate,
     salary_id: UUID = Path(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("admin_center")), # Đổi thành require_role
+    current_user: User = Depends(require_role("center_admin")), # Đổi thành require_role
 ):
     # TODO: Pass current_user.id vào service layer làm created_by
     # await salary_service.add_adjustment(db, salary_id, payload, created_by=current_user.id)

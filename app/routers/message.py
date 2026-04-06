@@ -88,9 +88,13 @@ async def get_conversations(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    """Get list of conversations for the current user with pagination"""
-    return await message_conversation_service.get_user_conversations(
-        db, current_user.id, params.skip, params.limit
+    """Get list of conversations for the current user"""
+    result = await message_conversation_service.get_user_conversations(
+        db, current_user.id
+    )
+    return PaginationResponse(
+        data=result,
+        meta={"page": params.page, "limit": params.limit, "total": len(result), "total_pages": 1}
     )
 
 @router.post("/conversations/{room_id}/read", response_model=ApiResponse[bool])
