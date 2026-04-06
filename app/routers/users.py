@@ -13,7 +13,6 @@ from uuid import UUID
 from app.routers.generator import create_crud_router
 from app.models.session_attendance import ClassSession
 
-# --- IMPORT MỚI THÊM VÀO ---
 from app.schemas.base_schema import ApiResponse, PaginationResponse
 from app.core.route import ResponseWrapperRoute
 from app.core.exceptions import APIException
@@ -35,7 +34,7 @@ async def read_user_me(
     current_user: User = Depends(get_current_active_user)
 ):
     """Get current user profile"""
-    return current_user
+    return ApiResponse(data=UserResponse.model_validate(current_user, from_attributes=True))
 
 @router.put("/me", response_model=ApiResponse[UserResponse])
 async def update_me(
@@ -65,7 +64,7 @@ async def update_me(
         avatar_file=avatar_file,
         id_updated_by=current_user.id
     )
-    return data 
+    return ApiResponse(data=UserResponse.model_validate(data, from_attributes=True))
 
 @router.post("/me/change-password", response_model=ApiResponse[str])
 async def change_password(
@@ -75,7 +74,7 @@ async def change_password(
 ):
     """Change current user password"""
     await user_service.change_password(db, current_user, password_update)
-    return ApiResponse(message="Password changed successfully")
+    return ApiResponse(data="Password changed successfully")
 
 @router.post("", response_model=ApiResponse[UserResponse])
 async def create_user(
@@ -90,7 +89,7 @@ async def create_user(
 ):
     """Create new user (admin only)"""
     data = await user_service.create_user(db, user_create, current_user.id, default_class_id=default_class_id, background_tasks=background_tasks)
-    return data
+    return ApiResponse(data=UserResponse.model_validate(data, from_attributes=True))
 
 @router.post("/bulk", response_model=ApiResponse[List[UserResponse]], status_code=status.HTTP_201_CREATED)
 async def bulk_create_users(
@@ -100,7 +99,7 @@ async def bulk_create_users(
 ):
     """Bulk create users from a list with auto-generated passwords and email notifications (admin only)."""
     data = await user_service.bulk_create_users(db, request, current_user.id)
-    return data
+    return ApiResponse(data=[UserResponse.model_validate(item, from_attributes=True) for item in data])
 
 @router.get("", response_model=PaginationResponse[UserResponse])
 async def list_users(
@@ -121,7 +120,7 @@ async def get_user_overview(
 ):
     """Get user overview statistics"""
     data = user_service.get_user_overview(db, current_user=current_user)
-    return data
+    return ApiResponse(data=data)
 
 @router.get("/{user_id}", response_model=ApiResponse[UserResponse])
 async def get_user(
@@ -137,7 +136,7 @@ async def get_user(
             code="USER_NOT_FOUND",
             message="User not found"
         )
-    return user
+    return ApiResponse(data=UserResponse.model_validate(user, from_attributes=True))
 
 @router.get("/me/classes", response_model=ApiResponse[List[ClassWithMembersResponse]])
 async def get_my_classes(
@@ -148,7 +147,7 @@ async def get_my_classes(
     Lấy danh sách lớp mà user hiện tại tham gia
     """
     data = user_service.get_my_classes(db=db, current_user=current_user)
-    return data
+    return ApiResponse(data=[ClassWithMembersResponse.model_validate(item, from_attributes=True) for item in data])
 
 @router.put("/{user_id}", response_model=ApiResponse[UserResponse])
 async def update_user(
@@ -161,4 +160,4 @@ async def update_user(
     """Update user (admin only)"""
     user_update = update_form.to_update_schema(UserUpdate)
     data = await user_service.update_user(db, user_id, user_update, avatar_file, id_updated_by=current_user.id)
-    return data
+    return ApiResponse(data=UserResponse.model_validate(data, from_attributes=True))

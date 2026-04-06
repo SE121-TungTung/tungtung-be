@@ -4,11 +4,10 @@ from sqlalchemy import (
     Column, Integer, String, Numeric, ForeignKey, JSON,
     DateTime, CheckConstraint, UniqueConstraint, Enum, Text
 )
-from sqlalchemy.orm import declarative_base
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID
 
-Base = declarative_base()
+from app.models.base import Base
 
 
 # ---------------------------------------------------------------------------
