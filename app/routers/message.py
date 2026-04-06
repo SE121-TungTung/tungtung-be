@@ -283,4 +283,4 @@ async def websocket_endpoint(
     websocket: WebSocket,
     token: str = Query(..., description="JWT token")
 ):
-    websocket_manager.websocket_connect(websocket=websocket, token=token)
+    await websocket_manager.websocket_connect(websocket=websocket, token=token)

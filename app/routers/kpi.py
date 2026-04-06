@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query, Path, Body, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Optional, Annotated
 from uuid import UUID
+import math
 
 from app.core.database import get_db
 from app.dependencies import get_current_user, require_role
@@ -19,6 +20,12 @@ from app.schemas.kpi import (
     PERIOD_REGEX
 )
 
+from app.services.kpi.settings_service import KpiSettingsService
+from app.services.kpi.calculation_service import KpiCalculationService
+from app.services.kpi.metric_service import KpiMetricService
+from app.services.kpi.dispute_service import KpiDisputeService
+from app.services.kpi.payroll_service import SalaryService, TeacherPayrollConfigService, PayrollRunService
+
 router = APIRouter(prefix="", tags=["KPI & Payroll"])
 
 PeriodQuery = Annotated[str, Query(pattern=PERIOD_REGEX)]
@@ -32,7 +39,8 @@ async def get_kpi_tiers(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    return ApiResponse(success=True, data=[], message="Thành công")
+    tiers = KpiSettingsService(db).get_all_tiers()
+    return ApiResponse(success=True, data=tiers, message="Thành công")
 
 @router.put("/settings/kpi-tiers", response_model=ApiResponse[List[KpiTierResponse]])
 async def update_kpi_tiers(
@@ -40,7 +48,8 @@ async def update_kpi_tiers(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("system_admin"))
 ):
-    return ApiResponse(success=True, data=[], message="Thành công")
+    updated_tiers = KpiSettingsService(db).bulk_update_tiers(payload)
+    return ApiResponse(success=True, data=updated_tiers, message="Thành công")
 
 # ---------------------------------------------------------------------------
 # KPI Calculation Jobs
@@ -52,7 +61,8 @@ async def create_kpi_calculation_job(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("center_admin"))
 ):
-    return ApiResponse(success=True, data=None, message="Thành công")
+    job_info = KpiCalculationService(db).trigger_calculation_job(payload, background_tasks)
+    return ApiResponse(success=True, data=job_info, message="Thành công")
 
 @router.get("/kpi/calculation-jobs/{job_id}", response_model=ApiResponse[KpiCalculationJobResponse])
 async def get_kpi_calculation_job(
@@ -60,7 +70,8 @@ async def get_kpi_calculation_job(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("center_admin"))
 ):
-    return ApiResponse(success=True, data=None, message="Thành công")
+    job = KpiCalculationService(db).get_job(job_id)
+    return ApiResponse(success=True, data=job, message="Thành công")
 
 # ---------------------------------------------------------------------------
 # KPI Metrics Sync
@@ -71,7 +82,8 @@ async def sync_raw_metrics(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("system_admin"))
 ):
-    return ApiResponse(success=True, data=None, message="Thành công")
+    msg = KpiMetricService(db).sync_metrics(payload)
+    return ApiResponse(success=True, data=msg, message="Thành công")
 
 # ---------------------------------------------------------------------------
 # KPI Dispute
@@ -82,7 +94,8 @@ async def create_kpi_dispute(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return ApiResponse(success=True, data=None, message="Thành công")
+    dispute = KpiDisputeService(db).create_dispute(current_user.id, payload)
+    return ApiResponse(success=True, data=dispute, message="Thành công")
 
 @router.put("/kpi/dispute/{id}/resolve", response_model=ApiResponse[KpiDisputeResponse])
 async def resolve_kpi_dispute(
@@ -91,7 +104,8 @@ async def resolve_kpi_dispute(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("center_admin")),
 ):
-    return ApiResponse(success=True, data=None, message="Thành công")
+    dispute = KpiDisputeService(db).resolve_dispute(id, payload, current_user.id)
+    return ApiResponse(success=True, data=dispute, message="Thành công")
 
 # ---------------------------------------------------------------------------
 # Teacher KPI & Payroll Config (Static Paths First)
@@ -104,8 +118,9 @@ async def get_my_salary_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    meta = PaginationMetadata(page=page, limit=limit, total=0, total_pages=0)
-    return PaginationResponse(success=True, data=[], meta=meta, message="Thành công")
+    salaries, total = SalaryService(db).get_history(current_user.id, period, page, limit)
+    meta = PaginationMetadata(page=page, limit=limit, total=total, total_pages=math.ceil(total / limit) if limit else 0)
+    return PaginationResponse(success=True, data=salaries, meta=meta, message="Thành công")
 
 @router.get("/teachers/me/kpi", response_model=ApiResponse[TeacherMonthlyKpiResponse])
 async def get_my_kpi(
@@ -113,7 +128,8 @@ async def get_my_kpi(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    return ApiResponse(success=True, data=None, message="Thành công")
+    kpi = KpiCalculationService(db).get_teacher_kpi(current_user.id, period)
+    return ApiResponse(success=True, data=kpi, message="Thành công")
 
 # ---------------------------------------------------------------------------
 # Teacher KPI & Payroll Config (Dynamic Paths)
@@ -125,7 +141,8 @@ async def get_teacher_monthly_kpi(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("center_admin"))
 ):
-    return ApiResponse(success=True, data=None, message="Thành công")
+    kpi = KpiCalculationService(db).get_teacher_kpi(teacher_id, period)
+    return ApiResponse(success=True, data=kpi, message="Thành công")
 
 @router.put("/teachers/{teacher_id}/payroll-config", response_model=ApiResponse[TeacherPayrollConfigResponse])
 async def update_teacher_payroll_config(
@@ -134,7 +151,8 @@ async def update_teacher_payroll_config(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("center_admin"))
 ):
-    return ApiResponse(success=True, data=None, message="Thành công")
+    config = TeacherPayrollConfigService(db).update_config(teacher_id, payload)
+    return ApiResponse(success=True, data=config, message="Thành công")
 
 # ---------------------------------------------------------------------------
 # Payroll Runs
@@ -146,7 +164,8 @@ async def create_payroll_run(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("center_admin"))
 ):
-    return ApiResponse(success=True, data=None, message="Thành công")
+    run = PayrollRunService(db).create_run(payload, background_tasks)
+    return ApiResponse(success=True, data=run, message="Thành công")
 
 # ---------------------------------------------------------------------------
 # Salaries
@@ -157,10 +176,11 @@ async def get_salaries(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_role("center_admin")),
 ):
-    meta = PaginationMetadata(page=page, limit=limit, total=0, total_pages=0)
-    return PaginationResponse(success=True, data=[], meta=meta, message="Thành công")
+    salaries, total = SalaryService(db).get_all(period, page, limit)
+    meta = PaginationMetadata(page=page, limit=limit, total=total, total_pages=math.ceil(total / limit) if limit else 0)
+    return PaginationResponse(success=True, data=salaries, meta=meta, message="Thành công")
 
 @router.get("/salaries/{id}", response_model=ApiResponse[SalaryResponse])
 async def get_salary_detail(
@@ -168,7 +188,8 @@ async def get_salary_detail(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    return ApiResponse(success=True, data=None, message="Thành công")
+    salary = SalaryService(db).get_salary(id, current_user)
+    return ApiResponse(success=True, data=salary, message="Thành công")
 
 @router.post("/salaries/{id}/approve", response_model=ApiResponse[SalaryResponse])
 async def approve_salary(
@@ -176,15 +197,15 @@ async def approve_salary(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role("center_admin")),
 ):
-    return ApiResponse(success=True, data=None, message="Thành công")
+    salary = SalaryService(db).approve(id, current_user.id)
+    return ApiResponse(success=True, data=salary, message="Thành công")
 
 @router.patch("/salaries/{salary_id}/adjustments", response_model=ApiResponse[SalaryAdjustmentResponse])
 async def add_salary_adjustment(
     payload: SalaryAdjustmentCreate,
     salary_id: UUID = Path(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role("center_admin")), # Đổi thành require_role
+    current_user: User = Depends(require_role("center_admin")),
 ):
-    # TODO: Pass current_user.id vào service layer làm created_by
-    # await salary_service.add_adjustment(db, salary_id, payload, created_by=current_user.id)
-    return ApiResponse(success=True, data=None, message="Thành công")
+    adjustment = SalaryService(db).add_adjustment(salary_id, payload, current_user.id)
+    return ApiResponse(success=True, data=adjustment, message="Thành công")
