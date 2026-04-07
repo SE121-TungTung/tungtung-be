@@ -6,12 +6,9 @@ from app.models.kpi import KpiRawMetric
 from app.schemas.kpi import KpiRawMetricSync
 
 class KpiMetricService:
-    def __init__(self, db: Session):
-        self.db = db
-
-    def sync_metrics(self, payload: KpiRawMetricSync) -> str:
+    def sync_metrics(self, db: Session, payload: KpiRawMetricSync) -> str:
         try:
-            existing = self.db.query(KpiRawMetric).filter(
+            existing = db.query(KpiRawMetric).filter(
                 KpiRawMetric.teacher_id == payload.teacher_id,
                 KpiRawMetric.period == payload.period,
                 KpiRawMetric.source_module == payload.source_module,
@@ -27,10 +24,12 @@ class KpiMetricService:
                     source_module=payload.source_module,
                     metric_data=payload.metric_data,
                 )
-                self.db.add(new_metric)
+                db.add(new_metric)
             
-            self.db.commit()
+            db.commit()
             return "Đồng bộ dữ liệu thành công"
         except Exception as e:
-            self.db.rollback()
+            db.rollback()
             raise HTTPException(status_code=500, detail=f"Lỗi khi đồng bộ metric: {str(e)}")
+
+kpi_metric_service = KpiMetricService()

@@ -11,11 +11,8 @@ from app.models.user import User, UserRole
 from app.schemas.kpi import SalaryAdjustmentCreate, TeacherPayrollConfigUpdate, PayrollRunCreate
 
 class SalaryService:
-    def __init__(self, db: Session):
-        self.db = db
-
-    def get_salary(self, salary_id: UUID, current_user: User) -> Salary:
-        salary = self.db.query(Salary).filter(Salary.id == salary_id).first()
+    def get_salary(self, db: Session, salary_id: UUID, current_user: User) -> Salary:
+        salary = db.query(Salary).filter(Salary.id == salary_id).first()
         if not salary:
             raise HTTPException(status_code=404, detail="Không tìm thấy phiếu lương")
 
@@ -24,8 +21,8 @@ class SalaryService:
 
         return salary
 
-    def get_history(self, teacher_id: UUID, period: str | None, page: int, limit: int) -> Tuple[List[Salary], int]:
-        query = self.db.query(Salary).filter(Salary.teacher_id == teacher_id)
+    def get_history(self, db: Session, teacher_id: UUID, period: str | None, page: int, limit: int) -> Tuple[List[Salary], int]:
+        query = db.query(Salary).filter(Salary.teacher_id == teacher_id)
         if period:
             query = query.filter(Salary.period == period)
             
@@ -33,8 +30,8 @@ class SalaryService:
         salaries = query.order_by(Salary.period.desc()).offset((page - 1) * limit).limit(limit).all()
         return salaries, total
 
-    def get_all(self, period: str | None, page: int, limit: int) -> Tuple[List[Salary], int]:
-        query = self.db.query(Salary)
+    def get_all(self, db: Session, period: str | None, page: int, limit: int) -> Tuple[List[Salary], int]:
+        query = db.query(Salary)
         if period:
             query = query.filter(Salary.period == period)
             
@@ -42,8 +39,8 @@ class SalaryService:
         salaries = query.order_by(Salary.period.desc()).offset((page - 1) * limit).limit(limit).all()
         return salaries, total
 
-    def approve(self, salary_id: UUID, admin_id: UUID) -> Salary:
-        salary = self.db.query(Salary).filter(Salary.id == salary_id).first()
+    def approve(self, db: Session, salary_id: UUID, admin_id: UUID) -> Salary:
+        salary = db.query(Salary).filter(Salary.id == salary_id).first()
         if not salary:
             raise HTTPException(status_code=404, detail="Không tìm thấy phiếu lương")
             
@@ -54,12 +51,12 @@ class SalaryService:
         salary.approved_by = admin_id
         salary.approved_at = datetime.now()
         
-        self.db.commit()
-        self.db.refresh(salary)
+        db.commit()
+        db.refresh(salary)
         return salary
 
-    def add_adjustment(self, salary_id: UUID, payload: SalaryAdjustmentCreate, admin_id: UUID) -> SalaryAdjustment:
-        salary = self.db.query(Salary).filter(Salary.id == salary_id).first()
+    def add_adjustment(self, db: Session, salary_id: UUID, payload: SalaryAdjustmentCreate, admin_id: UUID) -> SalaryAdjustment:
+        salary = db.query(Salary).filter(Salary.id == salary_id).first()
         if not salary:
             raise HTTPException(status_code=404, detail="Không tìm thấy phiếu lương")
             
@@ -81,18 +78,15 @@ class SalaryService:
             reason=payload.reason,
             created_by=admin_id,
         )
-        self.db.add(adjustment)
-        self.db.commit()
-        self.db.refresh(adjustment)
+        db.add(adjustment)
+        db.commit()
+        db.refresh(adjustment)
         return adjustment
 
 
 class TeacherPayrollConfigService:
-    def __init__(self, db: Session):
-        self.db = db
-
-    def update_config(self, teacher_id: UUID, payload: TeacherPayrollConfigUpdate) -> TeacherPayrollConfig:
-        config = self.db.query(TeacherPayrollConfig).filter(TeacherPayrollConfig.teacher_id == teacher_id).first()
+    def update_config(self, db: Session, teacher_id: UUID, payload: TeacherPayrollConfigUpdate) -> TeacherPayrollConfig:
+        config = db.query(TeacherPayrollConfig).filter(TeacherPayrollConfig.teacher_id == teacher_id).first()
         if config:
             config.contract_type = payload.contract_type
             config.base_salary = payload.base_salary
@@ -109,32 +103,29 @@ class TeacherPayrollConfigService:
                 max_kpi_bonus=payload.max_kpi_bonus,
                 fixed_allowance=payload.fixed_allowance,
             )
-            self.db.add(config)
+            db.add(config)
             
-        self.db.commit()
-        self.db.refresh(config)
+        db.commit()
+        db.refresh(config)
         return config
 
 
 class PayrollRunService:
-    def __init__(self, db: Session):
-        self.db = db
-
-    def create_run(self, payload: PayrollRunCreate, bg_tasks: BackgroundTasks) -> PayrollRun:
-        existing = self.db.query(PayrollRun).filter(PayrollRun.period == payload.period).first()
+    def create_run(self, db: Session, payload: PayrollRunCreate, bg_tasks: BackgroundTasks) -> PayrollRun:
+        existing = db.query(PayrollRun).filter(PayrollRun.period == payload.period).first()
         if existing and existing.status in [JobStatus.PENDING, JobStatus.PROCESSING]:
             raise HTTPException(status_code=409, detail="Tiến trình tính lương đang chạy")
             
         if not existing:
             run = PayrollRun(period=payload.period, status=JobStatus.PENDING)
-            self.db.add(run)
+            db.add(run)
         else:
             run = existing
             run.status = JobStatus.PENDING
             run.error_log = None
             
-        self.db.commit()
-        self.db.refresh(run)
+        db.commit()
+        db.refresh(run)
 
         bg_tasks.add_task(self._process_payroll, run.id, payload.period)
         return run
@@ -211,3 +202,7 @@ class PayrollRunService:
                 db.commit()
         finally:
             db.close()
+
+salary_service = SalaryService()
+teacher_payroll_config_service = TeacherPayrollConfigService()
+payroll_run_service = PayrollRunService()

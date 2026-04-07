@@ -13,13 +13,10 @@ from app.schemas.kpi import KpiTierUpdate
 logger = logging.getLogger(__name__)
 
 class KpiSettingsService:
-    def __init__(self, db: Session):
-        self.db = db
+    def get_all_tiers(self, db: Session) -> List[KpiTier]:
+        return db.query(KpiTier).order_by(KpiTier.min_score.asc()).all()
 
-    def get_all_tiers(self) -> List[KpiTier]:
-        return self.db.query(KpiTier).order_by(KpiTier.min_score.asc()).all()
-
-    def bulk_update_tiers(self, tiers_payload: List[KpiTierUpdate]) -> List[KpiTier]:
+    def bulk_update_tiers(self, db: Session, tiers_payload: List[KpiTierUpdate]) -> List[KpiTier]:
         if not tiers_payload:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -64,13 +61,13 @@ class KpiSettingsService:
                             f"và '{next_tier.tier_name}'"
                         ),
                     )
-        existing_ids = {t.id for t in self.db.query(KpiTier.id).all()}
+        existing_ids = {t.id for t in db.query(KpiTier.id).all()}
         payload_ids  = {t.id for t in sorted_tiers if t.id is not None}
         ids_to_delete = existing_ids - payload_ids
 
         # Check FK trước khi xóa
         for del_id in ids_to_delete:
-            in_use = self.db.query(TeacherMonthlyKpi).filter(
+            in_use = db.query(TeacherMonthlyKpi).filter(
                 TeacherMonthlyKpi.kpi_tier_id == del_id
             ).first()
             if in_use:
@@ -85,22 +82,22 @@ class KpiSettingsService:
             for tier_data in sorted_tiers:
                 data_dict = tier_data.model_dump(exclude={"id"})
                 if tier_data.id and tier_data.id in existing_ids:
-                    self.db.query(KpiTier).filter(KpiTier.id == tier_data.id).update(data_dict)
+                    db.query(KpiTier).filter(KpiTier.id == tier_data.id).update(data_dict)
                 else:
                     new_tier = KpiTier(**data_dict)
-                    self.db.add(new_tier)
+                    db.add(new_tier)
                     new_tiers.append(new_tier)
 
             # Xóa các id không còn trong cấu hình
             for del_id in ids_to_delete:
-                self.db.query(KpiTier).filter(KpiTier.id == del_id).delete()
+                db.query(KpiTier).filter(KpiTier.id == del_id).delete()
 
-            self.db.commit()
-            return self.db.query(KpiTier).order_by(KpiTier.min_score.asc()).all()
+            db.commit()
+            return db.query(KpiTier).order_by(KpiTier.min_score.asc()).all()
         except HTTPException:
             raise
         except Exception as e:
-            self.db.rollback()
+            db.rollback()
             logger.error(f"bulk_update_tiers failed: {e}", exc_info=True)
             raise APIException(
                 status_code=500,
@@ -110,9 +107,6 @@ class KpiSettingsService:
 
 
 class KpiCriteriaService:
-    def __init__(self, db: Session):
-        self.db = db
-
     def validate_total_weight(self, criteria_list) -> None:
         total = sum(Decimal(str(c.weight_percent)) for c in criteria_list)
         if total != Decimal("100"):
@@ -120,3 +114,6 @@ class KpiCriteriaService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Tổng trọng số tiêu chí KPI phải bằng 100%. Hiện tại: {total}%",
             )
+
+kpi_settings_service = KpiSettingsService()
+kpi_criteria_service = KpiCriteriaService()

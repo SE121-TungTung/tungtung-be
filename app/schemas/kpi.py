@@ -179,3 +179,27 @@ class PayrollRunResponse(BaseModel):
 
 class PayrollRunCreate(BaseModel):
     period: str = Field(..., pattern=PERIOD_REGEX)
+
+# ---------------------------------------------------------------------------
+# KPI Summary
+# ---------------------------------------------------------------------------
+from app.schemas.base_schema import PaginationMetadata
+
+class KpiSummaryItem(BaseModel):
+    teacher_id      : UUID
+    teacher_name    : str
+    total_kpi_score : Optional[float] = None
+    tier            : Optional[str] = None
+    metrics         : Dict[str, float] = Field(default_factory=dict)
+    status          : str
+
+class KpiSummaryPeriodMeta(PaginationMetadata):
+    period_status   : str
+
+class KpiSummaryResponse(BaseModel):
+    success : bool = True
+    data    : List[KpiSummaryItem]
+    message : Optional[str] = None
+    meta    : Optional[KpiSummaryPeriodMeta] = None
+
+    model_config = ConfigDict(from_attributes=True)

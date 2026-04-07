@@ -30,7 +30,7 @@ def get_current_admin_user(
         )
     return current_user
 
-def require_role(required_role: str):
+def require_role(required_role: UserRole):
     def role_checker(current_user: User = Depends(get_current_active_user)) -> User:
         if current_user.role != required_role:
             raise HTTPException(
