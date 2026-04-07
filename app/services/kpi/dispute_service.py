@@ -8,11 +8,8 @@ from app.models.kpi import KpiDispute, TeacherMonthlyKpi, DisputeStatus
 from app.schemas.kpi import KpiDisputeCreate, KpiDisputeResolveRequest
 
 class KpiDisputeService:
-    def __init__(self, db: Session):
-        self.db = db
-
-    def create_dispute(self, teacher_id: UUID, payload: KpiDisputeCreate) -> KpiDispute:
-        kpi_record = self.db.query(TeacherMonthlyKpi).filter(
+    def create_dispute(self, db: Session, teacher_id: UUID, payload: KpiDisputeCreate) -> KpiDispute:
+        kpi_record = db.query(TeacherMonthlyKpi).filter(
             TeacherMonthlyKpi.id == payload.kpi_id,
             TeacherMonthlyKpi.teacher_id == teacher_id
         ).first()
@@ -39,7 +36,7 @@ class KpiDisputeService:
             if datetime.now() > kpi_record.finalized_at + timedelta(hours=48):
                 raise HTTPException(status_code=403, detail="Hết thời hạn khiếu nại (48h sau khi chốt dữ liệu tạm tính)")
 
-        existing = self.db.query(KpiDispute).filter(
+        existing = db.query(KpiDispute).filter(
             KpiDispute.kpi_id == payload.kpi_id,
             KpiDispute.teacher_id == teacher_id,
             KpiDispute.status == DisputeStatus.PENDING,
@@ -54,13 +51,13 @@ class KpiDisputeService:
             reason=payload.reason,
             status=DisputeStatus.PENDING,
         )
-        self.db.add(dispute)
-        self.db.commit()
-        self.db.refresh(dispute)
+        db.add(dispute)
+        db.commit()
+        db.refresh(dispute)
         return dispute
 
-    def resolve_dispute(self, dispute_id: UUID, payload: KpiDisputeResolveRequest, admin_id: UUID) -> KpiDispute:
-        dispute = self.db.query(KpiDispute).filter(KpiDispute.id == dispute_id).first()
+    def resolve_dispute(self, db: Session, dispute_id: UUID, payload: KpiDisputeResolveRequest, admin_id: UUID) -> KpiDispute:
+        dispute = db.query(KpiDispute).filter(KpiDispute.id == dispute_id).first()
         if not dispute:
             raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu khiếu nại")
         
@@ -72,6 +69,8 @@ class KpiDisputeService:
         dispute.resolved_by = admin_id
         dispute.resolved_at = datetime.now()
         
-        self.db.commit()
-        self.db.refresh(dispute)
+        db.commit()
+        db.refresh(dispute)
         return dispute
+
+kpi_dispute_service = KpiDisputeService()

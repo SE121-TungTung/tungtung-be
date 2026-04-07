@@ -5,6 +5,7 @@ from typing import List, Optional
 from uuid import UUID
 from fastapi import HTTPException, status, BackgroundTasks
 from datetime import datetime
+import math
 from decimal import Decimal
 import logging
 
@@ -14,6 +15,7 @@ from app.models.kpi import (
     KpiTier, KpiCriteria, KpiCalculationJob,
     TeacherMonthlyKpi, TeacherPayrollConfig,
     JobStatus, ContractType,
+    KpiDispute, DisputeStatus, Salary, SalaryStatus
 )
 from app.models.user import User, UserRole
 from app.models.session_attendance import ClassSession, SessionStatus
@@ -23,17 +25,14 @@ from app.services.kpi.settings_service import KpiCriteriaService
 logger = logging.getLogger(__name__)
 
 class KpiCalculationService:
-    def __init__(self, db: Session):
-        self.db = db
-
-    def get_job(self, job_id: UUID) -> KpiCalculationJob:
-        job = self.db.query(KpiCalculationJob).filter(KpiCalculationJob.job_id == job_id).first()
+    def get_job(self, db: Session, job_id: UUID) -> KpiCalculationJob:
+        job = db.query(KpiCalculationJob).filter(KpiCalculationJob.job_id == job_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="Không tìm thấy tiến trình tính toán")
         return job
 
-    def get_teacher_kpi(self, teacher_id: UUID, period: str) -> TeacherMonthlyKpi:
-        kpi = self.db.query(TeacherMonthlyKpi).filter(
+    def get_teacher_kpi(self, db: Session, teacher_id: UUID, period: str) -> TeacherMonthlyKpi:
+        kpi = db.query(TeacherMonthlyKpi).filter(
             TeacherMonthlyKpi.teacher_id == teacher_id,
             TeacherMonthlyKpi.period == period,
         ).first()
@@ -41,12 +40,96 @@ class KpiCalculationService:
             raise HTTPException(status_code=404, detail="Không tìm thấy dữ liệu KPI của giáo viên trong kỳ này")
         return kpi
 
+    def get_summary(self, db: Session, period: str, page: int, limit: int) -> tuple[List[dict], dict]:
+        # Lấy trạng thái của kỳ (period_status)
+        job = db.query(KpiCalculationJob).filter(
+            KpiCalculationJob.period == period
+        ).order_by(KpiCalculationJob.started_at.desc()).first()
+
+        period_status = "Draft"
+        if job:
+            if job.status == JobStatus.COMPLETED:
+                period_status = "Finalized"
+            elif job.status in [JobStatus.PENDING, JobStatus.PROCESSING]:
+                period_status = "Processing"
+            elif job.status == JobStatus.FAILED:
+                period_status = "Failed"
+
+        # Tính toán offset
+        offset = (page - 1) * limit
+
+        # Query trực tiếp từ bảng TeacherMonthlyKpi đã được Job tính
+        query = db.query(
+            TeacherMonthlyKpi, User, KpiTier, Salary
+        ).join(
+            User, User.id == TeacherMonthlyKpi.teacher_id
+        ).outerjoin(
+            KpiTier, KpiTier.id == TeacherMonthlyKpi.kpi_tier_id
+        ).outerjoin(
+            Salary, (Salary.teacher_id == TeacherMonthlyKpi.teacher_id) & (Salary.period == TeacherMonthlyKpi.period)
+        ).filter(
+            TeacherMonthlyKpi.period == period
+        )
+        
+        total = query.count()
+        records = query.order_by(User.first_name).offset(offset).limit(limit).all()
+
+        # Batch querying for dispute status 
+        kpi_ids = [r.TeacherMonthlyKpi.id for r in records]
+        disputed_kpi_set = set()
+        if kpi_ids:
+            disputed_kpias = db.query(KpiDispute.kpi_id).filter(
+                KpiDispute.kpi_id.in_(kpi_ids),
+                KpiDispute.status == DisputeStatus.PENDING
+            ).all()
+            disputed_kpi_set = {r[0] for r in disputed_kpias}
+
+        summary = []
+        for r in records:
+            kpi = r.TeacherMonthlyKpi
+            user = r.User
+            tier = r.KpiTier
+            salary = r.Salary
+
+            # Metrics
+            metrics = {}
+            for score in kpi.kpi_details.get("criteria_scores", []):
+                metrics[score["code"].lower()] = score["score"]
+
+            # Compute Teacher Status (calculated / disputed / approved)
+            status = "calculated"
+            if salary and salary.status == SalaryStatus.APPROVED:
+                status = "approved"
+            elif kpi.id in disputed_kpi_set:
+                status = "disputed"
+
+            item = {
+                "teacher_id": kpi.teacher_id,
+                "teacher_name": f"{user.first_name} {user.last_name}",
+                "total_kpi_score": float(kpi.total_score) if kpi.total_score is not None else None,
+                "tier": tier.tier_name if tier else None,
+                "metrics": metrics,
+                "status": status
+            }
+            summary.append(item)
+
+        meta = {
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": math.ceil(total / limit) if limit else 0,
+            "period_status": period_status
+        }
+        
+        return summary, meta
+
     def trigger_calculation_job(
         self,
+        db: Session,
         payload: KpiCalculationJobCreate,
         bg_tasks: BackgroundTasks,
     ) -> dict:
-        existing_job = self.db.query(KpiCalculationJob).filter(
+        existing_job = db.query(KpiCalculationJob).filter(
             KpiCalculationJob.period == payload.period,
             KpiCalculationJob.status.in_([JobStatus.PENDING, JobStatus.PROCESSING]),
         ).first()
@@ -60,11 +143,11 @@ class KpiCalculationService:
 
         try:
             new_job = KpiCalculationJob(period=payload.period, status=JobStatus.PENDING)
-            self.db.add(new_job)
-            self.db.commit()
-            self.db.refresh(new_job)
+            db.add(new_job)
+            db.commit()
+            db.refresh(new_job)
         except IntegrityError:
-            self.db.rollback()
+            db.rollback()
             raise APIException(
                 status_code=409,
                 code="JOB_ALREADY_EXISTS",
@@ -158,8 +241,8 @@ class KpiCalculationService:
             db.flush()
 
         criteria_list = db.query(KpiCriteria).filter(KpiCriteria.status == "ACTIVE").all()
-        criteria_service = KpiCriteriaService(db)
-        criteria_service.validate_total_weight(criteria_list)
+        from app.services.kpi.settings_service import kpi_criteria_service
+        kpi_criteria_service.validate_total_weight(criteria_list)
 
         payroll_config: TeacherPayrollConfig | None = db.query(TeacherPayrollConfig).filter(
             TeacherPayrollConfig.teacher_id == teacher_id
@@ -286,3 +369,5 @@ class KpiCalculationService:
 
         else:
             return Decimal(100)
+
+kpi_calculation_service = KpiCalculationService()
