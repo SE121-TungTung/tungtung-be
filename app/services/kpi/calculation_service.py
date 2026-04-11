@@ -1,7 +1,7 @@
 from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from uuid import UUID
 from fastapi import HTTPException, status, BackgroundTasks
 from datetime import datetime
@@ -39,6 +39,21 @@ class KpiCalculationService:
         if not kpi:
             raise HTTPException(status_code=404, detail="Không tìm thấy dữ liệu KPI của giáo viên trong kỳ này")
         return kpi
+
+    def get_teacher_kpi_history(
+        self, db: Session, teacher_id: UUID, page: int, limit: int
+    ) -> Tuple[List[TeacherMonthlyKpi], int]:
+        query = db.query(TeacherMonthlyKpi).filter(
+            TeacherMonthlyKpi.teacher_id == teacher_id
+        )
+        total = query.count()
+        records = (
+            query.order_by(TeacherMonthlyKpi.period.desc())
+            .offset((page - 1) * limit)
+            .limit(limit)
+            .all()
+        )
+        return records, total
 
     def get_summary(self, db: Session, period: str, page: int, limit: int) -> tuple[List[dict], dict]:
         # Lấy trạng thái của kỳ (period_status)

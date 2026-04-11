@@ -9,6 +9,7 @@ from app.routers import (
     attendance, schedule, test, 
     message, notification,
     kpi,
+    invoice, payment, report, refund,
     chatbot, audit_log)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
@@ -75,6 +76,10 @@ api_router.include_router(message.router)
 api_router.include_router(test.router)
 api_router.include_router(notification.router)
 api_router.include_router(kpi.router)
+api_router.include_router(invoice.router)
+api_router.include_router(payment.router)
+api_router.include_router(report.router)
+api_router.include_router(refund.router)
 api_router.include_router(chatbot.router)
 api_router.include_router(audit_log.router)
 

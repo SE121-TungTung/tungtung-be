@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, Query, Path, Body, BackgroundTasks
+from fastapi import APIRouter, Depends, Query, Path, Body, BackgroundTasks, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional, Annotated
 from uuid import UUID
 import math
 
 from app.core.database import get_db
-from app.dependencies import get_current_user, require_role, get_current_admin_user
+from app.dependencies import get_current_user, require_role, get_current_admin_user, get_current_teacher_or_admin
 from app.schemas.base_schema import ApiResponse, PaginationResponse, PaginationMetadata
 from app.models.user import User, UserRole
 
@@ -17,7 +17,7 @@ from app.schemas.kpi import (
     KpiDisputeCreate, KpiDisputeResponse, KpiDisputeResolveRequest,
     SalaryResponse, SalaryAdjustmentCreate, SalaryAdjustmentResponse,
     PayrollRunCreate, PayrollRunResponse,
-    PERIOD_REGEX, KpiSummaryResponse
+    PERIOD_REGEX, KpiSummaryItem, KpiSummaryPeriodMeta
 )
 
 from app.services.kpi.settings_service import kpi_settings_service
@@ -73,7 +73,7 @@ async def get_kpi_calculation_job(
     job = kpi_calculation_service.get_job(db=db, job_id=job_id)
     return ApiResponse(success=True, data=job, message="Thành công")
 
-@router.get("/kpi/summary", response_model=KpiSummaryResponse)
+@router.get("/kpi/summary", response_model=PaginationResponse[KpiSummaryItem])
 async def get_kpi_summary(
     period: PeriodQuery,
     page: int = Query(1, ge=1),
@@ -82,7 +82,12 @@ async def get_kpi_summary(
     current_user: User = Depends(get_current_admin_user)
 ):
     summary, meta = kpi_calculation_service.get_summary(db=db, period=period, page=page, limit=limit)
-    return KpiSummaryResponse(success=True, data=summary, meta=meta, message="Thành công")
+    return PaginationResponse(
+        success=True,
+        data=summary,
+        meta=KpiSummaryPeriodMeta(**meta),
+        message="Thành công"
+    )
 
 # ---------------------------------------------------------------------------
 # KPI Metrics Sync
@@ -141,6 +146,45 @@ async def get_my_kpi(
 ):
     kpi = kpi_calculation_service.get_teacher_kpi(db=db, teacher_id=current_user.id, period=period)
     return ApiResponse(success=True, data=kpi, message="Thành công")
+
+# ---------------------------------------------------------------------------
+# Teacher KPI & Salary History (admin or self)
+# ---------------------------------------------------------------------------
+def _assert_admin_or_self(current_user: User, teacher_id: UUID):
+    """Admin can view any teacher; teachers can only view their own data."""
+    is_admin = current_user.role in (UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN)
+    if not is_admin and current_user.id != teacher_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Không có quyền xem dữ liệu của giáo viên khác",
+        )
+
+@router.get("/teachers/{teacher_id}/kpi-history", response_model=PaginationResponse[TeacherMonthlyKpiResponse])
+async def get_teacher_kpi_history(
+    teacher_id: UUID = Path(...),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_teacher_or_admin),
+):
+    _assert_admin_or_self(current_user, teacher_id)
+    records, total = kpi_calculation_service.get_teacher_kpi_history(db=db, teacher_id=teacher_id, page=page, limit=limit)
+    meta = PaginationMetadata(page=page, limit=limit, total=total, total_pages=math.ceil(total / limit) if limit else 0)
+    return PaginationResponse(success=True, data=records, meta=meta, message="Thành công")
+
+@router.get("/teachers/{teacher_id}/salary-history", response_model=PaginationResponse[SalaryResponse])
+async def get_teacher_salary_history(
+    teacher_id: UUID = Path(...),
+    period: OptionalPeriodQuery = None,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_teacher_or_admin),
+):
+    _assert_admin_or_self(current_user, teacher_id)
+    salaries, total = salary_service.get_history(db=db, teacher_id=teacher_id, period=period, page=page, limit=limit)
+    meta = PaginationMetadata(page=page, limit=limit, total=total, total_pages=math.ceil(total / limit) if limit else 0)
+    return PaginationResponse(success=True, data=salaries, meta=meta, message="Thành công")
 
 # ---------------------------------------------------------------------------
 # Teacher KPI & Payroll Config (Dynamic Paths)

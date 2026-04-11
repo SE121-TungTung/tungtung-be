@@ -194,12 +194,4 @@ class KpiSummaryItem(BaseModel):
     status          : str
 
 class KpiSummaryPeriodMeta(PaginationMetadata):
-    period_status   : str
-
-class KpiSummaryResponse(BaseModel):
-    success : bool = True
-    data    : List[KpiSummaryItem]
-    message : Optional[str] = None
-    meta    : Optional[KpiSummaryPeriodMeta] = None
-
-    model_config = ConfigDict(from_attributes=True)
+    period_status   : str
