@@ -53,15 +53,6 @@ class AdjustmentType(str, enum.Enum):
 # Models
 # ---------------------------------------------------------------------------
 
-class SystemSetting(Base):
-    __tablename__ = "system_settings"
-
-    id            = Column(Integer, primary_key=True, autoincrement=True)
-    setting_key   = Column(String(50), unique=True, nullable=False)
-    setting_value = Column(String(255), nullable=False)
-    description   = Column(String(255), nullable=True)
-
-
 class KpiTier(Base):
     __tablename__ = "kpi_tiers"
     __table_args__ = (
