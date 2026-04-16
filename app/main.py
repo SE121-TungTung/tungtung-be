@@ -6,7 +6,7 @@ from app.core.exceptions import APIException, api_exception_handler, http_except
 from app.routers import (
     auth, users, 
     room, course, classes, enrollment, class_session,
-    attendance, schedule, test, 
+    attendance, schedule, ga_schedule, test, 
     message, notification,
     kpi,
     invoice, payment, report, refund,
@@ -72,6 +72,7 @@ api_router.include_router(enrollment.router)
 api_router.include_router(class_session.router)
 api_router.include_router(attendance.router)
 api_router.include_router(schedule.router)
+api_router.include_router(ga_schedule.router)
 api_router.include_router(message.router)
 api_router.include_router(test.router)
 api_router.include_router(notification.router)

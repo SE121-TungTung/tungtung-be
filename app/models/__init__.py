@@ -13,3 +13,4 @@ from .kpi import (
     KpiRawMetric, KpiDispute, Salary, SalaryAdjustment
 )
 from .finance import Invoice, Payment, Refund, ReportExportJob
+from .ga_schedule import GARun, GAScheduleProposal, TeacherUnavailability
