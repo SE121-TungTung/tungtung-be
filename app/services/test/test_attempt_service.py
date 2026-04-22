@@ -118,6 +118,7 @@ class AttemptService:
             raise HTTPException(400, "Attempt already submitted or expired")
 
         attempt.submitted_at = datetime.now(timezone.utc)
+        attempt.time_taken_seconds = int((attempt.submitted_at - attempt.started_at).total_seconds())
         
         # 2. Prepare Data
         # Fetch all questions in this test to get max_points and type
@@ -141,16 +142,15 @@ class AttemptService:
         any_manual_grading_required = False
         question_results = []
 
-        # Check if response exists (e.g. from Speaking submission)
-        existing_resp = db.query(TestResponse).filter(
-            TestResponse.attempt_id == attempt.id,
-            TestResponse.question_id == q_id
-        ).first()
-
-
         # 3. Process Each Question
         for q_id, (qb, max_points) in q_map.items():
             submission = answers_map.get(q_id)
+            
+            # Check if response exists (e.g. from Speaking submission)
+            existing_resp = db.query(TestResponse).filter(
+                TestResponse.attempt_id == attempt.id,
+                TestResponse.question_id == q_id
+            ).first()
             
             # --- Default Values ---
             points_earned = 0.0

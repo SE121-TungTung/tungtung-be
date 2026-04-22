@@ -19,21 +19,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Create enum type for GA run status
-    ga_run_status = postgresql.ENUM(
-        'pending', 'running', 'completed', 'failed', 'applied',
-        name='ga_run_status',
-        create_type=False
-    )
-    ga_run_status.create(op.get_bind(), checkfirst=True)
+    conn = op.get_bind()
+
+    # Create enum using raw SQL with IF NOT EXISTS to handle partial state
+    # (enum may exist from a previously failed migration attempt)
+    conn.execute(sa.text("""
+        DO $$ BEGIN
+            CREATE TYPE ga_run_status AS ENUM ('pending', 'running', 'completed', 'failed', 'applied');
+        EXCEPTION WHEN duplicate_object THEN
+            NULL;
+        END $$;
+    """))
 
     # 1. ga_runs — GA execution tracking
     op.create_table('ga_runs',
         sa.Column('id', postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column('status', sa.Enum(
-            'pending', 'running', 'completed', 'failed', 'applied',
-            name='ga_run_status', native_enum=True
-        ), nullable=False, server_default='pending'),
+        sa.Column('status', sa.String(20), nullable=False, server_default='pending'),
         sa.Column('start_date', sa.Date(), nullable=False),
         sa.Column('end_date', sa.Date(), nullable=False),
         sa.Column('class_ids', postgresql.ARRAY(postgresql.UUID(as_uuid=True)), nullable=True),
@@ -125,3 +126,4 @@ def downgrade() -> None:
     # Drop enum type
     ga_run_status = postgresql.ENUM('pending', 'running', 'completed', 'failed', 'applied', name='ga_run_status')
     ga_run_status.drop(op.get_bind(), checkfirst=True)
+
