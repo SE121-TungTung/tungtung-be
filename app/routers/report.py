@@ -16,7 +16,7 @@ from typing import Optional
 from datetime import date
 
 from app.core.database import get_db
-from app.dependencies import require_role
+from app.dependencies import require_any_role
 from app.schemas.base_schema import ApiResponse, PaginationResponse, PaginationMetadata
 from app.models.user import User, UserRole
 from app.models.finance import ReportType
@@ -53,7 +53,7 @@ async def get_revenue_report(
     date_to: Optional[date] = Query(None, description="Đến ngày (YYYY-MM-DD)"),
     group_by_course: bool = Query(False, description="Nhóm theo khóa học"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.OFFICE_ADMIN)),
+    current_user: User = Depends(require_any_role(UserRole.OFFICE_ADMIN, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN)),
 ):
     result = report_service.get_revenue_report(
         db=db,
@@ -81,7 +81,7 @@ async def get_expenses_report(
     date_to: Optional[date] = Query(None),
     cost_type: Optional[str] = Query(None, description="SALARY | OPERATIONS | ALL"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.OFFICE_ADMIN)),
+    current_user: User = Depends(require_any_role(UserRole.OFFICE_ADMIN, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN)),
 ):
     result = report_service.get_expenses_report(
         db=db,
@@ -108,7 +108,7 @@ async def get_profit_report(
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.OFFICE_ADMIN)),
+    current_user: User = Depends(require_any_role(UserRole.OFFICE_ADMIN, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN)),
 ):
     result = report_service.get_profit_report(
         db=db,
@@ -134,7 +134,7 @@ async def get_debt_report(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.OFFICE_ADMIN)),
+    current_user: User = Depends(require_any_role(UserRole.OFFICE_ADMIN, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN)),
 ):
     import math
     items, total = report_service.get_debt_report(db=db, page=page, limit=limit)
@@ -168,7 +168,7 @@ async def create_export_job(
     payload: ExportJobCreate,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.OFFICE_ADMIN)),
+    current_user: User = Depends(require_any_role(UserRole.OFFICE_ADMIN, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN)),
 ):
     result = report_service.create_export_job(
         db=db,

@@ -44,15 +44,12 @@ from app.schemas.kpi import (
     KPIDashboardSummary, KPIRankingItem, StaffKPIHistoryItem,
     # Dispute
     KpiDisputeCreate, KpiDisputeResponse, KpiDisputeResolveRequest,
-    # Payroll (kept)
-    KpiTierResponse, KpiTierUpdate,
+    # Payroll
     TeacherPayrollConfigUpdate, TeacherPayrollConfigResponse,
     SalaryResponse, SalaryAdjustmentCreate, SalaryAdjustmentResponse,
     PayrollRunCreate, PayrollRunResponse,
-    # Deprecated (kept for compat)
-    KpiCalculationJobCreate, KpiCalculationJobResponse,
-    TeacherMonthlyKpiResponse, KpiRawMetricSync,
-    KpiSummaryItem, KpiSummaryPeriodMeta, PERIOD_REGEX,
+    # Shared
+    PERIOD_REGEX,
 )
 
 from app.services.kpi.template_service import kpi_template_service
@@ -62,7 +59,6 @@ from app.services.kpi.calculation_service import kpi_calculation_service
 from app.services.kpi.support_calc_service import support_calc_service
 from app.services.kpi.dashboard_service import kpi_dashboard_service
 from app.services.kpi.dispute_service import kpi_dispute_service
-from app.services.kpi.settings_service import kpi_settings_service
 from app.services.kpi.payroll_service import salary_service, teacher_payroll_config_service, payroll_run_service
 
 router = APIRouter(prefix="", tags=["KPI & Payroll"])
@@ -433,30 +429,7 @@ async def resolve_kpi_dispute(
 
 
 # ===========================================================================
-# 7. KPI Settings (deprecated — kept for backward compat)
-# ===========================================================================
-
-@router.get("/settings/kpi-tiers", response_model=ApiResponse[List[KpiTierResponse]])
-async def get_kpi_tiers(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    tiers = kpi_settings_service.get_all_tiers(db=db)
-    return ApiResponse(success=True, data=tiers, message="Thành công")
-
-
-@router.put("/settings/kpi-tiers", response_model=ApiResponse[List[KpiTierResponse]])
-async def update_kpi_tiers(
-    payload: List[KpiTierUpdate],
-    db: Session = Depends(get_db),
-    current_user: User = AdminOnly,
-):
-    updated = kpi_settings_service.bulk_update_tiers(db=db, tiers_payload=payload)
-    return ApiResponse(success=True, data=updated, message="Thành công")
-
-
-# ===========================================================================
-# 8. Teacher KPI Views (self / admin) — Uses new system
+# 7. Teacher KPI Views (self / admin) — Uses new system
 # ===========================================================================
 
 @router.get("/teachers/me/kpi", response_model=ApiResponse[KPIRecordDetailResponse])
@@ -487,7 +460,7 @@ async def get_teacher_kpi_history(
 
 
 # ===========================================================================
-# 9. Teacher Payroll Config & Salary (kept from old system)
+# 8. Teacher Payroll Config & Salary
 # ===========================================================================
 
 @router.put(
@@ -541,7 +514,7 @@ async def get_teacher_salary_history(
 
 
 # ===========================================================================
-# 10. Payroll Runs & Salaries (kept from old system)
+# 9. Payroll Runs & Salaries
 # ===========================================================================
 
 @router.post("/payroll-runs", response_model=ApiResponse[PayrollRunResponse])
@@ -606,7 +579,7 @@ async def add_salary_adjustment(
 
 
 # ===========================================================================
-# 11. Bulk Period Calculation
+# 10. Bulk Period Calculation
 # ===========================================================================
 
 @router.post("/kpi/periods/{period_id}/calculate-all", response_model=ApiResponse)

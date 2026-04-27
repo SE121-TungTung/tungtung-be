@@ -8,13 +8,12 @@ from .exam_structure import ExamType, ExamStructure, ExamStructureSection, ExamS
 from .test import Test, TestSection, TestSectionPart, QuestionBank, TestQuestion, TestAttempt, TestResponse, QuestionGroup
 from .notification import Notification
 from .kpi import (
-    # New Lotus KPI models
+    # Lotus KPI models
     KPITemplate, KPITemplateMetric, KPIPeriod, KPIRecord,
     KPIMetricResult, KPIApprovalLog, SupportCalcEntry,
-    # Deprecated (kept for backward compat)
-    KpiTier, KpiCriteria, TeacherPayrollConfig,
-    TeacherMonthlyKpi, KpiCalculationJob, PayrollRun,
-    KpiRawMetric, KpiDispute, Salary, SalaryAdjustment
+    # Payroll models
+    TeacherPayrollConfig, PayrollRun,
+    KpiDispute, Salary, SalaryAdjustment
 )
 from .finance import Invoice, Payment, Refund, ReportExportJob
 from .ga_schedule import GARun, GAScheduleProposal, TeacherUnavailability

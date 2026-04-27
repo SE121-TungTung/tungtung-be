@@ -28,11 +28,6 @@ class JobStatus(str, enum.Enum):
     FAILED     = "FAILED"
 
 
-class ActiveStatus(str, enum.Enum):
-    ACTIVE   = "ACTIVE"
-    INACTIVE = "INACTIVE"
-
-
 class DisputeStatus(str, enum.Enum):
     PENDING  = "PENDING"
     RESOLVED = "RESOLVED"
@@ -276,48 +271,8 @@ class SupportCalcEntry(Base):
 
 
 # ---------------------------------------------------------------------------
-# Deprecated Models (kept for backward compatibility with existing payroll data)
+# Payroll Models (active)
 # ---------------------------------------------------------------------------
-
-class KpiTier(Base):
-    """DEPRECATED: Use KPITemplate + KPITemplateMetric instead."""
-    __tablename__ = "kpi_tiers"
-    __table_args__ = (
-        CheckConstraint("min_score >= 0",           name="check_min_score_positive"),
-        CheckConstraint("max_score <= 100",          name="check_max_score_limit"),
-        CheckConstraint("min_score < max_score",     name="check_min_less_than_max"),
-        CheckConstraint("reward_percentage >= 0",    name="check_reward_positive"),
-        CheckConstraint("reward_per_lesson >= 0",    name="check_reward_per_lesson"),
-    )
-
-    id                 = Column(Integer, primary_key=True, autoincrement=True)
-    tier_name          = Column(String(20), nullable=False, unique=True)
-    min_score          = Column(Numeric(5, 2), nullable=False)
-    max_score          = Column(Numeric(5, 2), nullable=False)
-    reward_percentage  = Column(Numeric(5, 2), nullable=False)
-    reward_per_lesson  = Column(Numeric(15, 2), default=0)
-    status             = Column(
-        Enum(ActiveStatus, native_enum=True, name="kpi_tier_status_enum"),
-        default=ActiveStatus.ACTIVE,
-    )
-
-
-class KpiCriteria(Base):
-    """DEPRECATED: Use KPITemplateMetric instead."""
-    __tablename__ = "kpi_criterias"
-    __table_args__ = (
-        CheckConstraint("weight_percent > 0", name="check_weight_positive"),
-    )
-
-    id             = Column(Integer, primary_key=True, autoincrement=True)
-    criteria_code  = Column(String(50), unique=True, nullable=False)
-    criteria_name  = Column(String(100), nullable=False)
-    weight_percent = Column(Numeric(5, 2), nullable=False)
-    status         = Column(
-        Enum(ActiveStatus, native_enum=True, name="kpi_criteria_status_enum"),
-        default=ActiveStatus.ACTIVE,
-    )
-
 
 class TeacherPayrollConfig(Base):
     __tablename__ = "teacher_payroll_configs"
@@ -339,45 +294,6 @@ class TeacherPayrollConfig(Base):
     updated_at      = Column(DateTime, default=func.now(), onupdate=func.now())
 
 
-class TeacherMonthlyKpi(Base):
-    """DEPRECATED: Use KPIRecord instead."""
-    __tablename__ = "teacher_monthly_kpis"
-    __table_args__ = (
-        UniqueConstraint("teacher_id", "period", name="uix_teacher_period"),
-        CheckConstraint(
-            "total_score >= 0 AND total_score <= 100",
-            name="check_total_score",
-        ),
-    )
-
-    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    teacher_id       = Column(UUID(as_uuid=True), nullable=False)
-    period           = Column(String(7), nullable=False)
-    total_score      = Column(Numeric(5, 2), nullable=False)
-    kpi_tier_id      = Column(Integer, ForeignKey("kpi_tiers.id"), nullable=True)
-    kpi_details      = Column(JSON, nullable=False)
-    calculated_bonus = Column(Numeric(15, 2), default=0)
-    created_at       = Column(DateTime, default=func.now())
-    finalized_at     = Column(DateTime, nullable=True)
-
-
-class KpiCalculationJob(Base):
-    """DEPRECATED: Calculation is now per-record via KPIRecord."""
-    __tablename__ = "kpi_calculation_jobs"
-
-    job_id          = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    period          = Column(String(7), nullable=False)
-    status          = Column(
-        Enum(JobStatus, native_enum=True, name="job_status_enum"),
-        default=JobStatus.PENDING,
-    )
-    total_teachers  = Column(Integer, default=0)
-    processed_count = Column(Integer, default=0)
-    error_log       = Column(Text, nullable=True)
-    started_at      = Column(DateTime, default=func.now())
-    finished_at     = Column(DateTime, nullable=True)
-
-
 class PayrollRun(Base):
     __tablename__ = "payroll_runs"
 
@@ -393,33 +309,11 @@ class PayrollRun(Base):
     created_at      = Column(DateTime, default=func.now())
 
 
-class KpiRawMetric(Base):
-    """DEPRECATED: Use KPIMetricResult with data_source instead."""
-    __tablename__ = "kpi_raw_metrics"
-    __table_args__ = (
-        UniqueConstraint(
-            "teacher_id", "period", "source_module",
-            name="uix_kpi_raw_sync",
-        ),
-    )
-
-    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    teacher_id    = Column(UUID(as_uuid=True), nullable=False)
-    period        = Column(String(7), nullable=False)
-    source_module = Column(String(50), nullable=False)
-    metric_data   = Column(JSON, nullable=False)
-    synced_at     = Column(DateTime, default=func.now())
-
-
 class KpiDispute(Base):
-    """Migrated to reference KPIRecord instead of TeacherMonthlyKpi."""
     __tablename__ = "kpi_disputes"
 
     id              = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    # New FK pointing to kpi_records
     kpi_record_id   = Column(UUID(as_uuid=True), ForeignKey("kpi_records.id"), nullable=True)
-    # Keep old FK for backward compat with existing data
-    kpi_id          = Column(UUID(as_uuid=True), ForeignKey("teacher_monthly_kpis.id"), nullable=True)
     teacher_id      = Column(UUID(as_uuid=True), nullable=False)
     reason          = Column(Text, nullable=False)
     status          = Column(
