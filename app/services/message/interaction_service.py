@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 class InteractionService:
     async def mark_conversation_as_read(self, db: Session, room_id: UUID, user_id: UUID):
         """Mark all messages in a conversation as read"""
-        updated_count = self.recipient_repo.mark_room_as_read(db, user_id, room_id)
+        updated_count = recipient_repository.mark_room_as_read(db, user_id, room_id)
         db.commit()
         return {
             "success": True,
@@ -284,16 +284,20 @@ class InteractionService:
             if status.get("deleted"):
                 continue
 
+            sender_mini = None
+            if msg.sender:
+                sender_mini = UserMiniResponse(
+                    id=msg.sender.id,
+                    full_name=f"{msg.sender.first_name} {msg.sender.last_name}",
+                    email=msg.sender.email,
+                    avatar_url=msg.sender.avatar_url
+                )
+
             msg_resp = MessageResponse(
                 id=msg.id,
                 sender_id=msg.sender_id,
                 chat_room_id=msg.chat_room_id,
-                sender=UserMiniResponse(
-                    id=msg.sender.id,
-                    first_name=msg.sender.first_name,
-                    last_name=msg.sender.last_name,
-                    avatar_url=msg.sender.avatar_url
-                ) if msg.sender else None,
+                sender=sender_mini,
                 
                 message_type=msg.message_type.value if hasattr(msg.message_type, 'value') else msg.message_type,
                 content=msg.content,

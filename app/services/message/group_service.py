@@ -2,7 +2,8 @@ from uuid import UUID
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, UploadFile
-from app.models.message import ChatRoom, ChatRoomMember, MessageType, MemberRole
+from app.models.message import ChatRoom, ChatRoomMember, Message, MessageType, MemberRole, MessageStatus, MessagePriority
+from app.models.user import User
 from app.models.audit_log import AuditAction
 from app.schemas.message import GroupCreateRequest, GroupUpdateRequest, GroupDetailResponse, MemberResponse
 from app.services.cloudinary import upload_and_save_metadata
@@ -34,7 +35,7 @@ class GroupService:
             
             # Validate: all users exist
             for user_id in member_ids:
-                user = self.user_repo.get(db, id=user_id)
+                user = db.query(User).filter(User.id == user_id).first()
                 if not user:
                     raise HTTPException(
                         status_code=404, 
@@ -81,7 +82,7 @@ class GroupService:
                     )
                     db.add(member)
         
-            creator = self.user_repo.get(db, id=creator_id)
+            creator = db.query(User).filter(User.id == creator_id).first()
             creator_name = (creator.first_name + " " + creator.last_name) if creator else "Someone"
             # Send system message
             await self._send_system_message(
@@ -137,7 +138,7 @@ class GroupService:
         
         # Validate users exist
         for user_id in user_ids:
-            user = self.user_repo.get(db, id=user_id)
+            user = db.query(User).filter(User.id == user_id).first()
             if not user:
                 raise HTTPException(status_code=404, detail=f"User {user_id} not found")
         
@@ -249,7 +250,7 @@ class GroupService:
         db.delete(member_to_remove)
         db.commit()
         
-        deleted_user = self.user_repo.get(db, id=user_id_to_remove)
+        deleted_user = db.query(User).filter(User.id == user_id_to_remove).first()
         deleted_user_name = (deleted_user.first_name + " " + deleted_user.last_name) if deleted_user else "Someone"
         
         action = "left" if is_self_leave else "was removed from"
@@ -380,7 +381,7 @@ class GroupService:
                 else room.participant1_id
             )
 
-            other_user = self.user_repo.get(db, id=other_user_id)
+            other_user = db.query(User).filter(User.id == other_user_id).first()
             if not other_user:
                 return []
 
@@ -412,7 +413,7 @@ class GroupService:
         result = []
 
         for m in members:
-            user = self.user_repo.get(db, id=m.user_id)
+            user = db.query(User).filter(User.id == m.user_id).first()
             is_online = await manager.is_user_online(m.user_id)
 
             result.append({
@@ -464,5 +465,18 @@ class GroupService:
                 is_online=m.get('is_online')
             ) for m in members_data]
         )
+
+    async def _send_system_message(self, db: Session, room_id: UUID, content: str):
+        """Create a system message in a chat room (no sender)."""
+        system_msg = Message(
+            chat_room_id=room_id,
+            sender_id=None,
+            message_type=MessageType.SYSTEM,
+            content=content,
+            status=MessageStatus.SENT,
+            priority=MessagePriority.NORMAL,
+        )
+        db.add(system_msg)
+        db.flush()
     
 message_group_service = GroupService()

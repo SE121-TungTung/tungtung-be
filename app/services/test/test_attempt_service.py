@@ -544,12 +544,13 @@ class AttemptService:
             noti_info=noti
         )
 
-        return {
-            "status": "graded",
-            "attempt_id": attempt.id,
-            "band_score": attempt.band_score,
-            "passed": attempt.passed
-        }
+        # Reload attempt with relationships for proper response
+        attempt = db.query(TestAttempt).options(
+            joinedload(TestAttempt.test),
+            joinedload(TestAttempt.responses).joinedload(TestResponse.question)
+        ).filter(TestAttempt.id == attempt_id).first()
+
+        return self._build_full_attempt_response(db=db, attempt=attempt)
 
 
 
