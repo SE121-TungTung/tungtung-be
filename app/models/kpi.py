@@ -357,6 +357,7 @@ class Salary(Base):
     )
     approved_by  = Column(UUID(as_uuid=True), nullable=True)
     approved_at  = Column(DateTime, nullable=True)
+    bonus_from_kpi_period_id = Column(UUID(as_uuid=True), ForeignKey("kpi_periods.id"), nullable=True)
 
 
 class SalaryAdjustment(Base):

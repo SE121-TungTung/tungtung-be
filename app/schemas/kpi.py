@@ -383,6 +383,7 @@ class SalaryResponse(BaseModel):
     status            : SalaryStatus
     approved_by       : Optional[UUID] = None
     approved_at       : Optional[datetime] = None
+    bonus_from_kpi_period_id : Optional[UUID] = None
     model_config = ConfigDict(from_attributes=True)
 
 class SalaryAdjustmentCreate(BaseModel):

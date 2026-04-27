@@ -200,7 +200,17 @@ class PayrollRunService:
                     ).first()
 
                     base_calc = config.base_salary if config.contract_type == ContractType.FULL_TIME else 0
-                    kpi_bonus = kpi.bonus_amount or Decimal("0")
+
+                    # Guard: check if bonus from this KPI period was already paid
+                    # in a different month's salary
+                    already_paid = db.query(Salary).filter(
+                        Salary.teacher_id == kpi.staff_id,
+                        Salary.bonus_from_kpi_period_id == kpi_period.id,
+                        Salary.kpi_bonus_calc > 0,
+                        Salary.period != period,  # different month
+                    ).first()
+
+                    kpi_bonus = Decimal("0") if already_paid else (kpi.bonus_amount or Decimal("0"))
                     
                     if not salary:
                         salary = Salary(
@@ -212,7 +222,8 @@ class PayrollRunService:
                             kpi_bonus_calc=kpi_bonus,
                             fixed_allowance=config.fixed_allowance,
                             net_salary=base_calc + kpi_bonus + config.fixed_allowance,
-                            status=SalaryStatus.DRAFT
+                            status=SalaryStatus.DRAFT,
+                            bonus_from_kpi_period_id=kpi_period.id if kpi_bonus > 0 else None,
                         )
                         db.add(salary)
                     elif salary.status == SalaryStatus.DRAFT:
@@ -221,6 +232,7 @@ class PayrollRunService:
                         salary.base_salary_calc = base_calc
                         salary.kpi_bonus_calc = kpi_bonus
                         salary.fixed_allowance = config.fixed_allowance
+                        salary.bonus_from_kpi_period_id = kpi_period.id if kpi_bonus > 0 else salary.bonus_from_kpi_period_id
                         
                         salary.net_salary = base_calc + kpi_bonus + config.fixed_allowance + salary.total_adjustments
                     
