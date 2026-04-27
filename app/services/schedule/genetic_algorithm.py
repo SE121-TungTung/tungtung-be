@@ -42,6 +42,13 @@ TIME_PERIODS: Dict[str, Set[int]] = {
     "evening": {5, 6},
 }
 
+# Valid consecutive slot groups (slots that are time-contiguous, no break gaps)
+# Slots 2→3 cross the lunch break (11:15→13:00) and are NOT contiguous.
+CONSECUTIVE_SLOT_GROUPS: List[List[int]] = [
+    [1], [2], [3], [4], [5], [6],        # single slots
+    [1, 2], [3, 4], [5, 6],              # 2-slot within same period
+]
+
 
 # ============================================================================
 # DATA STRUCTURES — Input
@@ -315,24 +322,21 @@ def _generate_sessions_for_class(
             d = random.choice(available_dates)
             day_name = DAYS[d.weekday()]
 
-            # Pick slot count (1–3 consecutive slots)
+            # Pick a valid time-contiguous slot group
             n_slots = random.choice([1, 2])
-            max_start = max(lookups.all_slot_numbers) - n_slots + 1
-            if max_start < min(lookups.all_slot_numbers):
-                max_start = min(lookups.all_slot_numbers)
-            start_slot = random.randint(min(lookups.all_slot_numbers), max_start)
-            slots = list(range(start_slot, start_slot + n_slots))
+            valid_groups = [g for g in CONSECUTIVE_SLOT_GROUPS if len(g) == n_slots]
+            slots = list(random.choice(valid_groups))
 
             # Apply time-period preference probabilistically
             if cls.preferred_time_period and random.random() < 0.7:
                 preferred_slots = TIME_PERIODS.get(cls.preferred_time_period, set())
                 if preferred_slots:
-                    filtered = [s for s in lookups.all_slot_numbers if s in preferred_slots]
-                    if filtered:
-                        max_s = max(filtered) - n_slots + 1
-                        if max_s >= min(filtered):
-                            start_slot = random.randint(min(filtered), max_s)
-                            slots = list(range(start_slot, start_slot + n_slots))
+                    preferred_groups = [
+                        g for g in CONSECUTIVE_SLOT_GROUPS
+                        if len(g) == n_slots and set(g).issubset(preferred_slots)
+                    ]
+                    if preferred_groups:
+                        slots = list(random.choice(preferred_groups))
 
             # Check for duplicate day+slots in same week for this class
             dup = False
@@ -682,16 +686,11 @@ def mutate(
 
 
 def _randomise_slots(gene: Gene, lookups: _Lookups) -> None:
-    """Randomise time_slots for a gene while keeping slot count the same."""
+    """Randomise time_slots for a gene, only using time-contiguous slot groups."""
     n_slots = len(gene.time_slots) if gene.time_slots else random.choice([1, 2])
-    all_slots = lookups.all_slot_numbers
-    if not all_slots:
-        return
-    max_start = max(all_slots) - n_slots + 1
-    if max_start < min(all_slots):
-        max_start = min(all_slots)
-    start = random.randint(min(all_slots), max_start)
-    gene.time_slots = list(range(start, start + n_slots))
+    valid_groups = [g for g in CONSECUTIVE_SLOT_GROUPS if len(g) == n_slots]
+    if valid_groups:
+        gene.time_slots = list(random.choice(valid_groups))
 
 
 # ============================================================================
