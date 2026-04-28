@@ -4,7 +4,7 @@ from uuid import UUID
 from typing import List, Optional
 
 from app.core.database import get_db
-from app.dependencies import get_current_admin_user, get_current_user, CommonQueryParams
+from app.dependencies import get_current_admin_user, get_current_active_user, get_current_user, CommonQueryParams
 from app.models.academic import Class
 from app.routers.generator import create_crud_router
 from app.schemas.classes import ClassResponse
@@ -38,7 +38,8 @@ def list_classes(
     sort_order: str = Query("asc", pattern="^(asc|desc)$"),
     search: Optional[str] = Query(None),
     include_deleted: bool = Query(False),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
 ):
     """Danh sách lớp học có phân trang, sort, search và join các bảng liên quan"""
 
@@ -92,7 +93,7 @@ def list_classes(
 # GET CLASS DETAIL
 # ============================================================
 @router.get("/classes/{class_id}", response_model=ApiResponse[ClassResponse])
-def get_class(class_id: UUID, db: Session = Depends(get_db)):
+def get_class(class_id: UUID, db: Session = Depends(get_db), current_user = Depends(get_current_active_user)):
     c = (
         db.query(Class)
         .options(

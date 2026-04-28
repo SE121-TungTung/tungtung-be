@@ -64,7 +64,7 @@ from app.services.kpi.payroll_service import salary_service, teacher_payroll_con
 router = APIRouter(prefix="", tags=["KPI & Payroll"])
 
 # Shorthand for role dependencies
-AdminOnly = Depends(require_role(UserRole.SYSTEM_ADMIN))
+AdminOnly = Depends(require_role(UserRole.CENTER_ADMIN))
 CenterAdminUp = Depends(require_any_role(UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN))
 OfficeAdminUp = Depends(require_any_role(
     UserRole.OFFICE_ADMIN, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN
