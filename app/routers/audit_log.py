@@ -9,7 +9,7 @@ from app.services.audit_log_service import audit_service
 from uuid import UUID
 from app.models.user import User
 
-router = APIRouter(prefix="/audit_logs", tags=["Audit Logs"])
+router = APIRouter(prefix="/audit-logs", tags=["Audit Logs"])
 
 @router.get("", response_model=PaginationResponse[AuditLogResponse])
 async def get_audit_logs(

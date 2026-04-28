@@ -463,6 +463,20 @@ async def get_teacher_kpi_history(
 # 8. Teacher Payroll Config & Salary
 # ===========================================================================
 
+@router.get(
+    "/teachers/{teacher_id}/payroll-config",
+    response_model=ApiResponse[TeacherPayrollConfigResponse],
+)
+async def get_teacher_payroll_config(
+    teacher_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = TeacherOrAdmin,
+):
+    _assert_admin_or_self(current_user, teacher_id)
+    config = teacher_payroll_config_service.get_config(db, teacher_id)
+    return ApiResponse(success=True, data=config, message="Thành công")
+
+
 @router.put(
     "/teachers/{teacher_id}/payroll-config",
     response_model=ApiResponse[TeacherPayrollConfigResponse],
@@ -525,6 +539,25 @@ async def create_payroll_run(
     current_user: User = CenterAdminUp,
 ):
     run = payroll_run_service.create_run(db, payload, background_tasks)
+    return ApiResponse(success=True, data=run, message="Thành công")
+
+
+@router.get("/payroll-runs", response_model=ApiResponse[List[PayrollRunResponse]])
+async def list_payroll_runs(
+    db: Session = Depends(get_db),
+    current_user: User = CenterAdminUp,
+):
+    runs = payroll_run_service.list_runs(db)
+    return ApiResponse(success=True, data=runs, message="Thành công")
+
+
+@router.get("/payroll-runs/{run_id}", response_model=ApiResponse[PayrollRunResponse])
+async def get_payroll_run(
+    run_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = CenterAdminUp,
+):
+    run = payroll_run_service.get_run(db, run_id)
     return ApiResponse(success=True, data=run, message="Thành công")
 
 

@@ -81,6 +81,28 @@ class InvoiceService:
 
         return InvoiceResponse.model_validate(invoice)
 
+    def list_all_invoices(
+        self, db: Session, status: str | None, student_id: UUID | None,
+        page: int, limit: int,
+    ) -> Tuple[List[InvoiceResponse], int]:
+        """Admin xem tất cả hóa đơn (phân trang, lọc tùy chọn)."""
+        query = db.query(Invoice).filter(Invoice.deleted_at.is_(None))
+
+        if status:
+            query = query.filter(Invoice.status == status)
+        if student_id:
+            query = query.filter(Invoice.student_id == student_id)
+
+        total = query.count()
+        items = (
+            query
+            .order_by(Invoice.created_at.desc())
+            .offset((page - 1) * limit)
+            .limit(limit)
+            .all()
+        )
+        return [InvoiceResponse.model_validate(i) for i in items], total
+
     def list_my_invoices(
         self, db: Session, student_id: UUID, page: int, limit: int
     ) -> Tuple[List[InvoiceResponse], int]:

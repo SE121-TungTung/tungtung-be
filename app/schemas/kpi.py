@@ -372,6 +372,7 @@ class TeacherPayrollConfigResponse(TeacherPayrollConfigUpdate):
 class SalaryResponse(BaseModel):
     id                : UUID
     teacher_id        : UUID
+    teacher_name      : Optional[str] = None
     period            : str
     contract_type     : ContractType
     lesson_count      : int

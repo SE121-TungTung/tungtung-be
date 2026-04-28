@@ -25,23 +25,38 @@ class SalaryService:
 
         return salary
 
-    def get_history(self, db: Session, teacher_id: UUID, period: str | None, page: int, limit: int) -> Tuple[List[Salary], int]:
+    def _enrich_with_teacher_name(self, db: Session, salaries: list[Salary]) -> list[dict]:
+        """Attach teacher_name to each salary record."""
+        if not salaries:
+            return []
+        teacher_ids = list({s.teacher_id for s in salaries})
+        teachers = db.query(User.id, User.first_name, User.last_name).filter(User.id.in_(teacher_ids)).all()
+        name_map = {t.id: f"{t.last_name} {t.first_name}" for t in teachers}
+        results = []
+        for s in salaries:
+            from app.schemas.kpi import SalaryResponse
+            data = SalaryResponse.model_validate(s)
+            data.teacher_name = name_map.get(s.teacher_id)
+            results.append(data)
+        return results
+
+    def get_history(self, db: Session, teacher_id: UUID, period: str | None, page: int, limit: int) -> Tuple[list, int]:
         query = db.query(Salary).filter(Salary.teacher_id == teacher_id)
         if period:
             query = query.filter(Salary.period == period)
             
         total = query.count()
         salaries = query.order_by(Salary.period.desc()).offset((page - 1) * limit).limit(limit).all()
-        return salaries, total
+        return self._enrich_with_teacher_name(db, salaries), total
 
-    def get_all(self, db: Session, period: str | None, page: int, limit: int) -> Tuple[List[Salary], int]:
+    def get_all(self, db: Session, period: str | None, page: int, limit: int) -> Tuple[list, int]:
         query = db.query(Salary)
         if period:
             query = query.filter(Salary.period == period)
             
         total = query.count()
         salaries = query.order_by(Salary.period.desc()).offset((page - 1) * limit).limit(limit).all()
-        return salaries, total
+        return self._enrich_with_teacher_name(db, salaries), total
 
     def approve(self, db: Session, salary_id: UUID, admin_id: UUID) -> Salary:
         salary = db.query(Salary).filter(Salary.id == salary_id).first()
@@ -89,6 +104,14 @@ class SalaryService:
 
 
 class TeacherPayrollConfigService:
+    def get_config(self, db: Session, teacher_id: UUID) -> TeacherPayrollConfig:
+        config = db.query(TeacherPayrollConfig).filter(
+            TeacherPayrollConfig.teacher_id == teacher_id
+        ).first()
+        if not config:
+            raise HTTPException(status_code=404, detail="Chưa có cấu hình lương cho giáo viên này")
+        return config
+
     def update_config(self, db: Session, teacher_id: UUID, payload: TeacherPayrollConfigUpdate) -> TeacherPayrollConfig:
         config = db.query(TeacherPayrollConfig).filter(TeacherPayrollConfig.teacher_id == teacher_id).first()
         if config:
@@ -133,6 +156,15 @@ class PayrollRunService:
 
         bg_tasks.add_task(self._process_payroll, run.id, payload.period)
         return run
+
+    def get_run(self, db: Session, run_id: UUID) -> PayrollRun:
+        run = db.query(PayrollRun).filter(PayrollRun.id == run_id).first()
+        if not run:
+            raise HTTPException(status_code=404, detail="Không tìm thấy tiến trình tính lương")
+        return run
+
+    def list_runs(self, db: Session) -> list[PayrollRun]:
+        return db.query(PayrollRun).order_by(PayrollRun.created_at.desc()).all()
 
     def _process_payroll(self, run_id: UUID, period: str):
         """
