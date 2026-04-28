@@ -431,6 +431,10 @@ class GAScheduleService:
 
             # Update GA run status
             ga_run.status = GARunStatus.APPLIED
+
+            # Update classes.preferred_slots with the new weekly pattern
+            self._update_class_preferred_slots(db, proposals)
+
             db.commit()
 
             # Send notifications in a separate session to avoid blocking
@@ -637,16 +641,34 @@ class GAScheduleService:
         classes_db = query.all()
 
         classes_input = []
+
+        # Build preference map from request
+        pref_map: Dict[UUID, str] = {}
+        if hasattr(request, 'class_preferences') and request.class_preferences:
+            for cp in request.class_preferences:
+                pref_map[cp.class_id] = cp.preferred_time_period
+
         for c in classes_db:
-            # Determine preferred time period from schedule
-            preferred = None
-            schedule = c.schedule or []
-            if isinstance(schedule, str):
+            pref_slots = c.preferred_slots or []
+            unavail_slots = c.unavailable_slots or []
+
+            if isinstance(pref_slots, str):
                 import json
                 try:
-                    schedule = json.loads(schedule)
+                    pref_slots = json.loads(pref_slots)
                 except Exception:
-                    schedule = []
+                    pref_slots = []
+            if isinstance(unavail_slots, str):
+                import json
+                try:
+                    unavail_slots = json.loads(unavail_slots)
+                except Exception:
+                    unavail_slots = []
+
+            # preferred_time_period: 1) request param → 2) infer from preferred_slots → 3) None
+            preferred = pref_map.get(c.id)
+            if not preferred and pref_slots:
+                preferred = self._infer_preferred_period(pref_slots)
 
             classes_input.append(GAClassInput(
                 class_id=c.id,
@@ -655,7 +677,8 @@ class GAScheduleService:
                 room_id=c.room_id,
                 max_students=c.max_students,
                 sessions_per_week=c.sessions_per_week or 2,
-                fixed_schedule=schedule if isinstance(schedule, list) else [],
+                preferred_slots=pref_slots if isinstance(pref_slots, list) else [],
+                unavailable_slots=unavail_slots if isinstance(unavail_slots, list) else [],
                 preferred_time_period=preferred,
             ))
 
@@ -697,17 +720,6 @@ class GAScheduleService:
                         (rec.unavailable_date, rec.time_slots or [])
                     )
 
-        # Class fixed times
-        class_fixed: Dict[UUID, List[Tuple[str, List[int]]]] = {}
-        for c in classes_input:
-            if c.fixed_schedule:
-                fixed = []
-                for rule in c.fixed_schedule:
-                    if isinstance(rule, dict) and "day" in rule and "slots" in rule:
-                        fixed.append((rule["day"], rule["slots"]))
-                if fixed:
-                    class_fixed[c.class_id] = fixed
-
         # Paired classes from request
         paired: List[Tuple[UUID, UUID]] = []
         if request.paired_class_ids:
@@ -735,13 +747,49 @@ class GAScheduleService:
 
         constraints = GAConstraintInput(
             teacher_unavailability=teacher_unavail,
-            class_fixed_times=class_fixed,
+            class_fixed_times={},  # No longer used — preferred_slots is soft
             paired_classes=paired,
             exam_dates={},  # No exam_dates feature yet
             existing_sessions=existing_sessions,
         )
 
         return classes_input, rooms_input, constraints
+
+    @staticmethod
+    def _infer_preferred_period(preferred_slots: list):
+        """Suy ra buổi chủ đạo từ preferred_slots JSONB."""
+        from app.services.schedule.genetic_algorithm import TIME_PERIODS
+        all_slots = []
+        for rule in preferred_slots:
+            if isinstance(rule, dict):
+                all_slots.extend(rule.get("slots", []))
+        if not all_slots:
+            return None
+        slot_set = set(all_slots)
+        for period_name, period_slots in TIME_PERIODS.items():
+            if slot_set.issubset(period_slots):
+                return period_name
+        return None
+
+    def _update_class_preferred_slots(self, db, proposals) -> None:
+        """Update classes.preferred_slots with the new weekly pattern from GA results."""
+        from collections import defaultdict
+        from app.services.schedule.genetic_algorithm import DAYS
+
+        class_patterns: Dict[UUID, Dict[str, set]] = defaultdict(lambda: defaultdict(set))
+        for p in proposals:
+            day_name = DAYS[p.session_date.weekday()]
+            for slot in (p.time_slots or []):
+                class_patterns[p.class_id][day_name].add(slot)
+
+        for class_id, day_slots in class_patterns.items():
+            new_preferred = [
+                {"day": day, "slots": sorted(slots)}
+                for day, slots in sorted(day_slots.items(), key=lambda x: DAYS.index(x[0]))
+            ]
+            cls = db.query(Class).filter(Class.id == class_id).first()
+            if cls:
+                cls.preferred_slots = new_preferred
 
 
 # Singleton instance

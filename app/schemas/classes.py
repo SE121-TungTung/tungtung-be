@@ -11,7 +11,8 @@ class ClassBase(BaseModel):
     room_id: Optional[UUID4] = None
     start_date: date
     end_date: date
-    schedule: Any
+    preferred_slots: Any = []    # [{"day":"monday","slots":[1,2]}]
+    unavailable_slots: Any = []  # [{"day":"wednesday","slots":[1,2,3,4,5,6]}]
     max_students: int
     current_students: int
     fee_amount: Decimal

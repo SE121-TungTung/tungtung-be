@@ -43,7 +43,8 @@ def _make_classes(n=3, teacher_count=2):
             room_id=None,
             max_students=20,
             sessions_per_week=2,
-            fixed_schedule=[],
+            preferred_slots=[],
+            unavailable_slots=[],
             preferred_time_period="morning" if i % 2 == 0 else None,
         ))
     return classes

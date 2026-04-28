@@ -13,6 +13,14 @@ from uuid import UUID
 # REQUEST SCHEMAS
 # ============================================================================
 
+class GAClassPreference(BaseModel):
+    """Buổi ưu thích cho 1 lớp khi chạy GA."""
+    class_id: UUID
+    preferred_time_period: str = Field(
+        ..., pattern="^(morning|afternoon|evening)$",
+        description="Buổi ưu thích: morning / afternoon / evening"
+    )
+
 class GAScheduleRequest(BaseModel):
     """Request body for running the GA schedule optimizer."""
     start_date: date = Field(..., description="Ngày bắt đầu khoảng TKB cần xếp")
@@ -36,6 +44,18 @@ class GAScheduleRequest(BaseModel):
     paired_class_ids: Optional[List[List[UUID]]] = Field(
         None,
         description="Cặp lớp cần cùng buổi, VD: [[class_id_1, class_id_2], ...]"
+    )
+
+    # Per-class time preference (overrides auto-infer from preferred_slots)
+    class_preferences: Optional[List[GAClassPreference]] = Field(
+        None,
+        description="Buổi ưa thích cho từng lớp. Nếu không nhập, tự suy từ preferred_slots."
+    )
+
+    # Session distribution weight
+    weight_session_distribution: float = Field(
+        8.0, ge=0.0,
+        description="Weight: phân bổ đều số buổi mỗi tuần"
     )
 
     @field_validator('end_date')

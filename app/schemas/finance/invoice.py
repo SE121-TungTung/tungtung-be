@@ -34,6 +34,9 @@ class InvoiceResponse(BaseModel):
     student_id: UUID
     enrollment_id: UUID
 
+    student_name: Optional[str] = Field(None, description="Họ tên học viên")
+    course_name: Optional[str] = Field(None, description="Tên khóa học")
+
     original_amount: Decimal = Field(..., description="Học phí gốc của khóa")
     discount_amount: Decimal = Field(..., description="Giảm giá")
     final_amount: Decimal = Field(..., description="= original - discount")

@@ -81,6 +81,48 @@ class InvoiceService:
 
         return InvoiceResponse.model_validate(invoice)
 
+    # ------------------------------------------------------------------
+    # Helper: enrich Invoice rows with student_name & course_name
+    # ------------------------------------------------------------------
+    def _enrich_invoices(
+        self, db: Session, invoices: list[Invoice]
+    ) -> List[InvoiceResponse]:
+        """Attach student_name and course_name to each invoice."""
+        if not invoices:
+            return []
+
+        # Collect IDs
+        student_ids = {inv.student_id for inv in invoices}
+        enrollment_ids = {inv.enrollment_id for inv in invoices}
+
+        # Batch-load student names
+        students = (
+            db.query(User.id, User.first_name, User.last_name)
+            .filter(User.id.in_(student_ids))
+            .all()
+        )
+        student_map = {
+            s.id: f"{s.last_name} {s.first_name}" for s in students
+        }
+
+        # Batch-load course names via enrollment → class → course
+        enrollment_courses = (
+            db.query(ClassEnrollment.id, Course.name)
+            .join(Class, Class.id == ClassEnrollment.class_id)
+            .join(Course, Course.id == Class.course_id)
+            .filter(ClassEnrollment.id.in_(enrollment_ids))
+            .all()
+        )
+        course_map = {ec.id: ec.name for ec in enrollment_courses}
+
+        results: List[InvoiceResponse] = []
+        for inv in invoices:
+            resp = InvoiceResponse.model_validate(inv)
+            resp.student_name = student_map.get(inv.student_id)
+            resp.course_name = course_map.get(inv.enrollment_id)
+            results.append(resp)
+        return results
+
     def list_all_invoices(
         self, db: Session, status: str | None, student_id: UUID | None,
         page: int, limit: int,
@@ -101,7 +143,7 @@ class InvoiceService:
             .limit(limit)
             .all()
         )
-        return [InvoiceResponse.model_validate(i) for i in items], total
+        return self._enrich_invoices(db, items), total
 
     def list_my_invoices(
         self, db: Session, student_id: UUID, page: int, limit: int
@@ -119,7 +161,7 @@ class InvoiceService:
             .limit(limit)
             .all()
         )
-        return [InvoiceResponse.model_validate(i) for i in items], total
+        return self._enrich_invoices(db, items), total
 
     def get_invoice_detail(
         self, db: Session, invoice_id: UUID, current_user: User
@@ -143,7 +185,7 @@ class InvoiceService:
         ):
             raise HTTPException(status_code=403, detail="Bạn không có quyền xem hóa đơn này")
 
-        return InvoiceResponse.model_validate(invoice)
+        return self._enrich_invoices(db, [invoice])[0]
 
 
 invoice_service = InvoiceService()

@@ -71,7 +71,8 @@ class GAClassInput:
     room_id: Optional[UUID]          # Preferred room (nullable)
     max_students: int
     sessions_per_week: int
-    fixed_schedule: List[Dict]       # From Class.schedule JSONB: [{"day": "monday", "slots": [1,2]}, ...]
+    preferred_slots: List[Dict]       # Soft: [{"day": "monday", "slots": [1,2]}, ...]
+    unavailable_slots: List[Dict]    # Hard: [{"day": "wednesday", "slots": [1,2,3,4,5,6]}, ...]
     preferred_time_period: Optional[str] = None  # "morning" / "afternoon" / "evening"
 
 
@@ -123,6 +124,7 @@ class GAConfig:
     weight_time_preference: float = 5.0
     weight_room_utilization: float = 3.0
     weight_preserve_existing: float = 6.0
+    weight_session_distribution: float = 8.0
 
 
 # ============================================================================
@@ -173,9 +175,9 @@ class _Lookups:
     eligible_rooms: Dict[UUID, List[UUID]]                 # class_id → rooms with enough capacity
     unavail_set: Set[Tuple[UUID, date, int]]               # (teacher_id, date, slot)
     unavail_full_day: Set[Tuple[UUID, date]]                # (teacher_id, date) blocked whole day
-    fixed_times: Dict[UUID, List[Tuple[str, List[int]]]]   # class_id → [(day, slots)]
     paired_classes: List[Tuple[UUID, UUID]]
     exam_set: Set[Tuple[UUID, date]]                       # (class_id, date)
+    exam_class_ids: Set[UUID]                              # Pre-computed set of class IDs with exams
     existing_map: Dict[Tuple[UUID, date], List[int]]       # (class_id, date) → slots
     time_slot_configs: List[TimeSlotConfig]
     all_slot_numbers: List[int]
@@ -237,6 +239,9 @@ def _build_lookups(
 
     all_slot_numbers = sorted([ts.slot_number for ts in time_slots_config])
 
+    # Pre-compute exam class IDs for O(1) lookup in soft constraint
+    exam_class_ids = {cid for cid, _ in exam_set}
+
     return _Lookups(
         class_map=class_map,
         room_map=room_map,
@@ -244,9 +249,9 @@ def _build_lookups(
         eligible_rooms=eligible_rooms,
         unavail_set=unavail_set,
         unavail_full_day=unavail_full_day,
-        fixed_times=constraints.class_fixed_times,
         paired_classes=constraints.paired_classes,
         exam_set=exam_set,
+        exam_class_ids=exam_class_ids,
         existing_map=existing_map,
         time_slot_configs=time_slots_config,
         all_slot_numbers=all_slot_numbers,
@@ -266,7 +271,7 @@ def _generate_sessions_for_class(
     Generate genes for ONE class across all weeks in the date range.
 
     Strategy:
-      - If the class has fixed_schedule rules, honour them as much as possible.
+      - If the class has preferred_slots rules, use them as soft hints for placement.
       - Otherwise, randomly pick day+slots per week.
     """
     genes: List[Gene] = []
@@ -277,7 +282,7 @@ def _generate_sessions_for_class(
     # Group dates by ISO week
     weeks: Dict[int, List[date]] = {}
     for d in dates:
-        wk = d.isocalendar()[1]
+        wk = (d.isocalendar()[0], d.isocalendar()[1])  # (year, week) to avoid cross-year collision
         weeks.setdefault(wk, []).append(d)
 
     session_idx = 0
@@ -286,14 +291,28 @@ def _generate_sessions_for_class(
         sessions_needed = cls.sessions_per_week
         sessions_placed = 0
 
-        # ----- Try fixed schedule first -----
-        fixed = lookups.fixed_times.get(cls.class_id, cls.fixed_schedule)
-        if fixed:
-            for rule in fixed:
+        # ----- Try preferred_slots as soft hint (70% follow, 30% explore) -----
+        # Build class unavailability lookup for quick check
+        unavail_days = {}
+        for ur in cls.unavailable_slots:
+            if isinstance(ur, dict):
+                unavail_days.setdefault(ur.get("day"), set()).update(ur.get("slots", []))
+
+        if cls.preferred_slots:
+            for rule in cls.preferred_slots:
                 if sessions_placed >= sessions_needed:
                     break
                 day_name = rule["day"] if isinstance(rule, dict) else rule[0]
                 slots = rule["slots"] if isinstance(rule, dict) else rule[1]
+
+                # 70% chance to follow preferred pattern, 30% skip to explore
+                if random.random() > 0.7:
+                    continue
+
+                # Skip if slot is unavailable for this class
+                if day_name in unavail_days and set(slots) & unavail_days[day_name]:
+                    continue
+
                 # Find matching date in this week
                 for d in week_dates:
                     if DAYS[d.weekday()] == day_name:
@@ -425,6 +444,24 @@ def _count_hard_violations(individual: Individual, lookups: _Lookups) -> int:
             continue
         teacher_id = cls.teacher_id
 
+        # --- 3. Teacher unavailable (once per gene, NOT per slot) ---
+        if (teacher_id, gene.session_date) in lookups.unavail_full_day:
+            violations += 1
+        else:
+            for slot in gene.time_slots:
+                if (teacher_id, gene.session_date, slot) in lookups.unavail_set:
+                    violations += 1
+                    break  # 1 violation per gene max
+
+        # --- 4. Class unavailable_slots (hard constraint) ---
+        if cls.unavailable_slots:
+            gene_day = gene.day
+            for rule in cls.unavailable_slots:
+                if isinstance(rule, dict) and rule.get("day") == gene_day:
+                    if set(gene.time_slots) & set(rule.get("slots", [])):
+                        violations += 1
+                        break
+
         for slot in gene.time_slots:
             # --- 1. Teacher clash ---
             t_key = (teacher_id, gene.session_date, slot)
@@ -434,31 +471,6 @@ def _count_hard_violations(individual: Individual, lookups: _Lookups) -> int:
             if gene.room_id:
                 r_key = (gene.room_id, gene.session_date, slot)
                 room_slots[r_key] = room_slots.get(r_key, 0) + 1
-
-            # --- 3. Teacher unavailable ---
-            if (teacher_id, gene.session_date) in lookups.unavail_full_day:
-                violations += 1
-            elif (teacher_id, gene.session_date, slot) in lookups.unavail_set:
-                violations += 1
-
-        # --- 4. Class fixed time (must match) ---
-        fixed_rules = lookups.fixed_times.get(gene.class_id, [])
-        if fixed_rules:
-            # Check if this gene's day+slots match any fixed rule
-            matched = False
-            for rule in fixed_rules:
-                r_day = rule["day"] if isinstance(rule, dict) else rule[0]
-                r_slots = rule["slots"] if isinstance(rule, dict) else rule[1]
-                if gene.day == r_day and sorted(gene.time_slots) == sorted(r_slots):
-                    matched = True
-                    break
-            # Only penalise if class has fixed rules for THIS day
-            day_rules = [
-                r for r in fixed_rules
-                if (r["day"] if isinstance(r, dict) else r[0]) == gene.day
-            ]
-            if day_rules and not matched:
-                violations += 1
 
         # --- 5. Room capacity ---
         if gene.room_id and cls:
@@ -526,7 +538,7 @@ def _compute_soft_score(
             pass  # No bonus (or could add negative, but we keep it simple)
         else:
             # Only add bonus if this class actually has exam dates registered
-            if gene.class_id in {cid for cid, _ in lookups.exam_set}:
+            if gene.class_id in lookups.exam_class_ids:
                 score += config.weight_exam_avoidance
 
     # --- 4. Time preference: class scheduled in preferred period ---
@@ -552,6 +564,21 @@ def _compute_soft_score(
         existing_slots = lookups.existing_map.get((gene.class_id, gene.session_date))
         if existing_slots and sorted(gene.time_slots) == sorted(existing_slots):
             score += config.weight_preserve_existing
+
+    # --- 7. Sessions per week distribution: bonus if correct count per week ---
+    class_week_counts: Dict[Tuple[UUID, Tuple[int, int]], int] = {}
+    for gene in individual:
+        cls = lookups.class_map.get(gene.class_id)
+        if not cls:
+            continue
+        wk = (gene.session_date.isocalendar()[0], gene.session_date.isocalendar()[1])
+        key = (gene.class_id, wk)
+        class_week_counts[key] = class_week_counts.get(key, 0) + 1
+
+    for (cid, _wk), count in class_week_counts.items():
+        cls = lookups.class_map.get(cid)
+        if cls and count == cls.sessions_per_week:
+            score += config.weight_session_distribution
 
     return score
 
@@ -668,9 +695,12 @@ def mutate(
         cls = lookups.class_map.get(gene.class_id)
 
         if mutation_type == "time_shift":
-            # Pick a new random date from the schedule
-            if lookups.schedule_dates:
-                new_date = random.choice(lookups.schedule_dates)
+            # Pick a new random date within the SAME ISO week to maintain distribution
+            cur_iso = (gene.session_date.isocalendar()[0], gene.session_date.isocalendar()[1])
+            same_week = [d for d in lookups.schedule_dates
+                         if (d.isocalendar()[0], d.isocalendar()[1]) == cur_iso]
+            if same_week:
+                new_date = random.choice(same_week)
                 gene.session_date = new_date
                 gene.day = DAYS[new_date.weekday()]
             # Also change slots

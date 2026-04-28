@@ -14,6 +14,7 @@ from app.schemas.base_schema import ApiResponse, PaginationResponse
 from app.core.exceptions import APIException
 
 from app.schemas.message import (
+    GroupDetailResponse,
     MessageCreate, 
     ConversationResponse, 
     GroupCreateRequest, 
@@ -177,7 +178,7 @@ async def remove_group_member(
     )
     return ApiResponse(data=result)
 
-@router.put("/groups/{room_id}", response_model=ApiResponse[ConversationResponse])
+@router.put("/groups/{room_id}", response_model=ApiResponse[GroupDetailResponse])
 async def update_group(
     room_id: UUID,
     title: Optional[str] = Form(None),

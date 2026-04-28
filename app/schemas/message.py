@@ -75,7 +75,7 @@ class GroupDetailResponse(BaseModel):
     description: Optional[str] = None
     avatar_url: Optional[str] = None
     room_type: str
-    created_at: datetime
+    created_at: Optional[datetime] = None
     
     member_count: int = 0
     members: List[MemberResponse] = Field(default_factory=list)

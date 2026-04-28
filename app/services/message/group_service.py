@@ -439,7 +439,7 @@ class GroupService:
         user_id: UUID
     ):
         """Get group details including members"""
-        members_data = await message_group_service.get_group_members(db, room_id, user_id)
+        members_data = await self.get_group_members(db, room_id, user_id)
         
         # Get room info
         room = db.query(ChatRoom).filter(ChatRoom.id == room_id).first()

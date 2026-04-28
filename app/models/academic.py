@@ -123,7 +123,16 @@ class Class(BaseModel):
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
     
-    schedule = Column(JSONB, nullable=False, default=list)
+    # Quy tắc lịch học mong muốn (soft preference cho GA).
+    # Format: [{"day": "monday", "slots": [1,2]}, {"day": "thursday", "slots": [3,4]}]
+    # GA dùng làm soft hint khi init + soft bonus khi đúng pattern.
+    # Được cập nhật tự động sau mỗi lần apply GA proposal.
+    preferred_slots = Column(JSONB, nullable=False, default=list)
+
+    # Lịch bận cố định của lớp (hard constraint cho GA).
+    # Format: [{"day": "wednesday", "slots": [1,2,3,4,5,6]}, {"day": "friday", "slots": [5,6]}]
+    # GA sẽ KHÔNG xếp buổi học vào các slot này.
+    unavailable_slots = Column(JSONB, nullable=False, default=list)
     
     max_students = Column(Integer, default=25, nullable=False)
     current_students = Column(Integer, default=0, nullable=False)

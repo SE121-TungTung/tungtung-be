@@ -13,12 +13,13 @@ from app.schemas.schedule import ScheduleGenerateRequest, SessionProposal, Confl
 # --- MOCK OBJECTS TỐI THIỂU ---
 
 class MockClass:
-    def __init__(self, id, teacher_id, max_students, sessions_per_week, schedule, name="Test Class"):
+    def __init__(self, id, teacher_id, max_students, sessions_per_week, preferred_slots=None, unavailable_slots=None, name="Test Class"):
         self.id = id
         self.teacher_id = teacher_id
         self.max_students = max_students
         self.sessions_per_week = sessions_per_week
-        self.schedule = schedule
+        self.preferred_slots = preferred_slots or []
+        self.unavailable_slots = unavailable_slots or []
         self.name = name
         self.deleted_at = None
 
@@ -67,11 +68,11 @@ def mock_data():
     }
     data['test_class'] = MockClass(
         id=data['class_id'], teacher_id=data['teacher_id'], max_students=20,
-        sessions_per_week=2, schedule=[], name="Mock 101"
+        sessions_per_week=2, preferred_slots=[], name="Mock 101"
     )
     data['test_class_2'] = MockClass(
         id=data['class_id_2'], teacher_id=data['teacher_id_2'], max_students=10,
-        sessions_per_week=1, schedule=[], name="Mock 202"
+        sessions_per_week=1, preferred_slots=[], name="Mock 202"
     )
     data['test_user'] = MockUser(id=data['teacher_id'], first_name="Prof", last_name="X")
     data['test_user_2'] = MockUser(id=data['teacher_id_2'], first_name="Ms", last_name="Y")
@@ -170,7 +171,7 @@ def test_max_slots_violation_fixed_rule(
     fixed_schedule = [{'day': 'monday', 'slots': [1, 2, 3]}]
     test_class_fixed = MockClass(
         id=mock_data['class_id'], teacher_id=mock_data['teacher_id'], 
-        max_students=20, sessions_per_week=2, schedule=fixed_schedule, name="Fixed Class"
+        max_students=20, sessions_per_week=2, preferred_slots=fixed_schedule, name="Fixed Class"
     )
     
     mock_class_query_result(db_mock, [test_class_fixed], filter_count=1)
@@ -207,7 +208,7 @@ def test_hard_exception_when_cannot_fulfill_target(
 
     test_class_impossible = MockClass(
         id=mock_data['class_id'], teacher_id=mock_data['teacher_id'], 
-        max_students=20, sessions_per_week=10, schedule=[], name="Impossible Class"
+        max_students=20, sessions_per_week=10, preferred_slots=[], name="Impossible Class"
     )
 
     mock_class_query_result(db_mock, [test_class_impossible], filter_count=1)
@@ -274,7 +275,7 @@ def test_no_schedule_rule_for_the_day(mock_select_rule, mock_attempt_session, sc
     fixed_schedule = [{'day': 'sunday', 'slots': [5, 6]}]
     test_class = MockClass(
         id=mock_data['class_id'], teacher_id=mock_data['teacher_id'], 
-        max_students=20, sessions_per_week=1, schedule=fixed_schedule, name="Fixed Sunday"
+        max_students=20, sessions_per_week=1, preferred_slots=fixed_schedule, name="Fixed Sunday"
     )
     
     mock_class_query_result(db_mock, [test_class], filter_count=1)
@@ -374,7 +375,7 @@ def test_fixed_rule_on_max_slots_boundary(mock_select_rule, mock_attempt_session
     fixed_schedule = [{'day': 'monday', 'slots': [1, 2]}]
     test_class_fixed = MockClass(
         id=mock_data['class_id'], teacher_id=mock_data['teacher_id'], 
-        max_students=20, sessions_per_week=1, schedule=fixed_schedule, name="Fixed Boundary"
+        max_students=20, sessions_per_week=1, preferred_slots=fixed_schedule, name="Fixed Boundary"
     )
     
     mock_class_query_result(db_mock, [test_class_fixed], filter_count=1)
