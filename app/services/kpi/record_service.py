@@ -135,7 +135,10 @@ class KPIRecordService:
                 group_score = sum(
                     float(r.converted_score)
                     for r in record.metric_results
-                    if r.metric and r.metric.metric_code.startswith(group_code)
+                    if r.metric
+                       and len(r.metric.metric_code) > len(group_code)
+                       and r.metric.metric_code[:len(group_code)] == group_code
+                       and r.metric.metric_code[len(group_code)].isdigit()
                        and not r.metric.is_group_header
                        and r.converted_score is not None
                 )
@@ -277,8 +280,8 @@ class KPIRecordService:
         record.teaching_hours = teaching_hours
         db.commit()
 
-        # Recalculate bonus with new hours
-        return kpi_calculation_service.calculate_record(db, record_id)
+        # Recalculate bonus only (not teaching hours) to preserve manual override
+        return kpi_calculation_service.recalculate_bonus(db, record_id)
 
     # ------------------------------------------------------------------
     # Approval Workflow

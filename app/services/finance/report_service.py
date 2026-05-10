@@ -157,10 +157,12 @@ class ReportService:
             .with_entities(func.coalesce(func.sum(Salary.kpi_bonus_calc), 0))
             .scalar()
         )
-        if kpi_bonus_total:
+        kpi_bonus_decimal = Decimal(str(kpi_bonus_total))
+        if kpi_bonus_decimal:
+            total_expenses += kpi_bonus_decimal
             breakdown.append(ExpenseCategoryBreakdown(
                 category="KPI_BONUS",
-                total=Decimal(str(kpi_bonus_total)),
+                total=kpi_bonus_decimal,
             ))
 
         return ExpensesReportResponse(

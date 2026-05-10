@@ -9,7 +9,7 @@ Scoring rules:
 """
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, extract
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional, List
 from uuid import UUID
@@ -46,9 +46,7 @@ class KPICalculationService:
             raise ValueError(f"Template {record.template_id} not found")
 
         # Auto-calculate teaching hours from ClassSession
-        teaching_hours = self._auto_calculate_teaching_hours(db, record)
-        if record.teaching_hours is None:
-            record.teaching_hours = teaching_hours
+        record.teaching_hours = self._auto_calculate_teaching_hours(db, record)
 
         # Calculate each metric
         total_score = Decimal("0")
@@ -109,10 +107,31 @@ class KPICalculationService:
                 logger.error(f"KPI calc error - {errors[-1]}")
 
         return {
+
             "total": len(records),
             "processed": processed,
             "errors": errors,
         }
+
+    def recalculate_bonus(self, db: Session, record_id: UUID) -> KPIRecord:
+        """Recalculate only the bonus amount (used after manual teaching_hours update)."""
+        record = db.query(KPIRecord).filter(KPIRecord.id == record_id).first()
+        if not record:
+            raise ValueError(f"KPI record {record_id} not found")
+
+        template = db.query(KPITemplate).filter(KPITemplate.id == record.template_id).first()
+        if not template:
+            raise ValueError(f"Template {record.template_id} not found")
+
+        record.bonus_amount = self._calculate_bonus(
+            total_score=record.total_score or Decimal("0"),
+            template=template,
+            teaching_hours=record.teaching_hours,
+        )
+
+        db.commit()
+        db.refresh(record)
+        return record
 
     # ------------------------------------------------------------------
     # Core Scoring Formula
@@ -213,25 +232,32 @@ class KPICalculationService:
     def _auto_calculate_teaching_hours(
         self, db: Session, record: KPIRecord
     ) -> Decimal:
-        """Count completed class sessions for this teacher in the period's date range."""
+        """Calculate total teaching hours from completed ClassSessions using actual duration."""
         from app.models.kpi import KPIPeriod
 
         period = db.query(KPIPeriod).filter(KPIPeriod.id == record.period_id).first()
         if not period:
             return Decimal("0")
 
-        count = (
-            db.query(ClassSession)
+        total_seconds = (
+            db.query(
+                func.coalesce(
+                    func.sum(
+                        extract('epoch', ClassSession.end_time - ClassSession.start_time)
+                    ),
+                    0,
+                )
+            )
             .filter(
                 ClassSession.teacher_id == record.staff_id,
                 ClassSession.status == SessionStatus.COMPLETED,
                 ClassSession.session_date >= period.start_date,
                 ClassSession.session_date <= period.end_date,
             )
-            .count()
+            .scalar()
         )
-        # Each session = 1 teaching hour (default assumption)
-        return Decimal(str(count))
+        hours = Decimal(str(total_seconds)) / Decimal("3600")
+        return hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 kpi_calculation_service = KPICalculationService()

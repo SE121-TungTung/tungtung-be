@@ -141,7 +141,7 @@ async def create_group(
     )
     return ApiResponse(data=result)
 
-@router.get("/groups/{room_id}", response_model=ApiResponse[ConversationResponse])
+@router.get("/groups/{room_id}", response_model=ApiResponse[GroupDetailResponse])
 async def get_group_details(
     room_id: UUID,
     db: Session = Depends(get_db),
@@ -178,7 +178,7 @@ async def remove_group_member(
     )
     return ApiResponse(data=result)
 
-@router.put("/groups/{room_id}", response_model=ApiResponse[GroupDetailResponse])
+@router.put("/groups/{room_id}", response_model=ApiResponse[ConversationResponse])
 async def update_group(
     room_id: UUID,
     title: Optional[str] = Form(None),
