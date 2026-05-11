@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     CHATBOT_SERVICE_URL: str
     CHATBOT_API_KEY: str
     
+    RECOMMENDATION_SERVICE_URL: Optional[str] = None
+    
     class Config:
         env_file = ".env"
         case_sensitive = True

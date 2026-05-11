@@ -17,3 +17,4 @@ from .kpi import (
 )
 from .finance import Invoice, Payment, Refund, ReportExportJob
 from .ga_schedule import GARun, GAScheduleProposal, TeacherUnavailability
+from .recommendation import RecommendationLog
