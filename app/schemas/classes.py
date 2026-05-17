@@ -8,6 +8,7 @@ class ClassBase(BaseModel):
     course_id: UUID4
     teacher_id: UUID4
     substitute_teacher_id: Optional[UUID4] = None
+    ta_id: Optional[UUID4] = None
     room_id: Optional[UUID4] = None
     start_date: date
     end_date: date
@@ -17,6 +18,8 @@ class ClassBase(BaseModel):
     current_students: int
     fee_amount: Decimal
     sessions_per_week: int
+    is_online: bool = False
+    online_meeting_url: Optional[str] = None
     status: str
     notes: Optional[str]
 
@@ -32,6 +35,7 @@ class ClassResponse(ClassBase):
     course_name: Optional[str] = None
     teacher_name: Optional[str] = None
     substitute_teacher_name: Optional[str] = None
+    ta_name: Optional[str] = None
     room_name: Optional[str] = None
 
     model_config = {
