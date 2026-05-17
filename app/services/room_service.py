@@ -3,7 +3,7 @@ import math
 from app.repositories.room import room_repository
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from app.models.academic import Room
+from app.models.academic import Room, RoomStatus
 from app.schemas.base_schema import PaginationMetadata, PaginationResponse
 from app.schemas.room import RoomResponse
 
@@ -15,16 +15,15 @@ class RoomService:
         self, 
         db: Session, 
         min_capacity: Optional[int] = None,
-        page: int = 1,      # <-- Sửa thành page
-        limit: int = 20     # <-- Sửa thành limit
+        page: int = 1,      
+        limit: int = 20   
     ) -> PaginationResponse[RoomResponse]:
         
         # 1. Tính toán skip
         skip = (page - 1) * limit
         
         # 2. Build Base Query
-        # Giả sử Room của bạn có cờ is_available hoặc status, bạn thêm filter tương ứng nhé
-        query = db.query(Room).filter(Room.deleted_at.is_(None))
+        query = db.query(Room).filter(Room.status == RoomStatus.AVAILABLE)
         
         # Ví dụ nếu bạn có cột status:
         # query = query.filter(Room.status == 'AVAILABLE')
