@@ -33,12 +33,12 @@ class GAScheduleRequest(BaseModel):
     crossover_rate: float = Field(0.70, ge=0.0, le=1.0, description="Tỷ lệ lai ghép")
     mutation_rate: float = Field(0.15, ge=0.0, le=1.0, description="Tỷ lệ đột biến")
 
-    # Soft constraint weights (optional override)
-    weight_consecutive_limit: float = Field(10.0, ge=0.0, description="Weight: giáo viên không dạy > 3 tiết liên tiếp")
-    weight_paired_classes: float = Field(8.0, ge=0.0, description="Weight: cặp lớp cùng buổi")
-    weight_time_preference: float = Field(5.0, ge=0.0, description="Weight: xếp đúng buổi sáng/chiều")
-    weight_room_utilization: float = Field(3.0, ge=0.0, description="Weight: tỷ lệ sử dụng phòng tối ưu")
-    weight_preserve_existing: float = Field(6.0, ge=0.0, description="Weight: giữ nguyên lịch cũ")
+    # Soft constraint penalties (optional override)
+    penalty_consecutive_limit: float = Field(5.0, ge=0.0, description="Penalty: giáo viên dạy > N tiết liên tiếp")
+    penalty_paired_classes: float = Field(10.0, ge=0.0, description="Penalty: cặp lớp không xếp cùng buổi")
+    penalty_time_preference: float = Field(1.0, ge=0.0, description="Penalty: xếp sai ca học ưu tiên (sáng/chiều/tối)")
+    penalty_room_utilization: float = Field(2.0, ge=0.0, description="Penalty: lớp nhỏ xếp phòng lớn (lãng phí)")
+    penalty_preserve_existing: float = Field(3.0, ge=0.0, description="Penalty: thay đổi so với lịch cũ đang diễn ra")
 
     # Optional advanced constraints
     paired_class_ids: Optional[List[List[UUID]]] = Field(
@@ -50,12 +50,6 @@ class GAScheduleRequest(BaseModel):
     class_preferences: Optional[List[GAClassPreference]] = Field(
         None,
         description="Buổi ưa thích cho từng lớp. Nếu không nhập, tự suy từ preferred_slots."
-    )
-
-    # Session distribution weight
-    weight_session_distribution: float = Field(
-        8.0, ge=0.0,
-        description="Weight: phân bổ đều số buổi mỗi tuần"
     )
 
     @field_validator('end_date')
@@ -115,6 +109,7 @@ class GARunResponse(BaseModel):
     """Response tóm tắt khi tạo/xem GA run."""
     run_id: UUID
     status: str
+    review_status: Optional[str] = None
     best_fitness: Optional[float] = None
     hard_violations: Optional[int] = None
     soft_score: Optional[float] = None

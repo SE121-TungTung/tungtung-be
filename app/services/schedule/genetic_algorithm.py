@@ -70,6 +70,7 @@ class GAClassInput:
     teacher_id: UUID
     room_id: Optional[UUID]          # Preferred room (nullable)
     max_students: int
+    current_students: int            # Added for HC5 and SC4
     sessions_per_week: int
     preferred_slots: List[Dict]       # Soft: [{"day": "monday", "slots": [1,2]}, ...]
     unavailable_slots: List[Dict]    # Hard: [{"day": "wednesday", "slots": [1,2,3,4,5,6]}, ...]
@@ -108,23 +109,24 @@ class GAConstraintInput:
 class GAConfig:
     """GA hyperparameters."""
     population_size: int = 100
-    generations: int = 300
+    generations: int = 500
     crossover_rate: float = 0.70
     mutation_rate: float = 0.15
     elitism_count: int = 5
     tournament_size: int = 5
 
     # Convergence: stop if best fitness unchanged for this many generations
-    convergence_window: int = 30
+    convergence_window: int = 50
 
-    # Soft constraint weights
-    weight_consecutive_limit: float = 10.0
-    weight_paired_classes: float = 8.0
-    weight_exam_avoidance: float = 7.0
-    weight_time_preference: float = 5.0
-    weight_room_utilization: float = 3.0
-    weight_preserve_existing: float = 6.0
-    weight_session_distribution: float = 8.0
+    # Soft constraint penalties
+    penalty_consecutive_limit: float = 5.0
+    max_consecutive_slots: int = 3
+    penalty_paired_classes: float = 10.0
+    penalty_exam_avoidance: float = 20.0
+    penalty_time_preference: float = 1.0
+    penalty_room_utilization: float = 2.0
+    penalty_preserve_existing: float = 3.0
+    penalty_room_capacity_warning: float = 1.0 # Penalty for room capacity < max_students (SC_Phụ)
 
 
 # ============================================================================
@@ -302,11 +304,12 @@ def _generate_sessions_for_class(
             for rule in cls.preferred_slots:
                 if sessions_placed >= sessions_needed:
                     break
+                is_fixed = rule.get("is_fixed", False) if isinstance(rule, dict) else False
                 day_name = rule["day"] if isinstance(rule, dict) else rule[0]
                 slots = rule["slots"] if isinstance(rule, dict) else rule[1]
 
-                # 70% chance to follow preferred pattern, 30% skip to explore
-                if random.random() > 0.7:
+                # 100% follow if fixed, otherwise 70% chance to follow preferred pattern, 30% skip to explore
+                if not is_fixed and random.random() > 0.7:
                     continue
 
                 # Skip if slot is unavailable for this class
@@ -419,12 +422,12 @@ def evaluate_fitness(
     Evaluate fitness of an individual.
 
     Returns:
-        (fitness_score, hard_violations, soft_score)
+        (fitness_score, hard_violations, total_penalty)
     """
     hard_violations = _count_hard_violations(individual, lookups)
-    soft_score = _compute_soft_score(individual, lookups, config)
-    fitness = -hard_violations * HARD_WEIGHT + soft_score
-    return fitness, hard_violations, soft_score
+    total_penalty = _compute_penalties(individual, lookups, config)
+    fitness = -(hard_violations * HARD_WEIGHT) - total_penalty
+    return fitness, hard_violations, total_penalty
 
 
 # ---- Hard Constraints ----
@@ -475,7 +478,7 @@ def _count_hard_violations(individual: Individual, lookups: _Lookups) -> int:
         # --- 5. Room capacity ---
         if gene.room_id and cls:
             room = lookups.room_map.get(gene.room_id)
-            if room and cls.max_students > room.capacity:
+            if room and cls.current_students > room.capacity:
                 violations += 1
 
     # Count clashes (where count > 1)
@@ -487,18 +490,37 @@ def _count_hard_violations(individual: Individual, lookups: _Lookups) -> int:
         if count > 1:
             violations += count - 1
 
+    # --- 6. Fixed slot constraint (HC4) ---
+    class_genes: Dict[UUID, List[Gene]] = {}
+    for gene in individual:
+        class_genes.setdefault(gene.class_id, []).append(gene)
+    
+    for cid, c_genes in class_genes.items():
+        cls = lookups.class_map.get(cid)
+        if not cls or not cls.preferred_slots:
+            continue
+            
+        fixed_rules = [r for r in cls.preferred_slots if isinstance(r, dict) and r.get("is_fixed")]
+        for rule in fixed_rules:
+            req_day = rule.get("day")
+            req_slots = rule.get("slots", [])
+            # Check if any gene matches this fixed rule
+            matched = any(g.day == req_day and set(g.time_slots) == set(req_slots) for g in c_genes)
+            if not matched:
+                violations += 1
+
     return violations
 
 
 # ---- Soft Constraints ----
 
-def _compute_soft_score(
+def _compute_penalties(
     individual: Individual,
     lookups: _Lookups,
     config: GAConfig,
 ) -> float:
-    """Compute soft constraint bonus score (higher is better)."""
-    score = 0.0
+    """Compute soft constraint penalty (lower is better, 0 is perfect)."""
+    penalty = 0.0
 
     # Pre-group genes by (teacher, date) for consecutive-limit check
     teacher_day_slots: Dict[Tuple[UUID, date], List[int]] = {}
@@ -509,14 +531,14 @@ def _compute_soft_score(
         key = (cls.teacher_id, gene.session_date)
         teacher_day_slots.setdefault(key, []).extend(gene.time_slots)
 
-    # --- 1. Consecutive limit: teacher NOT teaching > 3 consecutive slots in a day ---
+    # --- SC1. Consecutive limit: teacher teaching > N consecutive slots in a day ---
     for (tid, d), slots in teacher_day_slots.items():
         sorted_slots = sorted(set(slots))
         max_consecutive = _max_consecutive_count(sorted_slots)
-        if max_consecutive <= 3:
-            score += config.weight_consecutive_limit
+        if max_consecutive > config.max_consecutive_slots:
+            penalty += config.penalty_consecutive_limit
 
-    # --- 2. Paired classes: both in same time period on same date ---
+    # --- SC2. Paired classes: NOT in same time period on same date ---
     gene_index: Dict[Tuple[UUID, date], List[int]] = {}
     for gene in individual:
         key = (gene.class_id, gene.session_date)
@@ -526,61 +548,47 @@ def _compute_soft_score(
         for d in lookups.schedule_dates:
             slots1 = gene_index.get((c1, d))
             slots2 = gene_index.get((c2, d))
+            # If both classes have a session on this date, they MUST be in the same period
             if slots1 and slots2:
                 period1 = _get_time_period(slots1)
                 period2 = _get_time_period(slots2)
-                if period1 and period1 == period2:
-                    score += config.weight_paired_classes
+                if period1 and period2 and period1 != period2:
+                    penalty += config.penalty_paired_classes
 
-    # --- 3. Exam avoidance: class NOT scheduled on exam dates ---
+    # --- SC3. Exam avoidance: class scheduled on exam dates ---
     for gene in individual:
         if (gene.class_id, gene.session_date) in lookups.exam_set:
-            pass  # No bonus (or could add negative, but we keep it simple)
-        else:
-            # Only add bonus if this class actually has exam dates registered
-            if gene.class_id in lookups.exam_class_ids:
-                score += config.weight_exam_avoidance
+            penalty += config.penalty_exam_avoidance
 
-    # --- 4. Time preference: class scheduled in preferred period ---
+    # --- SC6. Time preference: class NOT scheduled in preferred period ---
     for gene in individual:
         cls = lookups.class_map.get(gene.class_id)
         if cls and cls.preferred_time_period:
             period = _get_time_period(gene.time_slots)
-            if period == cls.preferred_time_period:
-                score += config.weight_time_preference
+            if period != cls.preferred_time_period:
+                penalty += config.penalty_time_preference
 
-    # --- 5. Room utilisation: ratio in [0.6, 0.9] is ideal ---
+    # --- SC4. Room utilisation: ratio < 0.6 is wasteful ---
     for gene in individual:
         if gene.room_id:
             cls = lookups.class_map.get(gene.class_id)
             room = lookups.room_map.get(gene.room_id)
             if cls and room and room.capacity > 0:
-                ratio = cls.max_students / room.capacity
-                if 0.6 <= ratio <= 0.9:
-                    score += config.weight_room_utilization
+                ratio = cls.current_students / room.capacity
+                if ratio < 0.6:
+                    penalty += config.penalty_room_utilization
+                
+                # SC_Phụ: Room is smaller than max_students (might prevent future enrollments)
+                if room.capacity < cls.max_students:
+                    penalty += config.penalty_room_capacity_warning
 
-    # --- 6. Preserve existing: session keeps same day+slots as DB ---
+    # --- SC5. Preserve existing: session does NOT keep same day+slots as DB ---
     for gene in individual:
         existing_slots = lookups.existing_map.get((gene.class_id, gene.session_date))
-        if existing_slots and sorted(gene.time_slots) == sorted(existing_slots):
-            score += config.weight_preserve_existing
+        if existing_slots and sorted(gene.time_slots) != sorted(existing_slots):
+            penalty += config.penalty_preserve_existing
 
-    # --- 7. Sessions per week distribution: bonus if correct count per week ---
-    class_week_counts: Dict[Tuple[UUID, Tuple[int, int]], int] = {}
-    for gene in individual:
-        cls = lookups.class_map.get(gene.class_id)
-        if not cls:
-            continue
-        wk = (gene.session_date.isocalendar()[0], gene.session_date.isocalendar()[1])
-        key = (gene.class_id, wk)
-        class_week_counts[key] = class_week_counts.get(key, 0) + 1
-
-    for (cid, _wk), count in class_week_counts.items():
-        cls = lookups.class_map.get(cid)
-        if cls and count == cls.sessions_per_week:
-            score += config.weight_session_distribution
-
-    return score
+    return penalty
 
 
 def _max_consecutive_count(sorted_slots: List[int]) -> int:

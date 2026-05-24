@@ -54,12 +54,11 @@ logger = logging.getLogger(__name__)
 
 # System time slots — mirrors schedule_service.SYSTEM_TIME_SLOTS
 SYSTEM_TIME_SLOTS = [
-    TimeSlotConfig(1, time(8, 0), time(9, 30)),
-    TimeSlotConfig(2, time(9, 45), time(11, 15)),
-    TimeSlotConfig(3, time(13, 0), time(14, 30)),
-    TimeSlotConfig(4, time(14, 45), time(16, 15)),
-    TimeSlotConfig(5, time(18, 0), time(19, 30)),
-    TimeSlotConfig(6, time(19, 45), time(21, 15)),
+    TimeSlotConfig(1, time(8, 0), time(10, 0)),
+    TimeSlotConfig(2, time(10, 0), time(12, 0)),
+    TimeSlotConfig(3, time(13, 0), time(15, 0)),
+    TimeSlotConfig(4, time(15, 0), time(17, 0)),
+    TimeSlotConfig(5, time(18, 0), time(20, 0)),
 ]
 
 
@@ -97,12 +96,12 @@ class GAScheduleService:
             "mutation_rate": request.mutation_rate,
             "elitism_count": 5,
             "tournament_size": 5,
-            "weights": {
-                "consecutive_limit": request.weight_consecutive_limit,
-                "paired_classes": request.weight_paired_classes,
-                "time_preference": request.weight_time_preference,
-                "room_utilization": request.weight_room_utilization,
-                "preserve_existing": request.weight_preserve_existing,
+            "penalties": {
+                "consecutive_limit": request.penalty_consecutive_limit,
+                "paired_classes": request.penalty_paired_classes,
+                "time_preference": request.penalty_time_preference,
+                "room_utilization": request.penalty_room_utilization,
+                "preserve_existing": request.penalty_preserve_existing,
             },
         }
 
@@ -163,11 +162,11 @@ class GAScheduleService:
                     generations=request.generations,
                     crossover_rate=request.crossover_rate,
                     mutation_rate=request.mutation_rate,
-                    weight_consecutive_limit=request.weight_consecutive_limit,
-                    weight_paired_classes=request.weight_paired_classes,
-                    weight_time_preference=request.weight_time_preference,
-                    weight_room_utilization=request.weight_room_utilization,
-                    weight_preserve_existing=request.weight_preserve_existing,
+                    penalty_consecutive_limit=request.penalty_consecutive_limit,
+                    penalty_paired_classes=request.penalty_paired_classes,
+                    penalty_time_preference=request.penalty_time_preference,
+                    penalty_room_utilization=request.penalty_room_utilization,
+                    penalty_preserve_existing=request.penalty_preserve_existing,
                 )
 
                 # Run GA engine
@@ -298,9 +297,15 @@ class GAScheduleService:
 
         summary = ga_run.result_summary or {}
 
+        status_str = ga_run.status.value if isinstance(ga_run.status, GARunStatus) else ga_run.status
+        review_status = None
+        if status_str == "completed":
+            review_status = "CLEAN" if (ga_run.hard_violations or 0) == 0 else "HAS_CONFLICT"
+
         return GARunDetailResponse(
             run_id=ga_run.id,
-            status=ga_run.status.value if isinstance(ga_run.status, GARunStatus) else ga_run.status,
+            status=status_str,
+            review_status=review_status,
             best_fitness=ga_run.best_fitness,
             hard_violations=ga_run.hard_violations,
             soft_score=ga_run.soft_score,
@@ -336,9 +341,15 @@ class GAScheduleService:
         items = []
         for r in runs:
             summary = r.result_summary or {}
+            status_str = r.status.value if isinstance(r.status, GARunStatus) else r.status
+            review_status = None
+            if status_str == "completed":
+                review_status = "CLEAN" if (r.hard_violations or 0) == 0 else "HAS_CONFLICT"
+
             items.append(GARunResponse(
                 run_id=r.id,
-                status=r.status.value if isinstance(r.status, GARunStatus) else r.status,
+                status=status_str,
+                review_status=review_status,
                 best_fitness=r.best_fitness,
                 hard_violations=r.hard_violations,
                 soft_score=r.soft_score,
@@ -676,6 +687,7 @@ class GAScheduleService:
                 teacher_id=c.teacher_id,
                 room_id=c.room_id,
                 max_students=c.max_students,
+                current_students=c.current_students,
                 sessions_per_week=c.sessions_per_week or 2,
                 preferred_slots=pref_slots if isinstance(pref_slots, list) else [],
                 unavailable_slots=unavail_slots if isinstance(unavail_slots, list) else [],
