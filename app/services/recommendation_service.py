@@ -11,7 +11,7 @@ from sqlalchemy import func, desc
 
 from app.models.academic import ClassEnrollment, Class, Course
 from app.models.session_attendance import ClassSession
-from app.models.test import TestAttempt, TestResponse, QuestionBank, AttemptStatus
+from app.models.test import TestAttempt, TestResponse, QuestionBank, AttemptStatus, Test, SkillArea, DifficultyLevel, ContentStatus, TestQuestion
 from app.models.user import User
 from app.models.recommendation import RecommendationLog
 from app.core.config import settings
@@ -198,6 +198,73 @@ class RecommendationService:
             })
         return history
 
+    def get_recent_ai_feedback(self, db: Session, student_id: UUID, limit: int = 5) -> List[str]:
+        """
+        Query recent AI feedback from graded test responses.
+        Returns list of feedback strings for LLM context.
+        """
+        feedbacks = db.query(TestResponse.ai_feedback)\
+            .join(TestAttempt, TestAttempt.id == TestResponse.attempt_id)\
+            .filter(
+                TestAttempt.student_id == student_id,
+                TestAttempt.status == AttemptStatus.GRADED,
+                TestResponse.ai_feedback != None,
+                TestResponse.ai_feedback != ''
+            )\
+            .order_by(desc(TestAttempt.submitted_at))\
+            .limit(limit)\
+            .all()
+        
+        return [f[0] for f in feedbacks if f[0]]
+
+    def get_suggested_test_ids(self, db: Session, student_id: UUID, weakest_skill: str, difficulty: str = "medium") -> List[str]:
+        """
+        Query tests matching the student's weakest skill and difficulty level.
+        Excludes tests already attempted by the student.
+        Returns list of test ID strings.
+        """
+        # Map skill string to SkillArea enum
+        skill_map = {
+            "reading": SkillArea.READING,
+            "listening": SkillArea.LISTENING,
+            "writing": SkillArea.WRITING,
+            "speaking": SkillArea.SPEAKING
+        }
+        skill_enum = skill_map.get(weakest_skill)
+        if not skill_enum:
+            return []
+        
+        # Map difficulty string to DifficultyLevel enum
+        diff_map = {
+            "easy": [DifficultyLevel.VERY_EASY, DifficultyLevel.EASY],
+            "medium": [DifficultyLevel.EASY, DifficultyLevel.MEDIUM],
+            "hard": [DifficultyLevel.MEDIUM, DifficultyLevel.HARD, DifficultyLevel.VERY_HARD]
+        }
+        diff_levels = diff_map.get(difficulty, [DifficultyLevel.MEDIUM])
+        
+        # Get test IDs that the student has already attempted
+        attempted_test_ids = db.query(TestAttempt.test_id)\
+            .filter(TestAttempt.student_id == student_id)\
+            .subquery()
+        
+        # Find tests that contain questions with the matching skill_area
+        # and haven't been attempted by this student
+        from sqlalchemy.orm import aliased
+        from app.models.test import TestSection
+        
+        test_ids = db.query(Test.id)\
+            .join(TestSection, TestSection.test_id == Test.id)\
+            .filter(
+                TestSection.skill_area == skill_enum,
+                Test.status.in_(['published', 'active']),
+                ~Test.id.in_(attempted_test_ids)
+            )\
+            .distinct()\
+            .limit(5)\
+            .all()
+        
+        return [str(t[0]) for t in test_ids]
+
     # ─── AI Service Call (Production — No Mock) ───────────────────────
 
     async def call_ai_service(self, student_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -260,6 +327,21 @@ class RecommendationService:
         days_enrolled = enrollment.get("days_enrolled", 0)
         attendance_rate = enrollment.get("attendance_rate", 0.0)
         
+        # 1b. Query AI feedback from past tests
+        recent_ai_feedback = self.get_recent_ai_feedback(db, student_id)
+        
+        # 1c. Pre-detect weakest skill for test suggestion (simple heuristic)
+        weakest_skill = min(skill_scores, key=skill_scores.get) if skill_scores else "unknown"
+        difficulty = "easy"
+        if skill_scores:
+            weakest_score = skill_scores.get(weakest_skill, 0)
+            if weakest_score >= 6.0:
+                difficulty = "hard"
+            elif weakest_score >= 4.0:
+                difficulty = "medium"
+        
+        suggested_test_ids = self.get_suggested_test_ids(db, student_id, weakest_skill, difficulty)
+        
         student_data = {
             "student_id": str(student_id),
             "skill_scores": skill_scores,
@@ -270,7 +352,8 @@ class RecommendationService:
             "target_cefr": target.get("target_cefr"),
             "exam_type": "ielts",
             "days_since_last_activity": self.get_days_since_last_activity(db, student_id),
-            "recent_ai_feedback": []
+            "recent_ai_feedback": recent_ai_feedback,
+            "suggested_test_ids": suggested_test_ids
         }
         
         # 2. Call real AI service (no mock)

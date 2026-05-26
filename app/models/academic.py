@@ -145,7 +145,7 @@ class Class(BaseModel):
     online_meeting_url = Column(String(500), nullable=True)
     
     # FIX LOGIC: Default là SCHEDULED theo SQL gốc
-    status = Column(Enum(ClassStatus, native_enum=True, name="class_status"), default=ClassStatus.SCHEDULED, nullable=False)
+    status = Column(Enum(ClassStatus, values_callable=lambda obj: [e.value for e in obj], native_enum=True, name="class_status"), default=ClassStatus.SCHEDULED, nullable=False)
     
     notes = Column(Text, nullable=True)
     
