@@ -31,6 +31,26 @@ router = APIRouter(
     route_class=ResponseWrapperRoute,
 )
 
+from app.schemas.ai_schedule import AIAnalyzeRequest, AIAnalyzeResponse
+from app.services.schedule.ai_service import ai_schedule_service
+
+@router.post(
+    "/analyze-constraints",
+    response_model=ApiResponse[AIAnalyzeResponse],
+    summary="Phân tích ràng buộc bằng AI",
+)
+async def analyze_constraints(
+    request: AIAnalyzeRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_admin_user),
+):
+    """
+    Sử dụng AI (LLM) để phân tích yêu cầu bằng ngôn ngữ tự nhiên.
+    Trả về cấu trúc JSON để UI hiển thị trước cho Admin duyệt (preview).
+    """
+    result = ai_schedule_service.analyze_schedule_constraints(db, request)
+    return ApiResponse(data=result)
+
 
 # ============================================================
 # GA RUN ENDPOINTS
