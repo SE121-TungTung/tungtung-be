@@ -1,7 +1,8 @@
 import json
 import httpx
 import asyncio
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from uuid import UUID
 from typing import Dict, List, Any
 
@@ -15,8 +16,19 @@ from app.models.user import User
 from app.models.recommendation import RecommendationLog
 from app.core.config import settings
 from app.core.redis import redis_manager
+from app.core.exceptions import APIException
+
+logger = logging.getLogger(__name__)
+
 
 class RecommendationService:
+    """
+    Production recommendation service — no mock fallback.
+    Calls tungtung-recommendation AI service for real ML inference + LLM generation.
+    """
+
+    # ─── Data Aggregation Queries ─────────────────────────────────────
+
     def get_student_skill_scores(self, db: Session, student_id: UUID) -> Dict[str, float]:
         """
         Query 3 bài test gần nhất PER SKILL, tính trung bình.
@@ -98,7 +110,8 @@ class RecommendationService:
 
         days_enrolled = 0
         if enrollment.enrollment_date:
-            days_enrolled = (datetime.now(enrollment.enrollment_date.tzinfo) - enrollment.enrollment_date).days
+            now = datetime.now(enrollment.enrollment_date.tzinfo) if enrollment.enrollment_date.tzinfo else datetime.now(timezone.utc)
+            days_enrolled = (now - enrollment.enrollment_date).days
 
         course_level_str = enrollment.level.value if hasattr(enrollment.level, 'value') else str(enrollment.level)
 
@@ -144,10 +157,11 @@ class RecommendationService:
             times.append(last_attendance)
             
         if not times:
-            return -1 # never active
+            return -1  # never active
             
         last_activity = max(times)
-        return (datetime.now(last_activity.tzinfo) - last_activity).days
+        now = datetime.now(last_activity.tzinfo) if last_activity.tzinfo else datetime.now(timezone.utc)
+        return (now - last_activity).days
 
     def get_score_history(self, db: Session, student_id: UUID) -> List[Dict[str, Any]]:
         """
@@ -184,44 +198,62 @@ class RecommendationService:
             })
         return history
 
+    # ─── AI Service Call (Production — No Mock) ───────────────────────
+
     async def call_ai_service(self, student_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Proxy call to AI service"""
+        """
+        Proxy call to tungtung-recommendation AI service.
+        No mock fallback — RECOMMENDATION_SERVICE_URL must be configured.
+        """
         service_url = getattr(settings, 'RECOMMENDATION_SERVICE_URL', None)
         if not service_url:
-            # Fallback for dev without URL
-            return self._mock_ai_response()
-
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{service_url}/recommend",
-                json=student_data
+            raise APIException(
+                status_code=503,
+                code="AI_SERVICE_NOT_CONFIGURED",
+                message="RECOMMENDATION_SERVICE_URL chưa được cấu hình. Vui lòng liên hệ admin."
             )
-            resp.raise_for_status()
-            return resp.json()
-            
-    def _mock_ai_response(self) -> Dict[str, Any]:
-        return {
-          "predicted_band": 6.5,
-          "predicted_cefr": "B2",
-          "weakest_skill": "writing",
-          "estimated_weeks": 12,
-          "confidence": 0.82,
-          "recommendation_type": "daily_practice",
-          "recommendation_data": {
-            "title": "Mock Recommendation",
-            "skill": "writing",
-            "tips": ["Tip 1"],
-            "materials": []
-          },
-          "learning_path": {
-            "estimated_weeks": 12,
-            "milestones": []
-          },
-          "nudge": None
-        }
+
+        # Retry logic: 2 retries with exponential backoff for HF Spaces cold start
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=90) as client:
+                    resp = await client.post(
+                        f"{service_url}/recommend",
+                        json=student_data
+                    )
+                    resp.raise_for_status()
+                    return resp.json()
+            except httpx.TimeoutException:
+                if attempt < max_retries:
+                    wait_time = 2 ** attempt * 5  # 5s, 10s
+                    logger.warning(f"AI service timeout (attempt {attempt + 1}), retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    raise APIException(
+                        status_code=504,
+                        code="AI_SERVICE_TIMEOUT",
+                        message="AI service không phản hồi sau nhiều lần thử. Có thể đang cold start."
+                    )
+            except httpx.HTTPStatusError as e:
+                logger.error(f"AI service error: {e.response.status_code} — {e.response.text}")
+                raise APIException(
+                    status_code=502,
+                    code="AI_SERVICE_ERROR",
+                    message=f"AI service trả về lỗi: {e.response.status_code}"
+                )
+            except httpx.ConnectError:
+                raise APIException(
+                    status_code=503,
+                    code="AI_SERVICE_UNREACHABLE",
+                    message="Không thể kết nối tới AI service. Kiểm tra URL và trạng thái HF Space."
+                )
+
+    # ─── Core Logic ───────────────────────────────────────────────────
 
     async def generate_recommendation(self, db: Session, student_id: UUID) -> RecommendationLog:
-        # 1. Aggregate
+        """Generate a recommendation for a single student using the real AI service."""
+        # 1. Aggregate student data from DB
         skill_scores = self.get_student_skill_scores(db, student_id)
         enrollment = self.get_student_enrollment_data(db, student_id)
         target = self.get_student_target(db, student_id)
@@ -237,13 +269,14 @@ class RecommendationService:
             "target_band": target.get("target_band"),
             "target_cefr": target.get("target_cefr"),
             "exam_type": "ielts",
-            "recent_ai_feedback": [] # Optional based on requirements
+            "days_since_last_activity": self.get_days_since_last_activity(db, student_id),
+            "recent_ai_feedback": []
         }
         
-        # 2. Call AI
+        # 2. Call real AI service (no mock)
         ai_resp = await self.call_ai_service(student_data)
         
-        # 3. Save Log
+        # 3. Save log to DB
         log = RecommendationLog(
             student_id=student_id,
             skill_scores=skill_scores,
@@ -263,29 +296,60 @@ class RecommendationService:
         db.refresh(log)
         return log
 
+    async def generate_batch(self, db: Session, student_ids: List[UUID]) -> Dict[str, int]:
+        """
+        Generate recommendations for multiple students in parallel.
+        Uses asyncio.gather with semaphore to limit concurrent AI calls.
+        """
+        semaphore = asyncio.Semaphore(5)  # Max 5 concurrent AI calls
+        generated = 0
+        errors = 0
+        error_details = []
+
+        async def _generate_one(sid: UUID):
+            nonlocal generated, errors
+            async with semaphore:
+                try:
+                    await self.generate_recommendation(db, sid)
+                    generated += 1
+                except Exception as e:
+                    errors += 1
+                    error_details.append({"student_id": str(sid), "error": str(e)})
+                    logger.error(f"Batch recommendation error for {sid}: {e}")
+
+        await asyncio.gather(*[_generate_one(sid) for sid in student_ids])
+
+        return {
+            "generated": generated,
+            "errors": errors,
+            "total": len(student_ids),
+            "error_details": error_details[:10]  # Cap at 10 for response size
+        }
+
     async def get_today(self, db: Session, student_id: UUID) -> dict:
-        today = datetime.utcnow().date().isoformat()
+        """Get today's recommendation. Check cache → DB → generate new."""
+        now = datetime.now(timezone.utc)
+        today = now.date().isoformat()
         cache_key = f"rec:{student_id}:{today}"
         
-        # 1. Check Redis
+        # 1. Check Redis cache
         if redis_manager.redis_client:
             try:
                 cached = await redis_manager.redis_client.get(cache_key)
                 if cached:
                     return json.loads(cached)
             except Exception as e:
-                print(f"Redis get error: {e}")
+                logger.warning(f"Redis get error: {e}")
 
-        # 2. Check DB
-        # Check if already generated today
-        start_of_day = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        # 2. Check DB for today's recommendation
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
         log = db.query(RecommendationLog).filter(
             RecommendationLog.student_id == student_id,
             RecommendationLog.generated_at >= start_of_day
         ).order_by(desc(RecommendationLog.generated_at)).first()
 
         if not log:
-            # 3. If not found -> generate
+            # 3. Generate new recommendation from AI service
             log = await self.generate_recommendation(db, student_id)
             
         result = {
@@ -294,6 +358,9 @@ class RecommendationService:
             "generated_at": log.generated_at.isoformat() if log.generated_at else None,
             "is_read": log.is_read,
             "skill_scores": log.skill_scores,
+            "attendance_rate": float(log.attendance_rate) if log.attendance_rate else None,
+            "target_band": float(log.target_band) if log.target_band else None,
+            "target_cefr": log.target_cefr,
             "predicted_band": float(log.predicted_band) if log.predicted_band else None,
             "predicted_cefr": log.predicted_cefr,
             "weakest_skill": log.weakest_skill,
@@ -303,13 +370,14 @@ class RecommendationService:
             "learning_path": log.learning_path
         }
 
-        # Cache to Redis
+        # 4. Cache to Redis (TTL 24h)
         if redis_manager.redis_client:
             try:
                 await redis_manager.redis_client.setex(cache_key, 86400, json.dumps(result))
             except Exception as e:
-                print(f"Redis set error: {e}")
+                logger.warning(f"Redis set error: {e}")
                 
         return {"data": result}
+
 
 recommendation_service = RecommendationService()

@@ -56,24 +56,16 @@ async def generate(student_id: UUID, db: Session = Depends(get_db), current_user
 
 @router.post("/generate-batch", response_model=ApiResponse[dict])
 async def generate_batch(db: Session = Depends(get_db), current_user: User = Depends(get_current_admin_user)):
-    """Cron batch trigger cho tất cả active students"""
+    """Cron batch trigger cho tất cả active students — parallel processing"""
     # Fetch all active students
     students = db.query(User.id).filter(
         User.status == UserStatus.ACTIVE,
         User.role == UserRole.STUDENT
     ).all()
     
-    generated = 0
-    errors = 0
-    for student in students:
-        try:
-            await recommendation_service.generate_recommendation(db, student[0])
-            generated += 1
-        except Exception as e:
-            print(f"Error generating recommendation for {student[0]}: {e}")
-            errors += 1
-            
-    return ApiResponse(data={"generated": generated, "errors": errors})
+    student_ids = [s[0] for s in students]
+    result = await recommendation_service.generate_batch(db, student_ids)
+    return ApiResponse(data=result)
 
 @router.patch("/{id}/read", response_model=ApiResponse[dict])
 def mark_read(id: UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
