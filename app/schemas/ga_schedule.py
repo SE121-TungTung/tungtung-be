@@ -121,6 +121,7 @@ class GARunResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     created_at: datetime
+    error_message: Optional[str] = None
 
     class Config:
         from_attributes = True

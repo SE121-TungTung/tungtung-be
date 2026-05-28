@@ -317,6 +317,7 @@ class GAScheduleService:
             started_at=ga_run.started_at,
             completed_at=ga_run.completed_at,
             created_at=ga_run.created_at,
+            error_message=ga_run.error_message,
             sessions=sessions,
             conflicts=conflicts,
             statistics=summary.get("statistics", {}),
@@ -361,6 +362,7 @@ class GAScheduleService:
                 started_at=r.started_at,
                 completed_at=r.completed_at,
                 created_at=r.created_at,
+                error_message=r.error_message,
             ))
 
         return PaginationResponse(
