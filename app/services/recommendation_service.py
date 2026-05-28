@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from uuid import UUID
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
@@ -265,6 +265,60 @@ class RecommendationService:
         
         return [str(t[0]) for t in test_ids]
 
+    async def get_rag_materials(self, weakest_skill: str) -> List[Dict[str, Any]]:
+        """
+        Call Chatbot service to search for materials related to the weakest skill.
+        """
+        chatbot_url = f"{settings.CHATBOT_SERVICE_URL}/search"
+        headers = {"x-api-key": settings.CHATBOT_API_KEY}
+        
+        query_map = {
+            "reading": "tài liệu luyện đọc reading IELTS",
+            "listening": "tài liệu luyện nghe listening IELTS",
+            "writing": "tài liệu luyện viết writing IELTS",
+            "speaking": "tài liệu luyện nói speaking IELTS"
+        }
+        query = query_map.get(weakest_skill, "tài liệu luyện thi IELTS tổng hợp")
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(chatbot_url, params={"query": query, "top_k": 3}, headers=headers, timeout=5.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("status") == "success":
+                        materials = []
+                        for res in data.get("results", []):
+                            materials.append({
+                                "title": res.get("filename", "Tài liệu học tập"),
+                                "source": "RAG Center",
+                                "relevance_score": round(1.0 / (1.0 + res.get("distance", 1.0)), 2)
+                            })
+                        return materials
+        except Exception as e:
+            logger.error(f"Failed to fetch RAG materials: {e}")
+            
+        return []
+
+    def get_suggested_course(self, db: Session, predicted_band: float) -> Optional[Dict[str, Any]]:
+        """
+        Suggest the next course based on predicted band.
+        Finds a course where required_band <= predicted_band, ordered by required_band DESC.
+        """
+        course = db.query(Course)\
+            .filter(Course.status == 'active', Course.required_band <= predicted_band)\
+            .order_by(desc(Course.required_band))\
+            .first()
+            
+        if course:
+            return {
+                "id": str(course.id),
+                "name": course.name,
+                "required_band": float(course.required_band) if course.required_band else 0.0,
+                "target_band": float(course.target_band) if course.target_band else 0.0,
+                "description": course.description
+            }
+        return None
+
     # ─── AI Service Call (Production — No Mock) ───────────────────────
 
     async def call_ai_service(self, student_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -359,7 +413,21 @@ class RecommendationService:
         # 2. Call real AI service (no mock)
         ai_resp = await self.call_ai_service(student_data)
         
-        # 3. Save log to DB
+        # 3. Enhance recommendation with RAG Materials and Course Suggestion
+        weak_skill = ai_resp.get("weakest_skill", weakest_skill)
+        materials = await self.get_rag_materials(weak_skill)
+        
+        pred_band = ai_resp.get("predicted_band", 0.0)
+        suggested_course = self.get_suggested_course(db, float(pred_band))
+        
+        if "recommendation_data" not in ai_resp:
+            ai_resp["recommendation_data"] = {}
+            
+        ai_resp["recommendation_data"]["materials"] = materials
+        if suggested_course:
+            ai_resp["recommendation_data"]["suggested_course"] = suggested_course
+        
+        # 4. Save log to DB
         log = RecommendationLog(
             student_id=student_id,
             skill_scores=skill_scores,
