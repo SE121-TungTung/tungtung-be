@@ -36,12 +36,13 @@ class ChatbotService:
                 logger.error(f"Connection Error: {e}")
                 raise HTTPException(status_code=503, detail="Không thể kết nối tới Chatbot Service")
 
-    async def upload_document(self, file: UploadFile):
+    async def upload_document(self, file: UploadFile, doc_category: str = "business"):
         """
         Forward file từ Admin -> Main BE -> Chatbot Service
         """
         url = f"{CHATBOT_SERVICE_URL}/upload"
         headers = {"x-api-key": CHATBOT_API_KEY}  # Header bảo mật
+        params = {"doc_category": doc_category}
 
         try:
             # Đọc nội dung file
@@ -53,7 +54,7 @@ class ChatbotService:
             }
 
             async with httpx.AsyncClient() as client:
-                response = await client.post(url, files=files, headers=headers, timeout=60.0)
+                response = await client.post(url, files=files, headers=headers, params=params, timeout=60.0)
                 
                 if response.status_code != 200:
                     raise HTTPException(status_code=response.status_code, detail=response.text)

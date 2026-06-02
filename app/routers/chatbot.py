@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import List, Optional
 
@@ -47,13 +47,14 @@ async def chat_with_ai(
 @router.post("/admin/upload-doc", response_model=ApiResponse[dict])
 async def upload_knowledge_base(
     file: UploadFile = File(...),
+    doc_category: str = Form("business"),
     current_user = Depends(get_current_admin_user)
 ):
     """
     API cho Admin upload tài liệu nội quy/giáo trình
     """
     try:
-        result = await chatbot_service.upload_document(file)
+        result = await chatbot_service.upload_document(file, doc_category)
         return ApiResponse(data=result)
     except Exception as e:
         raise APIException(
