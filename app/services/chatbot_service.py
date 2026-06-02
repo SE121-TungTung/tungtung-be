@@ -68,4 +68,21 @@ class ChatbotService:
             # Reset con trỏ file (best practice)
             await file.seek(0)
 
+    async def delete_document(self, doc_id: str):
+        """
+        Gửi yêu cầu xóa document sang Chatbot Service
+        """
+        url = f"{CHATBOT_SERVICE_URL}/documents/{doc_id}"
+        headers = {"x-api-key": CHATBOT_API_KEY}
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.delete(url, headers=headers, timeout=30.0)
+                if response.status_code != 200:
+                    logger.error(f"Chatbot Error: {response.text}")
+                    raise HTTPException(status_code=response.status_code, detail="Lỗi khi xoá tài liệu trên AI Server")
+                return response.json()
+            except httpx.RequestError as e:
+                logger.error(f"Connection Error: {e}")
+                raise HTTPException(status_code=503, detail="Không thể kết nối tới Chatbot Service")
+
 chatbot_service = ChatbotService()
