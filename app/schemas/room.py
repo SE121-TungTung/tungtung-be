@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, field_validator
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Text
 from datetime import datetime
 from app.models.academic import RoomType, RoomStatus
 import uuid
@@ -8,7 +8,7 @@ class RoomBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     capacity: int = Field(..., ge=5, le=50)
     location: Optional[str] = None
-    equipment: Optional[List[Dict[str, Any]]] = []
+    equipment: List[Dict[str, Any]] = Field(default_factory=list)
     room_type: RoomType = RoomType.CLASSROOM
     status: RoomStatus = RoomStatus.AVAILABLE
     notes: Optional[str] = None
@@ -40,3 +40,17 @@ class RoomResponse(RoomBase):
     model_config = {
         "from_attributes": True
     }
+    
+    @field_validator("equipment", mode="before")
+    @classmethod
+    def normalize_equipment(cls, v):
+        if v is None:
+            return []
+
+        if isinstance(v, dict):
+            return []
+
+        if not isinstance(v, list):
+            return []
+
+        return v

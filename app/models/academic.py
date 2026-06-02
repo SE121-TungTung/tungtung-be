@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Integer, SmallInteger,Text, DECIMAL, Enum, Date, TIMESTAMP, ForeignKey, CheckConstraint
+from sqlalchemy import Column, String, Integer, SmallInteger, Text, DECIMAL, Enum, Date, TIMESTAMP, ForeignKey, CheckConstraint, Boolean
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -118,23 +118,34 @@ class Class(BaseModel):
     course_id = Column(UUID(as_uuid=True), ForeignKey('courses.id', ondelete='RESTRICT'), nullable=False)
     teacher_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='RESTRICT'), nullable=False)
     substitute_teacher_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    ta_id = Column(UUID(as_uuid=True), ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
     room_id = Column(UUID(as_uuid=True), ForeignKey('rooms.id', ondelete='SET NULL'), nullable=True)
     
     start_date = Column(Date, nullable=False)
     end_date = Column(Date, nullable=False)
     
-    schedule = Column(JSONB, nullable=False, default=list)
+    # Quy tắc lịch học mong muốn (soft preference cho GA).
+    # Format: [{"day": "monday", "slots": [1,2]}, {"day": "thursday", "slots": [3,4]}]
+    # GA dùng làm soft hint khi init + soft bonus khi đúng pattern.
+    # Được cập nhật tự động sau mỗi lần apply GA proposal.
+    preferred_slots = Column(JSONB, nullable=False, default=list)
+
+    # Lịch bận cố định của lớp (hard constraint cho GA).
+    # Format: [{"day": "wednesday", "slots": [1,2,3,4,5,6]}, {"day": "friday", "slots": [5,6]}]
+    # GA sẽ KHÔNG xếp buổi học vào các slot này.
+    unavailable_slots = Column(JSONB, nullable=False, default=list)
     
     max_students = Column(Integer, default=25, nullable=False)
     current_students = Column(Integer, default=0, nullable=False)
     
     fee_amount = Column(DECIMAL(10, 2), nullable=False)
-
-    sessions_per_week = Column(SmallInteger, default=2, nullable=False)
+    sessions_per_week = Column(Integer, nullable=False)
+    
+    is_online = Column(Boolean, default=False, nullable=False)
+    online_meeting_url = Column(String(500), nullable=True)
     
     # FIX LOGIC: Default là SCHEDULED theo SQL gốc
-    status = Column(Enum(ClassStatus, values_callable=lambda obj: [e.value for e in obj], 
-        native_enum=True, name='class_status'), default=ClassStatus.SCHEDULED, nullable=False) 
+    status = Column(Enum(ClassStatus, values_callable=lambda obj: [e.value for e in obj], native_enum=True, name="class_status"), default=ClassStatus.SCHEDULED, nullable=False)
     
     notes = Column(Text, nullable=True)
     
@@ -151,6 +162,7 @@ class Class(BaseModel):
     # Relationships
     course = relationship("Course", foreign_keys=[course_id])
     teacher = relationship("User", foreign_keys=[teacher_id], backref="classes_taught")
+    ta = relationship("User", foreign_keys=[ta_id])
     substitute_teacher = relationship("User", foreign_keys=[substitute_teacher_id])
     room = relationship("Room")
     enrollments = relationship("ClassEnrollment", back_populates="enrollment_class")

@@ -158,3 +158,8 @@ class UserListResponse(BaseModel):
     model_config = {
         "from_attributes": True
     }
+
+class TargetBandRequest(BaseModel):
+    target_band: Optional[float] = None
+    target_cefr: Optional[str] = None
+

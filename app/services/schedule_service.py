@@ -786,7 +786,7 @@ class ScheduleService:
         """Selects a scheduling rule (fixed or random) and validates against max_slots_limit."""
         
         day_name = current_date.strftime('%A').lower()
-        schedule = class_obj.schedule
+        schedule = class_obj.preferred_slots
 
         if isinstance(schedule, str):
             try:
@@ -863,8 +863,21 @@ class ScheduleService:
         teacher_id = class_obj.teacher_id
 
         # 0. Check Conflicts from Request (Hard Constraints)
+
+        # Check class unavailable_slots (persistent hard constraint)
+        unavail_slots = getattr(class_obj, 'unavailable_slots', []) or []
+        day_name = current_date.strftime('%A').lower()
+        for unavail_rule in unavail_slots:
+            if isinstance(unavail_rule, dict) and unavail_rule.get('day') == day_name:
+                if set(time_slots) & set(unavail_rule.get('slots', [])):
+                    return ConflictInfo(
+                        class_id=class_obj.id, class_name=class_obj.name,
+                        conflict_type="class_unavailable",
+                        session_date=current_date, time_slots=time_slots,
+                        reason=f"Class is unavailable at {day_name} slots {unavail_rule.get('slots')}"
+                    )
         
-        # Check Class Conflict
+        # Check Class Conflict from request
         if self._check_request_conflict(class_obj.id, current_date, time_slots, request_conflicts):
             return ConflictInfo(
                 class_id=class_obj.id, class_name=class_obj.name, conflict_type="request_class_conflict",

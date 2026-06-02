@@ -75,7 +75,7 @@ class GroupDetailResponse(BaseModel):
     description: Optional[str] = None
     avatar_url: Optional[str] = None
     room_type: str
-    created_at: datetime
+    created_at: Optional[datetime] = None
     
     member_count: int = 0
     members: List[MemberResponse] = Field(default_factory=list)
@@ -89,17 +89,24 @@ class GroupDetailResponse(BaseModel):
 class MessageResponse(BaseModel):
     """Schema chi tiết của 1 tin nhắn (Dùng cho Lịch sử chat và Gửi tin nhắn)"""
     id: UUID
-    sender_id: UUID
+    sender_id: Optional[UUID] = None
     chat_room_id: Optional[UUID] = None
-    
+    sender: Optional[Any] = None  # UserMiniResponse khi có sender
+
     message_type: str
     content: str
     attachments: List[Any] = Field(default_factory=list)
-    
+
+    priority: Optional[str] = None
     status: str
     created_at: datetime
     updated_at: datetime
-    
+
+    # UI helper flags
+    is_read: bool = False
+    is_starred: bool = False
+    is_edited: bool = False
+
     model_config = ConfigDict(from_attributes=True)
 
 class UnreadCountResponse(BaseModel):

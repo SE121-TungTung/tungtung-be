@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from uuid import UUID
 
 from app.core.database import get_db
-from app.dependencies import get_current_admin_user, get_current_week_range
+from app.dependencies import get_current_admin_user, get_current_active_user, get_current_week_range
 from app.services.schedule_service import schedule_service
 from app.schemas.schedule import (
     ScheduleGenerateRequest, 
@@ -100,7 +100,8 @@ async def get_weekly_schedule_view(
     end_date: Optional[date] = Query(None, description="Ngày kết thúc của tuần (YYYY-MM-DD)"),
     class_id: Optional[UUID] = Query(None, description="Lọc theo ID lớp học"),
     user_id: Optional[UUID] = Query(None, description="Lọc theo ID người dùng (Giáo viên)"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_active_user)
 ):
     """
     Lấy thời khóa biểu chi tiết dạng tuần, có thể lọc theo lớp hoặc giáo viên.

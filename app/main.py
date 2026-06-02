@@ -6,13 +6,16 @@ from app.core.exceptions import APIException, api_exception_handler, http_except
 from app.routers import (
     auth, users, 
     room, course, classes, enrollment, class_session,
-    attendance, schedule, test, 
+    attendance, schedule, ga_schedule, test, 
     message, notification,
     kpi,
-    chatbot, audit_log)
+    invoice, payment, report, refund,
+    chatbot, audit_log, recommendation,
+    substitution, certificate)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 from contextlib import asynccontextmanager
+from app.core.redis import redis_manager
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -30,10 +33,12 @@ app.add_exception_handler(Exception, global_exception_handler)
 async def lifespan(app: FastAPI):
     print("Application startup: Starting WebSocket Heartbeat...")
     message.manager.start_heartbeat()
+    await redis_manager.init_redis()
     yield
     print("Application shutdown: Stopping WebSocket Heartbeat...")
     if message.manager._heartbeat_task:
         message.manager._heartbeat_task.cancel()
+    await redis_manager.close_redis()
 
 db = database.get_db()
 
@@ -71,11 +76,19 @@ api_router.include_router(enrollment.router)
 api_router.include_router(class_session.router)
 api_router.include_router(attendance.router)
 api_router.include_router(schedule.router)
+api_router.include_router(ga_schedule.router)
 api_router.include_router(message.router)
 api_router.include_router(test.router)
 api_router.include_router(notification.router)
 api_router.include_router(kpi.router)
+api_router.include_router(invoice.router)
+api_router.include_router(payment.router)
+api_router.include_router(report.router)
+api_router.include_router(refund.router)
 api_router.include_router(chatbot.router)
 api_router.include_router(audit_log.router)
+api_router.include_router(recommendation.router)
+api_router.include_router(substitution.router)
+api_router.include_router(certificate.router)
 
 app.include_router(api_router, prefix="/api/v1")

@@ -50,6 +50,10 @@ class ClassSession(BaseModel):
     actual_start_time = Column(TIMESTAMP(timezone=True))
     actual_end_time = Column(TIMESTAMP(timezone=True))
     
+    # QR Code for student self check-in
+    qr_token = Column(String(64), unique=True, nullable=True, index=True)
+    qr_expires_at = Column(TIMESTAMP(timezone=True), nullable=True)
+    
     # Relationships
     session_class = relationship("Class", backref="sessions")
     teacher = relationship("User", foreign_keys=[teacher_id])

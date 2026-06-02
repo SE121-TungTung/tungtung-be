@@ -6,6 +6,7 @@ import enum
 class UserRole(enum.Enum):
     STUDENT = "student"
     TEACHER = "teacher"
+    TA = "ta"
     OFFICE_ADMIN = "office_admin"
     CENTER_ADMIN = "center_admin"
     SYSTEM_ADMIN = "system_admin"

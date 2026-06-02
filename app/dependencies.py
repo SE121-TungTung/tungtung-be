@@ -51,6 +51,28 @@ def get_current_teacher_or_admin(
         )
     return current_user
 
+def get_current_teacher_ta_or_admin(
+    current_user: User = Depends(get_current_active_user)
+) -> User:
+    allowed_roles = [UserRole.TEACHER, UserRole.TA, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN]
+    if current_user.role not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not enough permissions"
+        )
+    return current_user
+
+def require_any_role(*roles: UserRole):
+    """Allow any of the specified roles."""
+    def role_checker(current_user: User = Depends(get_current_active_user)) -> User:
+        if current_user.role not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Not enough permissions"
+            )
+        return current_user
+    return role_checker
+
 def get_current_week_range() -> Tuple[date, date]:
     today = date.today()
     # today.weekday() trả về 0 cho Thứ Hai, 6 cho Chủ Nhật

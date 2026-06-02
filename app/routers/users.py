@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from app.core.database import get_db
 from app.dependencies import get_current_active_user, get_current_admin_user, get_current_user, CommonQueryParams
-from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest, UserUpdateForm, ClassWithMembersResponse
+from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest, UserUpdateForm, ClassWithMembersResponse, TargetBandRequest
 from app.services.user_service import user_service
 from app.models.user import User, UserRole, UserStatus
 from app.models.academic import ClassEnrollment, Class
@@ -75,6 +75,31 @@ async def change_password(
     """Change current user password"""
     await user_service.change_password(db, current_user, password_update)
     return ApiResponse(data="Password changed successfully")
+
+@router.put("/me/target-band", response_model=ApiResponse[UserResponse])
+async def update_target_band(
+    payload: TargetBandRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Student cập nhật target band score hoặc CEFR level.
+    Lưu vào users.preferences JSONB.
+    """
+    prefs = current_user.preferences or {}
+    if payload.target_band is not None:
+        prefs["target_band"] = float(payload.target_band)
+    if payload.target_cefr is not None:
+        prefs["target_cefr"] = payload.target_cefr
+    
+    # Ensure SQLAlchemy detects the mutation
+    from sqlalchemy.orm.attributes import flag_modified
+    current_user.preferences = prefs
+    flag_modified(current_user, "preferences")
+    
+    db.commit()
+    db.refresh(current_user)
+    return ApiResponse(data=UserResponse.model_validate(current_user, from_attributes=True))
 
 @router.post("", response_model=ApiResponse[UserResponse])
 async def create_user(

@@ -14,6 +14,7 @@ from app.schemas.base_schema import ApiResponse, PaginationResponse
 from app.core.exceptions import APIException
 
 from app.schemas.message import (
+    GroupDetailResponse,
     MessageCreate, 
     ConversationResponse, 
     GroupCreateRequest, 
@@ -140,7 +141,7 @@ async def create_group(
     )
     return ApiResponse(data=result)
 
-@router.get("/groups/{room_id}", response_model=ApiResponse[ConversationResponse])
+@router.get("/groups/{room_id}", response_model=ApiResponse[GroupDetailResponse])
 async def get_group_details(
     room_id: UUID,
     db: Session = Depends(get_db),

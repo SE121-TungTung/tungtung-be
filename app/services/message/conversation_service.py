@@ -241,7 +241,7 @@ class ConversationService:
             db.refresh(room)
 
         # 4. Get other user info (có guard)
-        other_user = self.user_repo.get(db, id=other_user_id)
+        other_user = db.query(User).filter(User.id == other_user_id).first()
 
         # 5. Get last message (CHỈ khi room đã chắc chắn tồn tại)
         last_message = db.query(Message).filter(
@@ -359,16 +359,20 @@ class ConversationService:
                 continue
 
             # Map thủ công các trường sang Pydantic Model
-            msg_resp = MessageResponse(
-                id=msg.id,
-                sender_id=msg.sender_id,
-                chat_room_id=msg.chat_room_id,
-                sender=UserMiniResponse(
+            sender_mini = None
+            if msg.sender:
+                sender_mini = UserMiniResponse(
                     id=msg.sender.id,
                     full_name=f"{msg.sender.first_name} {msg.sender.last_name}",
                     email=msg.sender.email,
                     avatar_url=msg.sender.avatar_url
-                ) if msg.sender else None,
+                )
+
+            msg_resp = MessageResponse(
+                id=msg.id,
+                sender_id=msg.sender_id,
+                chat_room_id=msg.chat_room_id,
+                sender=sender_mini,
                 
                 message_type=msg.message_type.value if hasattr(msg.message_type, 'value') else msg.message_type,
                 content=msg.content,
