@@ -231,7 +231,22 @@ class PayrollRunService:
                         Salary.period == period
                     ).first()
 
-                    base_calc = config.base_salary if config.contract_type == ContractType.FULL_TIME else 0
+                    from app.services.system_setting_service import system_setting_service
+                    native_mult = Decimal(str(system_setting_service.get_setting_float(db, "salary.native_multiplier", 1.0)))
+                    
+                    hours_or_lessons = Decimal(str(kpi.teaching_hours or 0))
+                    
+                    if config.contract_type == ContractType.FULL_TIME:
+                        base_calc = config.base_salary
+                    elif config.contract_type == ContractType.NATIVE:
+                        if config.base_salary > 0:
+                            base_calc = config.base_salary * native_mult
+                        else:
+                            base_calc = hours_or_lessons * config.lesson_rate * native_mult
+                    elif config.contract_type == ContractType.PART_TIME:
+                        base_calc = hours_or_lessons * config.lesson_rate
+                    else:
+                        base_calc = Decimal("0")
 
                     # Guard: check if bonus from this KPI period was already paid
                     # in a different month's salary

@@ -14,7 +14,7 @@ from app.models.user import UserStatus, UserRole
 def create_mock_user(role=UserRole.SYSTEM_ADMIN):
     user = MagicMock()
     user.id = uuid4()
-    user.role = role.value
+    user.role = role
     user.status = UserStatus.ACTIVE
     return user
 
@@ -59,10 +59,10 @@ def override_teacher():
 # Nhóm 1: Cấu hình hệ thống (Payroll Config)
 # =============================================================================
 
-@patch('app.routers.kpi.TeacherPayrollConfigService')
-def test_tc02_update_payroll_config(mock_service_class, override_centeradmin):
+@patch('app.routers.kpi.teacher_payroll_config_service')
+def test_tc02_update_payroll_config(mock_service, override_centeradmin):
     """TC-02: Cấu hình lương GV"""
-    mock_service_inst = mock_service_class.return_value
+    mock_service_inst = mock_service
     teacher_id = str(uuid4())
     mock_service_inst.update_config.return_value = {
         "teacher_id": teacher_id, "contract_type": "FULL_TIME", 
@@ -81,8 +81,8 @@ def test_tc02_update_payroll_config(mock_service_class, override_centeradmin):
     assert response.json()["success"] == True
     assert response.json()["data"]["base_salary"] == 10000000
 
-@patch('app.routers.kpi.TeacherPayrollConfigService')
-def test_tc02_update_payroll_config_invalid_type(mock_service_class, override_centeradmin):
+@patch('app.routers.kpi.teacher_payroll_config_service')
+def test_tc02_update_payroll_config_invalid_type(mock_service, override_centeradmin):
     """TC-02_Error: Nhập chữ vào field số"""
     teacher_id = str(uuid4())
     payload = {
@@ -100,10 +100,10 @@ def test_tc02_update_payroll_config_invalid_type(mock_service_class, override_ce
 # Nhóm 2: Kiểm soát lương & Phê duyệt (Salaries)
 # =============================================================================
 
-@patch('app.routers.kpi.SalaryService')
-def test_tc06_salary_adjustment(mock_service_class, override_centeradmin):
+@patch('app.routers.kpi.salary_service')
+def test_tc06_salary_adjustment(mock_service, override_centeradmin):
     """TC-06: Điều chỉnh lương"""
-    mock_service_inst = mock_service_class.return_value
+    mock_service_inst = mock_service
     adj_id = str(uuid4())
     mock_service_inst.add_adjustment.return_value = {
         "id": adj_id, "salary_id": str(uuid4()), "adjustment_type": "ALLOWANCE", "amount": 500000, "reason": "Thưởng nóng", "created_at": "2024-03-01T00:00:00Z"
@@ -119,10 +119,10 @@ def test_tc06_salary_adjustment(mock_service_class, override_centeradmin):
     assert response.status_code == 200
     assert response.json()["data"]["amount"] == 500000
 
-@patch('app.routers.kpi.SalaryService')
-def test_tc07_approve_salary(mock_service_class, override_centeradmin):
+@patch('app.routers.kpi.salary_service')
+def test_tc07_approve_salary(mock_service, override_centeradmin):
     """TC-07: Phê duyệt lương"""
-    mock_service_inst = mock_service_class.return_value
+    mock_service_inst = mock_service
     salary_id = str(uuid4())
     mock_service_inst.approve.return_value = {
         "id": salary_id, 
@@ -142,10 +142,10 @@ def test_tc07_approve_salary(mock_service_class, override_centeradmin):
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "APPROVED"
 
-@patch('app.routers.kpi.SalaryService')
-def test_tc08_view_salary_history_teacher(mock_service_class, override_teacher):
+@patch('app.routers.kpi.salary_service')
+def test_tc08_view_salary_history_teacher(mock_service, override_teacher):
     """TC-08: Xem lịch sử lương (Teacher Me)"""
-    mock_service_inst = mock_service_class.return_value
+    mock_service_inst = mock_service
     mock_service_inst.get_history.return_value = ([
         {
             "id": str(uuid4()), 
@@ -172,10 +172,10 @@ def test_tc08_view_salary_history_teacher(mock_service_class, override_teacher):
 # Nhóm 3: Khiếu nại (KPI Dispute)
 # =============================================================================
 
-@patch('app.routers.kpi.KpiDisputeService')
-def test_tc09_submit_dispute(mock_service_class, override_teacher):
+@patch('app.routers.kpi.kpi_dispute_service')
+def test_tc09_submit_dispute(mock_service, override_teacher):
     """TC-09: Gửi khiếu nại - Status Open/Pending"""
-    mock_service_inst = mock_service_class.return_value
+    mock_service_inst = mock_service
     mock_service_inst.create_dispute.return_value = {
         "id": str(uuid4()), "kpi_record_id": str(uuid4()), "teacher_id": str(uuid4()), "status": "PENDING", "reason": "Thiếu điểm chuyên cần", "created_at": "2024-03-01T00:00:00Z"
     }
@@ -188,10 +188,10 @@ def test_tc09_submit_dispute(mock_service_class, override_teacher):
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "PENDING"
 
-@patch('app.routers.kpi.KpiDisputeService')
-def test_tc10_resolve_dispute(mock_service_class, override_centeradmin):
+@patch('app.routers.kpi.kpi_dispute_service')
+def test_tc10_resolve_dispute(mock_service, override_centeradmin):
     """TC-10: Giải quyết khiếu nại - Status Resolved"""
-    mock_service_inst = mock_service_class.return_value
+    mock_service_inst = mock_service
     dispute_id = str(uuid4())
     mock_service_inst.resolve_dispute.return_value = {
         "id": dispute_id, 

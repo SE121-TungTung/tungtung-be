@@ -53,14 +53,15 @@ class RefundService:
             raise HTTPException(status_code=403, detail="Bạn không có quyền xem thông tin hoàn tiền này")
 
         sessions_total = self._count_total_sessions(db, class_obj.id)
+        sessions_already_held = self._count_sessions_already_held(db, class_obj.id)
+        sessions_remaining = sessions_total - sessions_already_held
         sessions_attended = self._count_attended_sessions(db, class_obj.id, enrollment.student_id)
-        sessions_remaining = sessions_total - sessions_attended
 
         # Lấy học phí đã thanh toán
         original_fee = self._get_paid_fee(db, enrollment_id)
 
-        # Tính tiền hoàn (ưu tiên doc: 100% nếu chưa học)
-        if sessions_attended == 0:
+        # Tính tiền hoàn (100% nếu chưa diễn ra buổi nào)
+        if sessions_already_held == 0:
             refundable_amount = original_fee
         else:
             refundable_amount = (
@@ -68,8 +69,8 @@ class RefundService:
                 if sessions_total > 0
                 else Decimal("0")
             )
-        # Làm tròn 2 chữ số
-        refundable_amount = refundable_amount.quantize(Decimal("0.01"))
+        # Làm tròn xuống đến 1,000 VNĐ
+        refundable_amount = (refundable_amount // 1000) * 1000
 
         return RefundCalculationResponse(
             enrollment_id=enrollment_id,
@@ -108,12 +109,13 @@ class RefundService:
         payment = self._find_success_payment(db, payload.enrollment_id)
 
         sessions_total = self._count_total_sessions(db, class_obj.id)
+        sessions_already_held = self._count_sessions_already_held(db, class_obj.id)
+        sessions_remaining = sessions_total - sessions_already_held
         sessions_attended = self._count_attended_sessions(db, class_obj.id, enrollment.student_id)
-        sessions_remaining = sessions_total - sessions_attended
         original_fee = Decimal(str(payment.amount))
 
-        # Tính requested_amount — ưu tiên doc
-        if sessions_attended == 0:
+        # Tính requested_amount (100% nếu chưa diễn ra buổi nào)
+        if sessions_already_held == 0:
             requested_amount = original_fee
         else:
             requested_amount = (
@@ -121,7 +123,8 @@ class RefundService:
                 if sessions_total > 0
                 else Decimal("0")
             )
-        requested_amount = requested_amount.quantize(Decimal("0.01"))
+        # Làm tròn xuống đến 1,000 VNĐ
+        requested_amount = (requested_amount // 1000) * 1000
 
         refund = Refund(
             enrollment_id=payload.enrollment_id,
@@ -233,6 +236,40 @@ class RefundService:
             )
             .scalar() or 0
         )
+
+    def _count_sessions_already_held(self, db: Session, class_id: UUID) -> int:
+        """
+        Đếm số buổi đã diễn ra (COMPLETED) hoặc đang diễn ra mà đã vượt quá 50% thời lượng.
+        """
+        sessions = db.query(ClassSession).filter(
+            ClassSession.class_id == class_id,
+            ClassSession.status.in_([
+                SessionStatus.COMPLETED,
+                SessionStatus.IN_PROGRESS,
+            ])
+        ).all()
+        
+        held_count = 0
+        now = datetime.now() # naive datetime matching DB session_date and times
+        
+        for s in sessions:
+            if s.status == SessionStatus.COMPLETED:
+                held_count += 1
+            elif s.status == SessionStatus.IN_PROGRESS:
+                if s.session_date and s.start_time and s.end_time:
+                    try:
+                        start_dt = datetime.combine(s.session_date, s.start_time)
+                        end_dt = datetime.combine(s.session_date, s.end_time)
+                        total_seconds = (end_dt - start_dt).total_seconds()
+                        if total_seconds > 0:
+                            elapsed_seconds = (now - start_dt).total_seconds()
+                            if elapsed_seconds >= total_seconds / 2:
+                                held_count += 1
+                    except Exception:
+                        held_count += 1
+                else:
+                    held_count += 1
+        return held_count
 
     def _count_attended_sessions(self, db: Session, class_id: UUID, student_id: UUID) -> int:
         """Số buổi học viên đã tham dự (PRESENT hoặc LATE)."""

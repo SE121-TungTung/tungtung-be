@@ -58,8 +58,12 @@ from app.services.kpi.record_service import kpi_record_service
 from app.services.kpi.calculation_service import kpi_calculation_service
 from app.services.kpi.support_calc_service import support_calc_service
 from app.services.kpi.dashboard_service import kpi_dashboard_service
-from app.services.kpi.dispute_service import kpi_dispute_service
-from app.services.kpi.payroll_service import salary_service, teacher_payroll_config_service, payroll_run_service
+from app.services.kpi.dispute_service import kpi_dispute_service, KpiDisputeService
+from app.services.kpi.payroll_service import (
+    salary_service, SalaryService,
+    teacher_payroll_config_service, TeacherPayrollConfigService,
+    payroll_run_service
+)
 
 router = APIRouter(prefix="", tags=["KPI & Payroll"])
 

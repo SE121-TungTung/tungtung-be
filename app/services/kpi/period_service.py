@@ -92,12 +92,12 @@ class KPIPeriodService:
             if key not in template_map or t.version > template_map[key].version:
                 template_map[key] = t
 
-        # Get all staff (teachers) with payroll configs
+        # Get all staff (teachers and TAs) with payroll configs
         staff_configs = db.query(TeacherPayrollConfig).all()
 
-        # Also check from User table for teachers without configs
+        # Check from User table for both TEACHER and TA roles
         teachers = db.query(User).filter(
-            User.role == UserRole.TEACHER,
+            User.role.in_([UserRole.TEACHER, UserRole.TA]),
             User.deleted_at.is_(None),
         ).all()
 
@@ -111,11 +111,12 @@ class KPIPeriodService:
                     config = sc
                     break
 
-            contract_type_key = config.contract_type.value if config else "FULL_TIME"
-            template = template_map.get(contract_type_key)
+            # Map template based on User Role (TEACHER -> FULL_TIME, TA -> PART_TIME)
+            template_key = "FULL_TIME" if teacher.role == UserRole.TEACHER else "PART_TIME"
+            template = template_map.get(template_key)
 
             if not template:
-                skipped.append(f"Staff {teacher.id}: No template for {contract_type_key}")
+                skipped.append(f"Staff {teacher.id}: No template for role {teacher.role.value} (mapped to {template_key})")
                 continue
 
             # Create KPI record
