@@ -266,6 +266,7 @@ class TestType(enum.Enum):
     PLACEMENT = "placement"
     HOMEWORK = "homework"
     ASSESSMENT = "assessment"
+    IELTS_FULL = "ielts_full"
 
 
 class TestStatus(enum.Enum):
