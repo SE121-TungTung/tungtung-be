@@ -72,7 +72,7 @@ async def upload_knowledge_base(
             doc_id=doc_id_from_chatbot,
             filename=file.filename,
             category=DocCategory(doc_category),
-            uploaded_by=current_user.id
+            created_by=current_user.id
         )
         db.add(new_doc)
         db.commit()
@@ -102,7 +102,7 @@ async def list_documents(
     """
     from app.models.user import User
     
-    query = db.query(ChatbotDocument, User).join(User, ChatbotDocument.uploaded_by == User.id)
+    query = db.query(ChatbotDocument, User).join(User, ChatbotDocument.created_by == User.id)
     
     if category:
         query = query.filter(ChatbotDocument.category == category)
@@ -188,7 +188,7 @@ async def update_document(
         # Cập nhật Database
         doc.doc_id = new_doc_id_from_chatbot
         doc.filename = file.filename
-        doc.uploaded_by = current_user.id
+        doc.created_by = current_user.id
         
         db.commit()
         db.refresh(doc)
