@@ -35,11 +35,6 @@ class UserRepository(BaseRepository[User]):
                         db=db,
                         student_id=db_user.id,
                         default_class_id=default_class_id)
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Student class must be provided for student role"
-                    )
             return db_user
         except Exception as e:
             db.rollback()

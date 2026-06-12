@@ -11,10 +11,12 @@ Công thức hoàn tiền (từ BRD 2.1.3):
 from fastapi import APIRouter, Depends, Query, Path, Body
 from sqlalchemy.orm import Session
 from uuid import UUID
+from typing import Optional
+import math
 
 from app.core.database import get_db
-from app.dependencies import get_current_user, require_role
-from app.schemas.base_schema import ApiResponse
+from app.dependencies import get_current_user, require_role, require_any_role
+from app.schemas.base_schema import ApiResponse, PaginationResponse, PaginationMetadata
 from app.models.user import User, UserRole
 
 from app.schemas.finance.refund import (
@@ -27,6 +29,33 @@ from app.schemas.finance.refund import (
 from app.services.finance.refund_service import refund_service
 
 router = APIRouter(prefix="/refunds", tags=["Refunds"])
+
+OfficeAdminUp = Depends(require_any_role(
+    UserRole.OFFICE_ADMIN, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN
+))
+
+
+# ---------------------------------------------------------------------------
+# GET /refunds  — Admin xem tất cả yêu cầu hoàn tiền (phân trang)
+# Phân quyền: Office Admin+
+# ---------------------------------------------------------------------------
+@router.get("", response_model=PaginationResponse[RefundResponse])
+async def list_all_refunds(
+    status: Optional[str] = Query(None, description="Lọc theo trạng thái (PENDING, APPROVED, REJECTED)"),
+    student_id: Optional[UUID] = Query(None, description="Lọc theo học viên"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = OfficeAdminUp,
+):
+    items, total = refund_service.list_all_refunds(
+        db=db, status=status, student_id=student_id, page=page, limit=limit
+    )
+    meta = PaginationMetadata(
+        page=page, limit=limit, total=total,
+        total_pages=math.ceil(total / limit) if limit else 0
+    )
+    return PaginationResponse(success=True, data=items, meta=meta, message="Thành công")
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +103,7 @@ async def calculate_refund(
 async def create_refund(
     payload: RefundCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_role(UserRole.OFFICE_ADMIN)),
+    current_user: User = OfficeAdminUp,
 ):
     result = refund_service.create_refund(
         db=db, payload=payload, requested_by=current_user.id

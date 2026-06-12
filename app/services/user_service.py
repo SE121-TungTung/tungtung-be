@@ -5,7 +5,7 @@ from uuid import UUID
 import uuid
 
 from fastapi import HTTPException, status, BackgroundTasks, UploadFile
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_
 
 from app.services.base import BaseService
@@ -28,7 +28,7 @@ from app.models.academic import (
     ClassStatus,
 )
 from app.models.test import TestAttempt, Test, AttemptStatus
-from app.models.session_attendance import ClassSession, SessionStatus
+from app.models.session_attendance import ClassSession, SessionStatus, AttendanceRecord
 
 from app.schemas.user import (
     UserCreate,
@@ -466,6 +466,10 @@ class UserService(BaseService):
         
         classes = (
             db.query(Class)
+            .options(
+                joinedload(Class.course),
+                joinedload(Class.room)
+            )
             .filter(
                 Class.id.in_(list(class_ids)),
                 Class.deleted_at.is_(None)
@@ -494,9 +498,30 @@ class UserService(BaseService):
                 .all()
             )
 
+            # If current user is a student, check which sessions they checked in
+            checked_in_session_ids = set()
+            if current_user.role == UserRole.STUDENT:
+                records = (
+                    db.query(AttendanceRecord.session_id)
+                    .filter(
+                        AttendanceRecord.student_id == current_user.id,
+                        AttendanceRecord.session_id.in_([s.id for s in sessions])
+                    )
+                    .all()
+                )
+                checked_in_session_ids = {r[0] for r in records}
+
+            for s in sessions:
+                s.student_checked_in = (s.id in checked_in_session_ids) if current_user.role == UserRole.STUDENT else None
+
             result.append({
                 "id": class_.id,
                 "name": class_.name,
+                "start_date": class_.start_date,
+                "end_date": class_.end_date,
+                "status": class_.status,
+                "course_name": class_.course.name if class_.course else None,
+                "room_name": class_.room.name if class_.room else None,
                 "teacher": {
                     "id": class_.teacher.id if class_.teacher else None,
                     "full_name": (

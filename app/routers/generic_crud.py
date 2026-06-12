@@ -8,7 +8,7 @@ from fastapi import HTTPException
 import logging
 import math
 # THÊM: Import DateTime và datetime
-from sqlalchemy import String, Text, DateTime
+from sqlalchemy import String, Text, DateTime, cast
 from datetime import datetime
 
 ModelType = TypeVar("ModelType", bound=DeclarativeMeta)
@@ -94,7 +94,7 @@ class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
                 search_conditions = []
                 for field in self.searchable_fields:
                     column = getattr(self.model, field)
-                    search_conditions.append(column.ilike(f"%{search}%"))
+                    search_conditions.append(cast(column, String).ilike(f"%{search}%"))
                 
                 if search_conditions:
                     query = query.filter(or_(*search_conditions))
@@ -151,7 +151,7 @@ class CRUDBase(Generic[ModelType, CreateSchemaType, UpdateSchemaType]):
                     elif op == "lt":
                         query = query.filter(column < op_value)
                     elif op == "like":
-                        query = query.filter(column.ilike(f"%{op_value}%"))
+                        query = query.filter(cast(column, String).ilike(f"%{op_value}%"))
                     elif op == "in":
                         query = query.filter(column.in_(op_value))
                     elif op == "not_in":

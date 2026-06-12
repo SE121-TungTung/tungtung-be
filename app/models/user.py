@@ -51,6 +51,15 @@ class User(BaseModel):
     failed_login_attempts = Column(Integer, default=0)
     locked_until = Column(TIMESTAMP(timezone=True))
 
+    @property
+    def full_name(self) -> str:
+        return f"{self.first_name} {self.last_name}".strip()
+
+    @property
+    def username(self) -> str:
+        return self.email.split("@")[0] if self.email else ""
+
+
 # class PasswordResetToken(BaseModel):
 #     __tablename__ = "password_reset_tokens"
     

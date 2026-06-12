@@ -245,6 +245,19 @@ async def batch_submit_speaking(
     result = await speaking_service.batch_submit_speaking(db=db, attempt_id=attempt_id, request=request, user_id=current_user.id)
     return ApiResponse(data=result)
 
+@router.get("/{test_id}/my-attempts", response_model=ApiResponse[List[TestAttemptSummaryResponse]])
+def list_my_attempts(
+    test_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    attempts = attempt_service.list_my_attempts(
+        db=db,
+        test_id=test_id,
+        student_id=current_user.id
+    )
+    return ApiResponse(data=attempts)
+
 @router.get("/{test_id}/attempts", response_model=PaginationResponse[TestAttemptSummaryResponse])
 def list_test_attempts_for_teacher(
     test_id: UUID,

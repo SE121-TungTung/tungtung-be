@@ -18,6 +18,7 @@ from app.models.finance import (
     Payment, PaymentGateway, PaymentStatus,
 )
 from app.models.user import User, UserRole
+from app.models.academic import ClassEnrollment, PaymentStatus as AcademicPaymentStatus
 from app.schemas.finance.payment import PaymentCreate, PaymentResponse, ReceiptResponse
 
 
@@ -125,7 +126,15 @@ class PaymentService:
             invoice = db.query(Invoice).filter(Invoice.id == payment.invoice_id).first()
             if invoice:
                 invoice.status = InvoiceStatus.PAID
-
+                
+                # Cập nhật Enrollment → PAID và lưu số tiền đã trả
+                enrollment = db.query(ClassEnrollment).filter(
+                    ClassEnrollment.id == invoice.enrollment_id
+                ).first()
+                if enrollment:
+                    enrollment.payment_status = AcademicPaymentStatus.PAID
+                    enrollment.fee_paid = invoice.final_amount
+                    
         else:
             payment.status = PaymentStatus.FAILED
 
@@ -158,6 +167,58 @@ class PaymentService:
         if not payment.receipt_url:
             payment.receipt_url = f"/receipts/{payment.id}.pdf"
             db.commit()
+
+        # Ensure the PDF file physically exists in media/receipts so the static server can serve it
+        import os
+        receipt_dir = os.path.join("media", "receipts")
+        os.makedirs(receipt_dir, exist_ok=True)
+        receipt_path = os.path.join(receipt_dir, f"{payment.id}.pdf")
+        
+        if not os.path.exists(receipt_path):
+            paid_at_str = payment.paid_at.strftime('%Y-%m-%d %H:%M:%S') if payment.paid_at else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            stream_content = f"BT\n/F1 16 Tf\n70 700 Td\n(TungTung English Center - BIEN LAI THANH TOAN) Tj\n/F1 12 Tf\n0 -40 Td\n(Ma hoa don / Payment ID: {payment.id}) Tj\n0 -20 Td\n(So tien / Amount: {payment.amount:,.0f} VND) Tj\n0 -20 Td\n(Ngay thanh toan / Date: {paid_at_str}) Tj\n0 -30 Td\n(Cam on quy hoc vien da lua chon TungTung English Center!) Tj\nET".encode('utf-8')
+            
+            stream_len = len(stream_content)
+            pdf_bytes = bytearray()
+            pdf_bytes.extend(b"%PDF-1.4\n")
+            
+            # Object 1: Catalog
+            obj1_pos = len(pdf_bytes)
+            pdf_bytes.extend(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n")
+            
+            # Object 2: Pages
+            obj2_pos = len(pdf_bytes)
+            pdf_bytes.extend(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
+            
+            # Object 3: Page
+            obj3_pos = len(pdf_bytes)
+            pdf_bytes.extend(b"3 0 obj\n<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 612 792] /Contents 5 0 R >>\nendobj\n")
+            
+            # Object 4: Font
+            obj4_pos = len(pdf_bytes)
+            pdf_bytes.extend(b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n")
+            
+            # Object 5: Contents (Stream)
+            obj5_pos = len(pdf_bytes)
+            pdf_bytes.extend(f"5 0 obj\n<< /Length {stream_len} >>\nstream\n".encode('utf-8'))
+            pdf_bytes.extend(stream_content)
+            pdf_bytes.extend(b"\nendstream\nendobj\n")
+            
+            # Xref
+            xref_pos = len(pdf_bytes)
+            pdf_bytes.extend(b"xref\n0 6\n0000000000 65535 f \n")
+            pdf_bytes.extend(f"{obj1_pos:010d} 00000 n \n".encode('utf-8'))
+            pdf_bytes.extend(f"{obj2_pos:010d} 00000 n \n".encode('utf-8'))
+            pdf_bytes.extend(f"{obj3_pos:010d} 00000 n \n".encode('utf-8'))
+            pdf_bytes.extend(f"{obj4_pos:010d} 00000 n \n".encode('utf-8'))
+            pdf_bytes.extend(f"{obj5_pos:010d} 00000 n \n".encode('utf-8'))
+            
+            # Trailer
+            pdf_bytes.extend(b"trailer\n<< /Size 6 /Root 1 0 R >>\n")
+            pdf_bytes.extend(f"startxref\n{xref_pos}\n%%EOF\n".encode('utf-8'))
+
+            with open(receipt_path, "wb") as f:
+                f.write(pdf_bytes)
 
         return ReceiptResponse(
             payment_id=payment.id,

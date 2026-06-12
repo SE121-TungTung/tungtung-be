@@ -448,6 +448,40 @@ class AttemptService:
             data=results,
             meta=meta
         )
+
+    def list_my_attempts(
+        self,
+        db: Session,
+        test_id: UUID,
+        student_id: UUID
+    ) -> list[TestAttemptSummaryResponse]:
+        rows = (
+            db.query(
+                TestAttempt,
+                User.first_name,
+                User.last_name
+            )
+            .join(User, User.id == TestAttempt.student_id)
+            .filter(
+                TestAttempt.test_id == test_id,
+                TestAttempt.student_id == student_id,
+                TestAttempt.deleted_at.is_(None)
+            )
+            .order_by(TestAttempt.started_at.desc())
+            .all()
+        )
+        results = []
+        for attempt, first_name, last_name in rows:
+            results.append(TestAttemptSummaryResponse(
+                id=attempt.id,
+                student_id=attempt.student_id,
+                student_name=f"{first_name} {last_name}".strip(),
+                status=attempt.status.value if hasattr(attempt.status, 'value') else attempt.status,
+                score=attempt.band_score,
+                started_at=attempt.started_at,
+                submitted_at=attempt.submitted_at,
+            ))
+        return results
     
     async def grade_attempt(
         self,

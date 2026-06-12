@@ -204,7 +204,62 @@ class RefundService:
 
         db.commit()
         db.refresh(refund)
+
+        # Trích xuất student_name và course_name bổ sung
+        student = db.query(User).filter(User.id == refund.student_id).first()
+        if student:
+            refund.student_name = student.full_name or student.username
+
+        enrollment = db.query(ClassEnrollment).filter(ClassEnrollment.id == refund.enrollment_id).first()
+        if enrollment:
+            class_obj = db.query(Class).filter(Class.id == enrollment.class_id).first()
+            if class_obj:
+                from app.models.academic import Course
+                course_obj = db.query(Course).filter(Course.id == class_obj.course_id).first()
+                if course_obj:
+                    refund.course_name = course_obj.name
+
         return RefundResponse.model_validate(refund)
+
+    def list_all_refunds(
+        self,
+        db: Session,
+        status: str = None,
+        student_id: UUID = None,
+        page: int = 1,
+        limit: int = 20,
+    ):
+        """Danh sách yêu cầu hoàn tiền (phân trang)."""
+        query = db.query(Refund)
+        if status:
+            query = query.filter(Refund.status == status)
+        if student_id:
+            query = query.filter(Refund.student_id == student_id)
+
+        total = query.count()
+        items = (
+            query.order_by(Refund.created_at.desc())
+            .offset((page - 1) * limit)
+            .limit(limit)
+            .all()
+        )
+
+        # Trích xuất student_name và course_name bổ sung
+        for item in items:
+            student = db.query(User).filter(User.id == item.student_id).first()
+            if student:
+                item.student_name = student.full_name or student.username
+
+            enrollment = db.query(ClassEnrollment).filter(ClassEnrollment.id == item.enrollment_id).first()
+            if enrollment:
+                class_obj = db.query(Class).filter(Class.id == enrollment.class_id).first()
+                if class_obj:
+                    from app.models.academic import Course
+                    course_obj = db.query(Course).filter(Course.id == class_obj.course_id).first()
+                    if course_obj:
+                        item.course_name = course_obj.name
+
+        return items, total
 
     # ----- private helpers -----
 

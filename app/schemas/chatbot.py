@@ -5,10 +5,12 @@ from uuid import UUID
 
 class ChatbotDocumentResponse(BaseModel):
     id: UUID
-    doc_id: str
+    doc_id: Optional[str] = None
     filename: str
     category: str
-    uploaded_by_name: str
+    status: str = "completed"
+    error_message: Optional[str] = None
+    uploaded_by_name: str = ""
     created_at: datetime
     updated_at: datetime
 

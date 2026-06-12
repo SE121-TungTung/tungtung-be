@@ -37,7 +37,8 @@ def get_attendance_sheet(
     current_user=Depends(get_current_user),
 ):
     """Lấy bảng điểm danh của buổi học."""
-    return attendance_service.get_session_attendance_sheet(db=db, session_id=session_id)
+    res = attendance_service.get_session_attendance_sheet(db=db, session_id=session_id)
+    return ApiResponse(success=True, data=res, message="Lấy bảng điểm danh thành công")
 
 
 @session_router.put("", response_model=ApiResponse[dict])
@@ -51,12 +52,13 @@ def mark_attendance(
     Điểm danh hàng loạt.
     CHỈ cho phép khi session đang SCHEDULED hoặc IN_PROGRESS.
     """
-    return attendance_service.bulk_mark_attendance(
+    attendance_service.bulk_mark_attendance(
         db=db,
         session_id=session_id,
         data=payload,
         marker_id=current_user.id,
     )
+    return ApiResponse(success=True, data={}, message="Điểm danh hàng loạt thành công")
 
 
 @session_router.patch("/notes", response_model=ApiResponse[dict])
@@ -71,12 +73,13 @@ def update_attendance_notes(
     Cho phép ở MỌI trạng thái session (kể cả COMPLETED).
     Chỉ cập nhật notes, KHÔNG thay đổi status.
     """
-    return attendance_service.update_attendance_notes(
+    attendance_service.update_attendance_notes(
         db=db,
         session_id=session_id,
         data=payload,
         marker_id=current_user.id,
     )
+    return ApiResponse(success=True, data={}, message="Cập nhật ghi chú thành công")
 
 
 @session_router.post("/qr", response_model=ApiResponse[QRTokenResponse])
@@ -86,11 +89,12 @@ def generate_qr_token(
     current_user=Depends(get_current_teacher_or_admin),
 ):
     """Tạo QR token cho buổi học. Chỉ giáo viên của buổi học mới được tạo."""
-    return attendance_service.generate_qr_token(
+    res = attendance_service.generate_qr_token(
         db=db,
         session_id=session_id,
         teacher_id=current_user.id,
     )
+    return ApiResponse(success=True, data=res, message="Tạo QR token thành công")
 
 
 @session_router.post("/self-check-in", response_model=ApiResponse[StudentCheckInResponse])
@@ -116,7 +120,21 @@ def student_self_check_in(
         session_id=payload.session_id or session_id,
         qr_token=payload.qr_token,
     )
-    return result
+    
+    success = result.get("success", True)
+    data_obj = StudentCheckInResponse(
+        success=success,
+        status=result.get("status"),
+        check_in_time=result.get("check_in_time"),
+        late_minutes=result.get("late_minutes", 0),
+        message=result.get("message", "")
+    )
+    
+    return ApiResponse(
+        success=success,
+        data=data_obj,
+        message=result.get("message", "")
+    )
 
 
 # ============================================================
@@ -136,7 +154,8 @@ def get_class_attendance_stats(
     current_user=Depends(get_current_teacher_or_admin),
 ):
     """Thống kê tổng hợp điểm danh cho 1 lớp."""
-    return attendance_service.get_class_attendance_stats(db=db, class_id=class_id)
+    res = attendance_service.get_class_attendance_stats(db=db, class_id=class_id)
+    return ApiResponse(success=True, data=res, message="Lấy thống kê điểm danh lớp thành công")
 
 
 @class_router.get("/students", response_model=ApiResponse[List[StudentAttendanceStats]])
@@ -146,7 +165,8 @@ def get_student_attendance_stats(
     current_user=Depends(get_current_teacher_or_admin),
 ):
     """Thống kê điểm danh từng học viên trong 1 lớp."""
-    return attendance_service.get_student_attendance_stats(db=db, class_id=class_id)
+    res = attendance_service.get_student_attendance_stats(db=db, class_id=class_id)
+    return ApiResponse(success=True, data=res, message="Lấy thống kê điểm danh học viên thành công")
 
 
 # ============================================================
@@ -166,7 +186,8 @@ def get_absent_alerts(
     current_user=Depends(get_current_admin_user),
 ):
     """Danh sách học viên vắng nhiều. Chỉ Admin."""
-    return attendance_service.get_absent_alerts(db=db, class_id=class_id)
+    res = attendance_service.get_absent_alerts(db=db, class_id=class_id)
+    return ApiResponse(success=True, data=res, message="Lấy cảnh báo vắng mặt thành công")
 
 
 @global_router.get("/config", response_model=ApiResponse[AttendanceConfigResponse])
@@ -175,7 +196,8 @@ def get_attendance_config(
     current_user=Depends(get_current_admin_user),
 ):
     """Lấy cấu hình điểm danh."""
-    return attendance_service.get_attendance_config(db=db)
+    res = attendance_service.get_attendance_config(db=db)
+    return ApiResponse(success=True, data=res, message="Lấy cấu hình điểm danh thành công")
 
 
 @global_router.put("/config", response_model=ApiResponse[AttendanceConfigResponse])
@@ -185,7 +207,8 @@ def update_attendance_config(
     current_user=Depends(get_current_admin_user),
 ):
     """Cập nhật cấu hình điểm danh. Chỉ Admin."""
-    return attendance_service.update_attendance_config(db=db, data=payload)
+    res = attendance_service.update_attendance_config(db=db, data=payload)
+    return ApiResponse(success=True, data=res, message="Cập nhật cấu hình điểm danh thành công")
 
 
 # ============================================================
@@ -224,9 +247,10 @@ def check_certificate_eligibility(
                 message="Bạn không có quyền xem thông tin này",
             )
 
-    return attendance_service.check_certificate_eligibility(
+    res = attendance_service.check_certificate_eligibility(
         db=db, enrollment_id=enrollment_id
     )
+    return ApiResponse(success=True, data=res, message="Kiểm tra điều kiện nhận chứng chỉ thành công")
 
 
 # ============================================================

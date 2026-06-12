@@ -64,6 +64,30 @@ async def update_me(
         avatar_file=avatar_file,
         id_updated_by=current_user.id
     )
+
+    # Invalidate recommendation cache
+    from app.core.redis import redis_manager
+    from datetime import datetime, timezone
+    if redis_manager.redis_client:
+        try:
+            today = datetime.now(timezone.utc).date().isoformat()
+            cache_key = f"rec:{current_user.id}:{today}"
+            await redis_manager.redis_client.delete(cache_key)
+        except Exception as e:
+            pass
+
+    # Delete today's recommendation log in the DB so it gets regenerated
+    try:
+        from app.models.recommendation import RecommendationLog
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        db.query(RecommendationLog).filter(
+            RecommendationLog.student_id == current_user.id,
+            RecommendationLog.generated_at >= today_start
+        ).delete()
+        db.commit()
+    except Exception as e:
+        pass
+
     return ApiResponse(data=UserResponse.model_validate(data, from_attributes=True))
 
 @router.post("/me/change-password", response_model=ApiResponse[str])
@@ -99,6 +123,30 @@ async def update_target_band(
     
     db.commit()
     db.refresh(current_user)
+
+    # Invalidate recommendation cache
+    from app.core.redis import redis_manager
+    from datetime import datetime, timezone
+    if redis_manager.redis_client:
+        try:
+            today = datetime.now(timezone.utc).date().isoformat()
+            cache_key = f"rec:{current_user.id}:{today}"
+            await redis_manager.redis_client.delete(cache_key)
+        except Exception as e:
+            pass
+
+    # Delete today's recommendation log in the DB so it gets regenerated
+    try:
+        from app.models.recommendation import RecommendationLog
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        db.query(RecommendationLog).filter(
+            RecommendationLog.student_id == current_user.id,
+            RecommendationLog.generated_at >= today_start
+        ).delete()
+        db.commit()
+    except Exception as e:
+        pass
+
     return ApiResponse(data=UserResponse.model_validate(current_user, from_attributes=True))
 
 @router.post("", response_model=ApiResponse[UserResponse])

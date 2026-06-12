@@ -4,4 +4,7 @@ __pycache__/
 *.pyc
 .dockerignore
 Dockerfile
-
+media/
+clear_enrollment_data.py
+clear_student_recs.py
+seed_finance_data.py

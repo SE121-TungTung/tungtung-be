@@ -13,7 +13,7 @@ from app.core.database import SessionLocal
 from app.core.security import get_password_hash
 from app.models import (
     User, Room, Course, Class, ClassEnrollment, ClassSession, AttendanceRecord,
-    Test, TestAttempt, QuestionBank, TestQuestion, QuestionGroup, TestSection, TestSectionPart,
+    Test, TestAttempt, TestResponse, QuestionBank, TestQuestion, QuestionGroup, TestSection, TestSectionPart,
     KPITemplate, KPITemplateMetric, KPIPeriod, KPIRecord, KPIMetricResult,
     TeacherPayrollConfig, Salary, SalaryAdjustment
 )
@@ -96,7 +96,8 @@ def seed_data():
                 date_of_birth=date(2000, 1, 1),
                 address="Hồ Chí Minh, Việt Nam",
                 is_first_login=False,
-                must_change_password=False
+                must_change_password=False,
+                preferences={"target_band": 6.0, "target_cefr": "B2"} if u["role"] == UserRole.STUDENT else None
             )
             db.add(user)
             db.flush()
@@ -241,60 +242,176 @@ def seed_data():
 
         # 8. Create Class Sessions & Attendance records for active classes
         print("Seeding Class Sessions & Attendance...")
-        # We create 8 sessions for IELTS-FD-01 spanning May 2026.
-        # Students: student.minh, student.khoi, student.an, student.binh, student.cuong, student.dung, student.huong, student.lan
-        students_fd = [users_map[e] for e in [
-            "student.minh@gmail.com", "student.khoi@gmail.com", "student.an@gmail.com",
-            "student.binh@gmail.com", "student.cuong@gmail.com", "student.dung@gmail.com",
-            "student.huong@gmail.com", "student.lan@gmail.com"
-        ]]
         
-        start_date = date(2026, 5, 4) # A Monday
-        teacher_fd = users_map["teacher.an@tungtung.edu.vn"]
-        room_fd = rooms_map["Room 101"]
-        class_fd = classes_map["IELTS-FD-01"]
+        # Day of week mapping
+        day_map = {
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6
+        }
         
-        for i in range(8):
-            session_date = start_date + timedelta(weeks=i // 2, days=0 if i % 2 == 0 else 3) # Monday or Thursday
-            session = ClassSession(
-                class_id=class_fd.id,
-                room_id=room_fd.id,
-                teacher_id=teacher_fd.id,
-                session_date=session_date,
-                start_time=datetime.strptime("08:00", "%H:%M").time(),
-                end_time=datetime.strptime("10:00", "%H:%M").time(),
-                time_slots=[1, 2],
-                topic=f"IELTS Topic {i+1}: Skills development",
-                description=f"Mô tả chi tiết buổi học số {i+1}",
-                status=SessionStatus.COMPLETED,
-                attendance_taken=True,
-                notes="Buổi học hoàn thành tốt"
-            )
-            db.add(session)
-            db.flush()
-            
-            # Seed attendance records for this session
-            for std in students_fd:
-                # Randomize slightly (mostly present, some late, some absent)
-                status_choice = AttendanceStatus.PRESENT
-                late_mins = 0
-                if std.email == "student.an@gmail.com" and i == 2:
-                    status_choice = AttendanceStatus.ABSENT
-                elif std.email == "student.binh@gmail.com" and i == 4:
-                    status_choice = AttendanceStatus.LATE
-                    late_mins = 15
+        # Mapping of classes to students enrolled
+        class_students_map = {
+            "IELTS-FD-01": [
+                "student.minh@gmail.com", "student.khoi@gmail.com", "student.an@gmail.com",
+                "student.binh@gmail.com", "student.cuong@gmail.com", "student.dung@gmail.com",
+                "student.huong@gmail.com", "student.lan@gmail.com"
+            ],
+            "IELTS-IT-01": [
+                "student.minh@gmail.com", "student.khoi@gmail.com", "student.an@gmail.com",
+                "student.nam@gmail.com", "student.vy@gmail.com"
+            ],
+            "GE-A2-01": [
+                "student.binh@gmail.com", "student.cuong@gmail.com", "student.dung@gmail.com",
+                "student.huong@gmail.com", "student.lan@gmail.com", "student.nam@gmail.com",
+                "student.vy@gmail.com"
+            ]
+        }
+        
+        today_date = date(2026, 6, 11)
+        
+        for class_name, clazz in classes_map.items():
+            if clazz.status != ClassStatus.ACTIVE:
+                continue
                 
-                att = AttendanceRecord(
-                    session_id=session.id,
-                    student_id=std.id,
-                    marked_by=teacher_fd.id,
-                    status=status_choice,
-                    check_in_time=datetime.now(timezone.utc) if status_choice != AttendanceStatus.ABSENT else None,
-                    late_minutes=late_mins,
-                    notes="Điểm danh đầu giờ"
-                )
-                db.add(att)
+            student_emails = class_students_map.get(class_name, [])
+            students = [users_map[email] for email in student_emails]
+            
+            # Find preferred weekdays
+            pref_weekdays = []
+            for slot in clazz.preferred_slots:
+                day_str = slot.get("day", "").lower()
+                if day_str in day_map:
+                    pref_weekdays.append(day_map[day_str])
+            
+            if not pref_weekdays:
+                pref_weekdays = [0, 3] # Default Monday, Thursday
+                
+            curr_date = clazz.start_date
+            session_index = 1
+            
+            # Loop from start_date to end_date
+            today_time = datetime.strptime("17:20", "%H:%M").time()
+            while curr_date <= clazz.end_date:
+                if curr_date.weekday() in pref_weekdays:
+                    # Determine start and end times based on class
+                    if class_name == "IELTS-FD-01":
+                        start_time = datetime.strptime("19:00", "%H:%M").time()
+                        end_time = datetime.strptime("21:00", "%H:%M").time()
+                        time_slots = [9, 10]
+                    elif class_name == "IELTS-IT-01":
+                        start_time = datetime.strptime("14:00", "%H:%M").time()
+                        end_time = datetime.strptime("16:00", "%H:%M").time()
+                        time_slots = [5, 6]
+                    else: # GE-A2-01
+                        start_time = datetime.strptime("08:00", "%H:%M").time()
+                        end_time = datetime.strptime("10:00", "%H:%M").time()
+                        time_slots = [1, 2]
+
+                    # Determine status and attendance
+                    if curr_date < today_date:
+                        status = SessionStatus.COMPLETED
+                        attendance_taken = True
+                    elif curr_date == today_date:
+                        if end_time <= today_time:
+                            status = SessionStatus.COMPLETED
+                            attendance_taken = True
+                        else:
+                            status = SessionStatus.SCHEDULED
+                            attendance_taken = False
+                    else:
+                        status = SessionStatus.SCHEDULED
+                        attendance_taken = False
+                        
+                    session = ClassSession(
+                        class_id=clazz.id,
+                        room_id=clazz.room_id,
+                        teacher_id=clazz.teacher_id,
+                        session_date=curr_date,
+                        start_time=start_time,
+                        end_time=end_time,
+                        time_slots=time_slots,
+                        topic=f"Topic {session_index}: Core Content & Review",
+                        description=f"Chi tiết nội dung bài học số {session_index}",
+                        status=status,
+                        attendance_taken=attendance_taken,
+                        notes="Đồng bộ tự động từ giáo trình"
+                    )
+                    db.add(session)
+                    db.flush()
+                    
+                    # Seed attendance records for completed sessions
+                    if attendance_taken:
+                        for s_idx, std in enumerate(students):
+                            # Randomize attendance status
+                            status_choice = AttendanceStatus.PRESENT
+                            late_mins = 0
+                            
+                            # Simple deterministic pattern for reproducibility
+                            if (s_idx + session_index) % 15 == 0:
+                                status_choice = AttendanceStatus.ABSENT
+                            elif (s_idx + session_index) % 11 == 0:
+                                status_choice = AttendanceStatus.LATE
+                                late_mins = 15
+                                
+                            att = AttendanceRecord(
+                                session_id=session.id,
+                                student_id=std.id,
+                                marked_by=clazz.teacher_id,
+                                status=status_choice,
+                                check_in_time=datetime.now(timezone.utc) - timedelta(hours=2) if status_choice != AttendanceStatus.ABSENT else None,
+                                late_minutes=late_mins,
+                                notes="Điểm danh đầu giờ học"
+                            )
+                            db.add(att)
+                            
+                    session_index += 1
+                curr_date += timedelta(days=1)
             db.flush()
+
+        # Create a session for today for each active class to test self-check-in / attendance
+        print("Seeding special sessions for today...")
+        now = datetime.now()
+        today_dt = now.date()
+        # Start time: 5 minutes ago, End time: 2 hours from now
+        special_start = (now - timedelta(minutes=5)).time()
+        special_end = (now + timedelta(hours=2)).time()
+        
+        for class_name, clazz in classes_map.items():
+            if clazz.status != ClassStatus.ACTIVE:
+                continue
+            
+            # Check if there is already a session for today
+            existing_today = db.query(ClassSession).filter(
+                ClassSession.class_id == clazz.id,
+                ClassSession.session_date == today_dt
+            ).first()
+            
+            if not existing_today:
+                special_session = ClassSession(
+                    class_id=clazz.id,
+                    room_id=clazz.room_id,
+                    teacher_id=clazz.teacher_id,
+                    session_date=today_dt,
+                    start_time=special_start,
+                    end_time=special_end,
+                    time_slots=[1, 2],
+                    topic="Special Test Session for Attendance UC",
+                    description="Buổi học thử nghiệm tính năng tự điểm danh",
+                    status=SessionStatus.SCHEDULED,
+                    attendance_taken=False,
+                    notes="Tạo tự động phục vụ kiểm thử"
+                )
+                db.add(special_session)
+                db.flush()
+                print(f" - Added special today session for {class_name}")
+
+        class_fd = classes_map["IELTS-FD-01"]
+        teacher_fd = users_map["teacher.an@tungtung.edu.vn"]
 
         # 9. Create Tests & Questions
         print("Seeding Tests, Questions & Test Attempts...")
@@ -316,17 +433,74 @@ def seed_data():
         db.add(test_fd)
         db.flush()
 
-        # Question Bank & Test Questions
+        # Question Bank & Test Questions - REALISTIC IELTS Reading content
+        reading_questions_data = [
+            {
+                "title": "Reading Q1 - Main Idea",
+                "text": "What is the main purpose of the passage?",
+                "options": [
+                    {"key": "A", "text": "To describe different types of renewable energy sources", "is_correct": True},
+                    {"key": "B", "text": "To argue against the use of fossil fuels", "is_correct": False},
+                    {"key": "C", "text": "To explain the history of electricity generation", "is_correct": False},
+                    {"key": "D", "text": "To compare urban and rural energy consumption", "is_correct": False},
+                ],
+                "correct": "A",
+            },
+            {
+                "title": "Reading Q2 - Detail",
+                "text": "According to the passage, which renewable energy source has seen the fastest growth in the last decade?",
+                "options": [
+                    {"key": "A", "text": "Hydroelectric power", "is_correct": False},
+                    {"key": "B", "text": "Wind energy", "is_correct": False},
+                    {"key": "C", "text": "Solar photovoltaic", "is_correct": True},
+                    {"key": "D", "text": "Geothermal energy", "is_correct": False},
+                ],
+                "correct": "C",
+            },
+            {
+                "title": "Reading Q3 - Vocabulary",
+                "text": "The word 'sustainable' in paragraph 2 is closest in meaning to:",
+                "options": [
+                    {"key": "A", "text": "Temporary", "is_correct": False},
+                    {"key": "B", "text": "Maintainable over the long term", "is_correct": True},
+                    {"key": "C", "text": "Expensive to produce", "is_correct": False},
+                    {"key": "D", "text": "Requiring government support", "is_correct": False},
+                ],
+                "correct": "B",
+            },
+            {
+                "title": "Reading Q4 - Inference",
+                "text": "What can be inferred about the author's attitude toward nuclear energy?",
+                "options": [
+                    {"key": "A", "text": "The author is strongly in favor of nuclear energy.", "is_correct": False},
+                    {"key": "B", "text": "The author believes nuclear energy is too dangerous to use.", "is_correct": False},
+                    {"key": "C", "text": "The author considers nuclear energy a transitional solution.", "is_correct": True},
+                    {"key": "D", "text": "The author thinks nuclear energy is irrelevant.", "is_correct": False},
+                ],
+                "correct": "C",
+            },
+            {
+                "title": "Reading Q5 - True/False",
+                "text": "The passage states that solar energy is now cheaper than coal in most countries.",
+                "options": [
+                    {"key": "A", "text": "True", "is_correct": True},
+                    {"key": "B", "text": "False", "is_correct": False},
+                    {"key": "C", "text": "Not Given", "is_correct": False},
+                ],
+                "correct": "A",
+            },
+        ]
+
         q_bank = []
-        for q_idx in range(5):
+        for qd in reading_questions_data:
             q = QuestionBank(
-                title=f"Reading Question {q_idx+1}",
-                question_text=f"Đâu là câu trả lời đúng cho đoạn văn số {q_idx+1}?",
+                title=qd["title"],
+                question_text=qd["text"],
                 question_type=QuestionType.MULTIPLE_CHOICE,
                 skill_area=SkillArea.READING,
                 difficulty_level=DifficultyLevel.MEDIUM,
-                options={"A": "Đáp án đúng", "B": "Đáp án sai 1", "C": "Đáp án sai 2", "D": "Đáp án sai 3"},
-                correct_answer="A",
+                options=qd["options"],
+                correct_answer=qd["correct"],
                 points=Decimal(2.0),
                 status=ContentStatus.ACTIVE
             )
@@ -404,7 +578,405 @@ def seed_data():
                 graded_at=datetime.now(timezone.utc) - timedelta(days=5)
             )
             db.add(attempt)
+            db.flush()
+
+            # Seed TestResponse for each of the 5 Reading questions
+            for q_idx, q in enumerate(q_bank):
+                is_correct = (q_idx < correct_count)
+                pts = Decimal(2.0) if is_correct else Decimal(0.0)
+                resp = TestResponse(
+                    attempt_id=attempt.id,
+                    question_id=q.id,
+                    response_text="A" if is_correct else "B",
+                    is_correct=is_correct,
+                    points_earned=pts,
+                    band_score=Decimal(score),
+                    auto_graded=True
+                )
+                db.add(resp)
         db.flush()
+
+        # =====================================================================
+        # SEED LISTENING, WRITING, AND SPEAKING PLACEMENT TESTS & ATTEMPTS
+        # =====================================================================
+        # We seed these tests specifically so that student.minh has attempts
+        # for ALL skills (Reading, Listening, Writing, Speaking) to enable good AI recommendations!
+        
+        # --- A. LISTENING PLACEMENT TEST ---
+        test_listening = Test(
+            title="IELTS Academic Listening Placement",
+            description="Bài thi kiểm tra Listening đầu khóa để khảo sát trình độ học sinh",
+            instructions="Nghe file âm thanh và trả lời 5 câu hỏi trắc nghiệm.",
+            total_points=Decimal(10.0),
+            time_limit_minutes=15,
+            passing_score=Decimal(5.0),
+            max_attempts=2,
+            status=TestStatus.PUBLISHED,
+            created_by=users_map["admin@tungtung.edu.vn"].id,
+            course_id=courses_map["IELTS Foundation"].id,
+            class_id=class_fd.id,
+            test_type=TestType.MIDTERM
+        )
+        db.add(test_listening)
+        db.flush()
+
+        listening_questions_data = [
+            {
+                "title": "Listening Q1 - Detail",
+                "text": "What time does the library close on weekdays?",
+                "options": [
+                    {"key": "A", "text": "5:00 PM", "is_correct": False},
+                    {"key": "B", "text": "7:00 PM", "is_correct": False},
+                    {"key": "C", "text": "9:00 PM", "is_correct": True},
+                    {"key": "D", "text": "10:00 PM", "is_correct": False},
+                ],
+                "correct": "C",
+            },
+            {
+                "title": "Listening Q2 - Speaker Intent",
+                "text": "Why does the woman call the travel agency?",
+                "options": [
+                    {"key": "A", "text": "To cancel a booking", "is_correct": False},
+                    {"key": "B", "text": "To change the departure date", "is_correct": True},
+                    {"key": "C", "text": "To ask about visa requirements", "is_correct": False},
+                    {"key": "D", "text": "To request a refund", "is_correct": False},
+                ],
+                "correct": "B",
+            },
+            {
+                "title": "Listening Q3 - Number",
+                "text": "How much does the advanced membership cost per year?",
+                "options": [
+                    {"key": "A", "text": "$120", "is_correct": False},
+                    {"key": "B", "text": "$150", "is_correct": False},
+                    {"key": "C", "text": "$180", "is_correct": True},
+                    {"key": "D", "text": "$200", "is_correct": False},
+                ],
+                "correct": "C",
+            },
+            {
+                "title": "Listening Q4 - Location",
+                "text": "Where will the orientation session take place?",
+                "options": [
+                    {"key": "A", "text": "Room 204", "is_correct": False},
+                    {"key": "B", "text": "The main auditorium", "is_correct": True},
+                    {"key": "C", "text": "The student lounge", "is_correct": False},
+                    {"key": "D", "text": "Online via Zoom", "is_correct": False},
+                ],
+                "correct": "B",
+            },
+            {
+                "title": "Listening Q5 - Opinion",
+                "text": "What does the professor think about group projects?",
+                "options": [
+                    {"key": "A", "text": "They are less effective than individual work.", "is_correct": False},
+                    {"key": "B", "text": "They should be mandatory for all courses.", "is_correct": False},
+                    {"key": "C", "text": "They help develop essential teamwork skills.", "is_correct": True},
+                    {"key": "D", "text": "They are too difficult to assess fairly.", "is_correct": False},
+                ],
+                "correct": "C",
+            },
+        ]
+
+        q_listening_bank = []
+        for qd in listening_questions_data:
+            q = QuestionBank(
+                title=qd["title"],
+                question_text=qd["text"],
+                question_type=QuestionType.MULTIPLE_CHOICE,
+                skill_area=SkillArea.LISTENING,
+                difficulty_level=DifficultyLevel.MEDIUM,
+                options=qd["options"],
+                correct_answer=qd["correct"],
+                points=Decimal(2.0),
+                status=ContentStatus.ACTIVE
+            )
+            db.add(q)
+            db.flush()
+            q_listening_bank.append(q)
+
+        sec_l = TestSection(
+            test_id=test_listening.id,
+            name="Section 1",
+            skill_area=SkillArea.LISTENING,
+            order_number=1,
+            time_limit_minutes=15
+        )
+        db.add(sec_l)
+        db.flush()
+
+        part_l = TestSectionPart(
+            test_section_id=sec_l.id,
+            name="Part 1",
+            order_number=1
+        )
+        db.add(part_l)
+        db.flush()
+
+        group_l = QuestionGroup(
+            part_id=part_l.id,
+            name="Group 1",
+            order_number=1,
+            question_type=QuestionType.MULTIPLE_CHOICE
+        )
+        db.add(group_l)
+        db.flush()
+
+        for idx, q in enumerate(q_listening_bank):
+            t_q = TestQuestion(
+                test_id=test_listening.id,
+                question_id=q.id,
+                group_id=group_l.id,
+                order_number=idx+1,
+                group_order_number=idx+1,
+                points=Decimal(2.0)
+            )
+            db.add(t_q)
+        db.flush()
+
+        # Seed Listening Attempt for student.minh@gmail.com (Score 8.0, 4 correct answers)
+        std_minh = users_map["student.minh@gmail.com"]
+        attempt_l = TestAttempt(
+            test_id=test_listening.id,
+            student_id=std_minh.id,
+            attempt_number=1,
+            started_at=datetime.now(timezone.utc) - timedelta(days=4, minutes=12),
+            submitted_at=datetime.now(timezone.utc) - timedelta(days=4),
+            time_taken_seconds=680,
+            total_score=Decimal(8.0),
+            percentage_score=Decimal(80.0),
+            passed=True,
+            status=AttemptStatus.GRADED,
+            graded_by=teacher_fd.id,
+            graded_at=datetime.now(timezone.utc) - timedelta(days=4)
+        )
+        db.add(attempt_l)
+        db.flush()
+
+        for q_idx, q in enumerate(q_listening_bank):
+            is_correct = (q_idx < 4)
+            pts = Decimal(2.0) if is_correct else Decimal(0.0)
+            resp = TestResponse(
+                attempt_id=attempt_l.id,
+                question_id=q.id,
+                response_text="A" if is_correct else "B",
+                is_correct=is_correct,
+                points_earned=pts,
+                band_score=Decimal(8.0),
+                auto_graded=True
+            )
+            db.add(resp)
+        db.flush()
+
+
+        # --- B. WRITING PLACEMENT TEST ---
+        test_writing = Test(
+            title="IELTS Academic Writing Placement",
+            description="Bài thi kiểm tra Writing để đánh giá kỹ năng viết",
+            instructions="Hãy viết một bài luận về chủ đề bảo vệ môi trường.",
+            total_points=Decimal(10.0),
+            time_limit_minutes=20,
+            passing_score=Decimal(5.0),
+            max_attempts=2,
+            status=TestStatus.PUBLISHED,
+            created_by=users_map["admin@tungtung.edu.vn"].id,
+            course_id=courses_map["IELTS Foundation"].id,
+            class_id=class_fd.id,
+            test_type=TestType.MIDTERM
+        )
+        db.add(test_writing)
+        db.flush()
+
+        q_writing = QuestionBank(
+            title="Writing Task 1",
+            question_text="Many people believe that protecting the environment is the responsibility of governments. Do you agree or disagree?",
+            question_type=QuestionType.WRITING_TASK_2,
+            skill_area=SkillArea.WRITING,
+            difficulty_level=DifficultyLevel.MEDIUM,
+            points=Decimal(10.0),
+            status=ContentStatus.ACTIVE
+        )
+        db.add(q_writing)
+        db.flush()
+
+        sec_w = TestSection(
+            test_id=test_writing.id,
+            name="Section 1",
+            skill_area=SkillArea.WRITING,
+            order_number=1,
+            time_limit_minutes=20
+        )
+        db.add(sec_w)
+        db.flush()
+
+        part_w = TestSectionPart(
+            test_section_id=sec_w.id,
+            name="Part 1",
+            order_number=1
+        )
+        db.add(part_w)
+        db.flush()
+
+        group_w = QuestionGroup(
+            part_id=part_w.id,
+            name="Group 1",
+            order_number=1,
+            question_type=QuestionType.WRITING_TASK_2
+        )
+        db.add(group_w)
+        db.flush()
+
+        t_q_w = TestQuestion(
+            test_id=test_writing.id,
+            question_id=q_writing.id,
+            group_id=group_w.id,
+            order_number=1,
+            group_order_number=1,
+            points=Decimal(10.0)
+        )
+        db.add(t_q_w)
+        db.flush()
+
+        # Seed Writing Attempt for student.minh@gmail.com (Score 6.5, manually graded / AI graded)
+        attempt_w = TestAttempt(
+            test_id=test_writing.id,
+            student_id=std_minh.id,
+            attempt_number=1,
+            started_at=datetime.now(timezone.utc) - timedelta(days=3, minutes=20),
+            submitted_at=datetime.now(timezone.utc) - timedelta(days=3),
+            time_taken_seconds=1200,
+            total_score=Decimal(6.5),
+            percentage_score=Decimal(65.0),
+            passed=True,
+            status=AttemptStatus.GRADED,
+            graded_by=teacher_fd.id,
+            graded_at=datetime.now(timezone.utc) - timedelta(days=3)
+        )
+        db.add(attempt_w)
+        db.flush()
+
+        resp_w = TestResponse(
+            attempt_id=attempt_w.id,
+            question_id=q_writing.id,
+            response_text="I strongly agree that environment protection is not only the government's job but also the public's duty. In this essay, I will detail why both parties need to work together...",
+            is_correct=True,
+            points_earned=Decimal(6.5),
+            band_score=Decimal(6.5),
+            teacher_band_score=Decimal(6.5),
+            teacher_points_earned=Decimal(6.5),
+            teacher_feedback="Good vocabulary usage. However, coherence in paragraph 2 needs to be improved.",
+            ai_band_score=Decimal(6.5),
+            ai_feedback="Clear thesis statement. Vocabulary is diversified.",
+            auto_graded=False
+        )
+        db.add(resp_w)
+        db.flush()
+
+
+        # --- C. SPEAKING PLACEMENT TEST ---
+        test_speaking = Test(
+            title="IELTS Academic Speaking Placement",
+            description="Bài thi kiểm tra Speaking để đánh giá kỹ năng nói",
+            instructions="Trả lời các câu hỏi phỏng vấn trực tiếp từ AI hoặc giáo viên.",
+            total_points=Decimal(10.0),
+            time_limit_minutes=10,
+            passing_score=Decimal(5.0),
+            max_attempts=2,
+            status=TestStatus.PUBLISHED,
+            created_by=users_map["admin@tungtung.edu.vn"].id,
+            course_id=courses_map["IELTS Foundation"].id,
+            class_id=class_fd.id,
+            test_type=TestType.MIDTERM
+        )
+        db.add(test_speaking)
+        db.flush()
+
+        q_speaking = QuestionBank(
+            title="Speaking Part 1",
+            question_text="Describe your hometown and what you like most about it.",
+            question_type=QuestionType.SPEAKING_PART_2,
+            skill_area=SkillArea.SPEAKING,
+            difficulty_level=DifficultyLevel.MEDIUM,
+            points=Decimal(10.0),
+            status=ContentStatus.ACTIVE
+        )
+        db.add(q_speaking)
+        db.flush()
+
+        sec_s = TestSection(
+            test_id=test_speaking.id,
+            name="Section 1",
+            skill_area=SkillArea.SPEAKING,
+            order_number=1,
+            time_limit_minutes=10
+        )
+        db.add(sec_s)
+        db.flush()
+
+        part_s = TestSectionPart(
+            test_section_id=sec_s.id,
+            name="Part 1",
+            order_number=1
+        )
+        db.add(part_s)
+        db.flush()
+
+        group_s = QuestionGroup(
+            part_id=part_s.id,
+            name="Group 1",
+            order_number=1,
+            question_type=QuestionType.SPEAKING_PART_2
+        )
+        db.add(group_s)
+        db.flush()
+
+        t_q_s = TestQuestion(
+            test_id=test_speaking.id,
+            question_id=q_speaking.id,
+            group_id=group_s.id,
+            order_number=1,
+            group_order_number=1,
+            points=Decimal(10.0)
+        )
+        db.add(t_q_s)
+        db.flush()
+
+        # Seed Speaking Attempt for student.minh@gmail.com (Score 6.0)
+        attempt_s = TestAttempt(
+            test_id=test_speaking.id,
+            student_id=std_minh.id,
+            attempt_number=1,
+            started_at=datetime.now(timezone.utc) - timedelta(days=2, minutes=8),
+            submitted_at=datetime.now(timezone.utc) - timedelta(days=2),
+            time_taken_seconds=480,
+            total_score=Decimal(6.0),
+            percentage_score=Decimal(60.0),
+            passed=True,
+            status=AttemptStatus.GRADED,
+            graded_by=teacher_fd.id,
+            graded_at=datetime.now(timezone.utc) - timedelta(days=2)
+        )
+        db.add(attempt_s)
+        db.flush()
+
+        resp_s = TestResponse(
+            attempt_id=attempt_s.id,
+            question_id=q_speaking.id,
+            response_text="I live in a small town named Da Lat...",
+            audio_response_url="http://localhost:8000/media/sample_speaking.wav",
+            is_correct=True,
+            points_earned=Decimal(6.0),
+            band_score=Decimal(6.0),
+            teacher_band_score=Decimal(6.0),
+            teacher_points_earned=Decimal(6.0),
+            teacher_feedback="Pronunciation is good, but work on grammatical accuracy in compound sentences.",
+            ai_band_score=Decimal(6.0),
+            ai_feedback="Fluent speaking. Some hesitations detected.",
+            auto_graded=False
+        )
+        db.add(resp_s)
+        db.flush()
+
 
         # 11. KPI and Payroll Seeding
         print("Seeding KPI & Payroll module...")

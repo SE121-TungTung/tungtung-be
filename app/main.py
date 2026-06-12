@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
+import os
 import app.core.database as database
 from app.core.config import settings
 from app.core.exceptions import APIException, api_exception_handler, http_exception_handler, global_exception_handler, validation_exception_handler
@@ -92,3 +94,6 @@ api_router.include_router(substitution.router)
 api_router.include_router(certificate.router)
 
 app.include_router(api_router, prefix="/api/v1")
+
+os.makedirs("media/receipts", exist_ok=True)
+app.mount("/receipts", StaticFiles(directory="media/receipts"), name="receipts")

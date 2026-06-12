@@ -75,5 +75,7 @@ class RefundResponse(BaseModel):
 
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    student_name: Optional[str] = None
+    course_name: Optional[str] = None
 
     model_config = {"from_attributes": True}
