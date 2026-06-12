@@ -661,6 +661,19 @@ class GAScheduleService:
             for cp in request.class_preferences:
                 pref_map[cp.class_id] = cp.preferred_time_period
 
+        # Build additional class unavailabilities map from request
+        additional_unavail: Dict[UUID, List[Dict]] = {}
+        if hasattr(request, 'class_unavailabilities') and request.class_unavailabilities:
+            for cu in request.class_unavailabilities:
+                cid = cu.class_id if hasattr(cu, 'class_id') else cu.get('class_id')
+                day = cu.day if hasattr(cu, 'day') else cu.get('day')
+                slots = cu.slots if hasattr(cu, 'slots') else cu.get('slots')
+                if cid and day and slots:
+                    additional_unavail.setdefault(cid, []).append({
+                        "day": day.lower(),
+                        "slots": slots
+                    })
+
         for c in classes_db:
             pref_slots = c.preferred_slots or []
             unavail_slots = c.unavailable_slots or []
@@ -677,6 +690,10 @@ class GAScheduleService:
                     unavail_slots = json.loads(unavail_slots)
                 except Exception:
                     unavail_slots = []
+
+            # Merge additional unavailabilities from request
+            if c.id in additional_unavail:
+                unavail_slots.extend(additional_unavail[c.id])
 
             # preferred_time_period: 1) request param → 2) infer from preferred_slots → 3) None
             preferred = pref_map.get(c.id)
