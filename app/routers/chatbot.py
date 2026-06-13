@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import Session
@@ -131,6 +132,37 @@ async def chat_with_ai(
             status_code=500,
             code="CHAT_ERROR",
             message=f"An error occurred during chat: {str(e)}"
+        )
+
+@router.post("/ask/stream")
+async def chat_with_ai_stream(
+    request: UserChatRequest,
+    current_user = Depends(get_current_user)
+):
+    """
+    API cho Frontend gọi để chat stream với AI.
+    """
+    real_role = current_user.role.value
+    
+    try:
+        stream_gen = await chatbot_service.ask_bot_stream(
+            message=request.message,
+            user_role=real_role,
+            history=request.history
+        )
+        
+        import json
+        async def sse_wrapper():
+            async for chunk in stream_gen:
+                yield f"data: {json.dumps({'text': chunk}, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(sse_wrapper(), media_type="text/event-stream")
+    except Exception as e:
+        logger.error(f"Error in chat stream: {e}")
+        raise APIException(
+            status_code=500,
+            code="CHAT_STREAM_ERROR",
+            message=f"An error occurred during chat stream: {str(e)}"
         )
 
 @router.post("/admin/upload-doc", response_model=ApiResponse[ChatbotDocumentResponse])
