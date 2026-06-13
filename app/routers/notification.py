@@ -5,7 +5,7 @@ from uuid import UUID
 
 from app.core.database import get_db
 from app.dependencies import get_current_user, CommonQueryParams
-from app.schemas.notification import NotificationResponse
+from app.schemas.notification import NotificationResponse, BroadcastNotificationCreate
 from app.repositories.notification import notification_repo
 from app.services.notification_service import notification_service
 from app.models.user import User
@@ -74,3 +74,52 @@ def mark_notification_read(
         raise APIException(status_code=404, code="NOT_FOUND", message="Notification not found")
         
     return ApiResponse(data=noti)
+
+@router.post("/broadcast", response_model=ApiResponse[Any])
+def broadcast_notification(
+    payload: BroadcastNotificationCreate,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Gửi thông báo diện rộng tới toàn bộ hệ thống hoặc nhóm người dùng cụ thể."""
+    from app.schemas.notification import BroadcastNotificationCreate
+    from app.services.notification_service import run_broadcast_task
+
+    # Only Admin or CenterAdmin can broadcast
+    if current_user.role not in ["admin", "center_admin"]:
+        raise APIException(status_code=403, code="FORBIDDEN", message="Only admins can broadcast notifications")
+        
+    # Determine target users
+    user_ids = []
+    if payload.target_type == "all":
+        # Get all users
+        users = db.query(User.id).filter(User.deleted_at.is_(None)).all()
+        user_ids = [u.id for u in users]
+    elif payload.target_type == "role":
+        if not payload.target_role:
+            raise APIException(status_code=400, code="BAD_REQUEST", message="target_role is required when target_type is 'role'")
+        users = db.query(User.id).filter(User.role == payload.target_role, User.deleted_at.is_(None)).all()
+        user_ids = [u.id for u in users]
+    elif payload.target_type == "specific_users":
+        if not payload.target_user_ids:
+            raise APIException(status_code=400, code="BAD_REQUEST", message="target_user_ids is required when target_type is 'specific_users'")
+        user_ids = payload.target_user_ids
+    else:
+        raise APIException(status_code=400, code="BAD_REQUEST", message="Invalid target_type")
+        
+    if not user_ids:
+        return ApiResponse(data={"success": True, "message": "No target users found to broadcast"})
+        
+    # Queue task in background to avoid blocking response
+    background_tasks.add_task(
+        run_broadcast_task,
+        user_ids=user_ids,
+        title=payload.title,
+        content=payload.content,
+        priority=payload.priority.value,
+        action_url=payload.action_url,
+        channels=payload.channels
+    )
+    
+    return ApiResponse(data={"success": True, "target_count": len(user_ids), "message": "Notification broadcast queued successfully"})

@@ -1,6 +1,8 @@
 from sqlalchemy.orm import Session
 from datetime import datetime
 from uuid import UUID
+from typing import List, Optional
+
 
 from app.repositories.notification import notification_repo
 from app.schemas.notification import NotificationCreate
@@ -85,4 +87,74 @@ class NotificationService:
                 self.send_notification(db, noti_info)
             )
 
+    async def broadcast_notification(
+        self,
+        db: Session,
+        user_ids: List[UUID],
+        title: str,
+        content: str,
+        priority: str = "normal",
+        action_url: Optional[str] = None,
+        channels: List[str] = ["in_app"]
+    ):
+        from app.models.notification import Notification, NotificationType, NotificationPriority
+        
+        # 1. Bulk insert to DB
+        notifications = []
+        for u_id in user_ids:
+            noti = Notification(
+                user_id=u_id,
+                title=title,
+                content=content,
+                notification_type=NotificationType.SYSTEM_ALERT,
+                priority=NotificationPriority(priority) if isinstance(priority, str) else priority,
+                action_url=action_url,
+                channels=channels
+            )
+            notifications.append(noti)
+        
+        db.add_all(notifications)
+        db.commit()
+        
+        # 2. WebSocket broadcast
+        if "in_app" in channels:
+            for noti in notifications:
+                payload = {
+                    "type": "NEW_NOTIFICATION",
+                    "data": {
+                        "id": str(noti.id),
+                        "title": noti.title,
+                        "content": noti.content,
+                        "priority": noti.priority.value if hasattr(noti.priority, 'value') else noti.priority,
+                        "action_url": noti.action_url,
+                    },
+                }
+                await websocket_manager.send_to_user(noti.user_id, payload)
+        
+        return len(notifications)
+
 notification_service = NotificationService()
+
+async def run_broadcast_task(
+    user_ids: List[UUID],
+    title: str,
+    content: str,
+    priority: str,
+    action_url: Optional[str],
+    channels: List[str]
+):
+    from app.core.database import SessionLocal
+    db = SessionLocal()
+    try:
+        await notification_service.broadcast_notification(
+            db=db,
+            user_ids=user_ids,
+            title=title,
+            content=content,
+            priority=priority,
+            action_url=action_url,
+            channels=channels
+        )
+    finally:
+        db.close()
+
