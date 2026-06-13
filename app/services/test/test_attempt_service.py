@@ -10,6 +10,7 @@ from typing import Any, Optional
 
 from app.core.exceptions import APIException
 from app.models.user import User, UserRole
+from app.models.academic import Class
 from app.models.test import (
     Test, TestAttempt, TestQuestion, 
     TestResponse, QuestionBank, 
@@ -24,7 +25,8 @@ from app.schemas.test.test_attempt import (
     SubmitAttemptResponse,
     QuestionResult,
     GradeAttemptRequest,
-    TestAttemptSummaryResponse
+    TestAttemptSummaryResponse,
+    TestAttemptHistoryResponse
 )
 from app.schemas.test.test_read import TestAttemptDetailResponse, QuestionResultResponse
 
@@ -210,7 +212,22 @@ class AttemptService:
                         
                         # Extract AI Results
                         ai_band_score = float(raw.get("overallScore", 0))
-                        ai_rubric_scores = raw.get("rubricScores", {})
+                        # Map rubric scores supporting both snake_case and camelCase
+                        criteria = raw.get("criteriaScores", {}) or raw.get("rubricScores", {}) or {}
+                        val_tr = float(criteria.get("taskResponse") or criteria.get("task_response") or 0.0)
+                        val_cc = float(criteria.get("coherenceCohesion") or criteria.get("coherence_cohesion") or 0.0)
+                        val_lr = float(criteria.get("lexicalResource") or criteria.get("lexical_resource") or 0.0)
+                        val_gr = float(criteria.get("grammaticalRange") or criteria.get("grammatical_range") or 0.0)
+                        ai_rubric_scores = {
+                            "task_response": val_tr,
+                            "taskResponse": val_tr,
+                            "coherence_cohesion": val_cc,
+                            "coherenceCohesion": val_cc,
+                            "lexical_resource": val_lr,
+                            "lexicalResource": val_lr,
+                            "grammatical_range": val_gr,
+                            "grammaticalRange": val_gr
+                        }
                         ai_feedback = raw.get("detailedFeedback")
                         
                         # Convert Band to Points (Scale 0-9 -> 0-max_points)
@@ -384,11 +401,16 @@ class AttemptService:
             )
 
         if user_role == UserRole.TEACHER:
-            if test.created_by != user_id:
+            is_authorized = (test.created_by == user_id)
+            if not is_authorized and test.class_id:
+                cls = db.query(Class).filter(Class.id == test.class_id).first()
+                if cls and (cls.teacher_id == user_id or cls.substitute_teacher_id == user_id):
+                    is_authorized = True
+            if not is_authorized:
                 raise APIException(
                     status_code=403, 
                     code="FORBIDDEN_TEST_ACCESS", 
-                    message="Bạn không có quyền xem danh sách làm bài của bài thi không do bạn tạo."
+                    message="Bạn không có quyền xem danh sách làm bài của bài thi không do bạn tạo hoặc không thuộc lớp học bạn giảng dạy."
                 )
 
         # ============================================================
@@ -476,6 +498,37 @@ class AttemptService:
                 id=attempt.id,
                 student_id=attempt.student_id,
                 student_name=f"{first_name} {last_name}".strip(),
+                status=attempt.status.value if hasattr(attempt.status, 'value') else attempt.status,
+                score=attempt.band_score,
+                started_at=attempt.started_at,
+                submitted_at=attempt.submitted_at,
+            ))
+        return results
+
+    def list_student_attempts_history(
+        self,
+        db: Session,
+        student_id: UUID
+    ) -> list[TestAttemptHistoryResponse]:
+        rows = (
+            db.query(
+                TestAttempt,
+                Test.title
+            )
+            .join(Test, Test.id == TestAttempt.test_id)
+            .filter(
+                TestAttempt.student_id == student_id,
+                TestAttempt.deleted_at.is_(None)
+            )
+            .order_by(TestAttempt.started_at.desc())
+            .all()
+        )
+        results = []
+        for attempt, test_title in rows:
+            results.append(TestAttemptHistoryResponse(
+                id=attempt.id,
+                test_id=attempt.test_id,
+                test_title=test_title,
                 status=attempt.status.value if hasattr(attempt.status, 'value') else attempt.status,
                 score=attempt.band_score,
                 started_at=attempt.started_at,
@@ -570,7 +623,7 @@ class AttemptService:
             ),
             notification_type=NotificationType.GRADE_AVAILABLE,
             priority=NotificationPriority.NORMAL,
-            action_url=f"/student/tests/attempts/{attempt.id}",
+            action_url=f"/student/tests/results/{attempt.id}",
         )
 
         await notification_service.send_notification(
@@ -624,12 +677,12 @@ class AttemptService:
         return band
     
     def finalize_score(self, attempt, total_points_earned, max_total_points, any_manual_grading_required):
-        attempt.total_score = total_points_earned
-        
-        # Calculate percentage
+        # Calculate percentage and scale total_score to max = 10
         if max_total_points > 0:
+            attempt.total_score = round((total_points_earned / max_total_points) * 10, 2)
             attempt.percentage_score = round((total_points_earned / max_total_points) * 100, 2)
         else:
+            attempt.total_score = 0.0
             attempt.percentage_score = 0.0
             
         # Determine Status & Band Score
@@ -686,6 +739,15 @@ class AttemptService:
 
     def _build_full_attempt_response(self, db: Session, attempt: TestAttempt) -> TestAttemptDetailResponse:
         """Hàm duy nhất để build toàn bộ Response cho API Get Detail (O(1) memory lookup)"""
+        # Get student user details
+        student_name = "N/A"
+        if attempt.student_id:
+            user = db.query(User).filter(User.id == attempt.student_id).first()
+            if user:
+                first = getattr(user, 'first_name', '') or ''
+                last = getattr(user, 'last_name', '') or ''
+                student_name = f"{first} {last}".strip() or "N/A"
+
         # 1. Lấy bản đồ điểm cực nhanh (Bulk Query)
         test_questions = db.query(TestQuestion).filter(TestQuestion.test_id == attempt.test_id).all()
         points_map = {tq.question_id: float(tq.points) for tq in test_questions}
@@ -701,6 +763,7 @@ class AttemptService:
             test_id=attempt.test_id,
             test_title=attempt.test.title if attempt.test else None,
             student_id=attempt.student_id,
+            student_name=student_name,
             attempt_number=attempt.attempt_number, 
             started_at=attempt.started_at, 
             submitted_at=attempt.submitted_at,

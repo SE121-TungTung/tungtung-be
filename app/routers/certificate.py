@@ -9,7 +9,7 @@ from app.schemas.base_schema import ApiResponse
 from app.schemas.certificate import CertificateCreate, CertificateResponse
 from app.services.certificate_service import certificate_service
 from app.models.user import User, UserRole
-from app.dependencies import get_current_active_user, get_current_admin_user
+from app.dependencies import get_current_active_user, get_current_admin_user, get_current_teacher_or_admin
 
 router = APIRouter(route_class=ResponseWrapperRoute, prefix="/certificates", tags=["Certificates"])
 
@@ -17,7 +17,7 @@ router = APIRouter(route_class=ResponseWrapperRoute, prefix="/certificates", tag
 def issue_certificate(
     payload: CertificateCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(get_current_teacher_or_admin)
 ):
     """
     Center Admin issues a new certificate for a student.

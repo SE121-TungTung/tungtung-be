@@ -133,7 +133,8 @@ class RecommendationService:
         prefs = user.preferences
         return {
             "target_band": prefs.get("target_band"),
-            "target_cefr": prefs.get("target_cefr")
+            "target_cefr": prefs.get("target_cefr"),
+            "expected_exam_date": prefs.get("expected_exam_date")
         }
 
     def get_days_since_last_activity(self, db: Session, student_id: UUID) -> int:
@@ -416,6 +417,7 @@ class RecommendationService:
             "days_enrolled": days_enrolled,
             "target_band": target.get("target_band"),
             "target_cefr": target.get("target_cefr"),
+            "expected_exam_date": target.get("expected_exam_date"),
             "exam_type": "ielts",
             "days_since_last_activity": self.get_days_since_last_activity(db, student_id),
             "recent_ai_feedback": recent_ai_feedback,

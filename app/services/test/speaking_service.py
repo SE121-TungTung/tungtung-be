@@ -5,7 +5,7 @@ Created: 2026-01-04
 """
 
 from sqlalchemy.orm import Session
-from fastapi import HTTPException
+from fastapi import HTTPException, BackgroundTasks
 from uuid import UUID
 from datetime import datetime, timezone
 from typing import List, Dict, Tuple
@@ -108,26 +108,27 @@ class SpeakingService:
         db: Session,
         attempt_id: UUID,
         request: BatchSubmitSpeakingRequest,
-        user_id: UUID
+        user_id: UUID,
+        background_tasks: BackgroundTasks = None
     ) -> BatchSubmitSpeakingResponse:
         """
         Batch submit all speaking responses using pre-uploaded file IDs
         
         Main workflow:
         1. Validate all file_upload_ids and questions
-        2. AI grade all questions in parallel
-        3. Calculate overall scores
-        4. Save all responses
-        5. Update attempt status
+        2. Save responses to DB immediately (so they exist for final submit)
+        3. Enqueue AI grading in the background
+        4. Return early with empty grading info
         
         Args:
             db: Database session
             attempt_id: Test attempt ID
             request: Batch request with file_upload_ids
             user_id: Student user ID
+            background_tasks: BackgroundTasks object
             
         Returns:
-            Comprehensive results with AI grading and overall scores
+            Immediate response with processing set to false
         """
         
         start_time = time.time()
@@ -186,8 +187,6 @@ class SpeakingService:
                     f"Question {q.id} is not a speaking question (type: {q.question_type.value})"
                 )
         
-        question_map = {q.id: q for q in questions}
-        
         # Get max points for each question
         test_questions = db.query(TestQuestion).filter(
             TestQuestion.test_id == attempt.test_id,
@@ -198,114 +197,27 @@ class SpeakingService:
         total_max_points = sum(points_map.values())
         
         # ============================================================
-        # 3. AI GRADE ALL IN PARALLEL
+        # 3. SAVE RESPONSES TO DB IMMEDIATELY
         # ============================================================
         
-        grading_tasks = []
+        question_results = []
         response_items_map = {r.question_id: r for r in request.responses}
         
         for question in questions:
             response_item = response_items_map[question.id]
             file_meta = file_map[response_item.file_upload_id]
+            max_points = points_map.get(question.id, 0.0)
             
-            # Create grading task
-            grading_tasks.append(
-                self._grade_single_question(
-                    question=question,
-                    audio_url=file_meta.file_path,
-                    file_upload_id=file_meta.id
-                )
-            )
-        
-        # Execute all grading in parallel (KEY PERFORMANCE OPTIMIZATION)
-        grading_results = await asyncio.gather(
-            *grading_tasks,
-            return_exceptions=True  # Don't fail entire batch if one fails
-        )
-        
-        # ============================================================
-        # 4. PROCESS RESULTS & SAVE TO DB
-        # ============================================================
-        
-        question_results = []
-        successful_gradings = []
-        failed_count = 0
-        
-        for i, question in enumerate(questions):
-            response_item = response_items_map[question.id]
-            file_meta = file_map[response_item.file_upload_id]
-            grading_result = grading_results[i]
-            
-            max_points = points_map.get(question.id, 0)
-            
-            # Check if grading succeeded or failed
-            if isinstance(grading_result, Exception):
-                # AI Grading failed for this question
-                failed_count += 1
-                
-                error_msg = str(grading_result)
-                
-                # Still save response without AI scores
-                self._save_or_update_response(
-                    db=db,
-                    attempt_id=attempt_id,
-                    question_id=question.id,
-                    file_upload_id=file_meta.id,
-                    audio_url=file_meta.file_path,
-                    flagged=response_item.flagged_for_review
-                )
-                
-                question_results.append(
-                    QuestionGradingResult(
-                        question_id=question.id,
-                        question_part=question.question_type.value,
-                        question_text=question.question_text,
-                        audio_url=file_meta.file_path,
-                        duration_seconds=response_item.duration_seconds,
-                        max_points=max_points,
-                        processed=False,
-                        error_message=error_msg
-                    )
-                )
-                continue
-            
-            # Extract AI results
-            raw = grading_result.get("raw", {})
-            ai_band = float(raw.get("overallScore", 0))
-            ai_rubric = raw.get("rubricScores", {})
-            ai_feedback = raw.get("detailedFeedback")
-            ai_transcript = raw.get("transcript")
-            
-            # Convert band score to points (0-9 scale to 0-max_points scale)
-            ai_points = 0.0
-            if ai_band > 0:
-                ai_points = round((ai_band / 9.0) * max_points, 2)
-            
-            # Collect for overall calculation
-            successful_gradings.append({
-                "question_type": question.question_type,
-                "band_score": ai_band,
-                "rubric_scores": ai_rubric,
-                "points": ai_points,
-                "max_points": max_points
-            })
-            
-            # Save response to DB
+            # Save or update response immediately with empty grading details
             self._save_or_update_response(
                 db=db,
                 attempt_id=attempt_id,
                 question_id=question.id,
                 file_upload_id=file_meta.id,
                 audio_url=file_meta.file_path,
-                transcript=ai_transcript,
-                ai_band_score=ai_band,
-                ai_rubric_scores=ai_rubric,
-                ai_feedback=ai_feedback,
-                ai_points_earned=ai_points,
                 flagged=response_item.flagged_for_review
             )
             
-            # Add to results
             question_results.append(
                 QuestionGradingResult(
                     question_id=question.id,
@@ -313,33 +225,40 @@ class SpeakingService:
                     question_text=question.question_text,
                     audio_url=file_meta.file_path,
                     duration_seconds=response_item.duration_seconds,
-                    ai_band_score=ai_band,
-                    ai_rubric_scores=ai_rubric,
-                    ai_feedback=ai_feedback,
-                    ai_transcript=ai_transcript,
-                    ai_points_earned=ai_points,
                     max_points=max_points,
-                    processed=True
+                    processed=False  # AI grading will happen in background
                 )
             )
         
-        # ============================================================
-        # 5. CALCULATE OVERALL SCORES
-        # ============================================================
-        
-        overall_scores = None
-        ai_total_points = 0.0
-        
-        if successful_gradings:
-            overall_scores = self._calculate_overall_scores(successful_gradings)
-            ai_total_points = sum(g["points"] for g in successful_gradings)
+        db.commit()
         
         # ============================================================
-        # 6. UPDATE ATTEMPT STATUS
+        # 4. ENQUEUE AI GRADING IN BACKGROUND
         # ============================================================
         
-        attempt.status = AttemptStatus.SUBMITTED
-        attempt.submitted_at = datetime.now(timezone.utc)
+        file_ids_map = {str(r.question_id): str(r.file_upload_id) for r in request.responses}
+        response_items_flagged = {str(r.question_id): bool(r.flagged_for_review) for r in request.responses}
+        
+        if background_tasks:
+            background_tasks.add_task(
+                self._grade_speaking_in_background,
+                attempt_id=attempt_id,
+                question_ids=question_ids,
+                file_ids_map=file_ids_map,
+                response_items_flagged=response_items_flagged,
+                user_id=user_id
+            )
+        else:
+            # Fallback to fire-and-forget async task
+            asyncio.create_task(
+                self._grade_speaking_in_background(
+                    attempt_id=attempt_id,
+                    question_ids=question_ids,
+                    file_ids_map=file_ids_map,
+                    response_items_flagged=response_items_flagged,
+                    user_id=user_id
+                )
+            )
         
         # Audit log
         audit_service.log(
@@ -351,16 +270,17 @@ class SpeakingService:
             new_values={
                 "speaking_submitted": True,
                 "total_questions": len(question_results),
-                "processed_count": len(question_results) - failed_count,
-                "failed_count": failed_count,
-                "ai_total_points": float(ai_total_points)
+                "processed_count": len(question_results),
+                "failed_count": 0,
+                "ai_total_points": 0.0,
+                "background_grading": True
             }
         )
         
         db.commit()
         
         # ============================================================
-        # 7. RETURN RESPONSE
+        # 5. RETURN RESPONSE
         # ============================================================
         
         processing_time = time.time() - start_time
@@ -368,19 +288,152 @@ class SpeakingService:
         return BatchSubmitSpeakingResponse(
             attempt_id=attempt_id,
             test_id=attempt.test_id,
-            submitted_at=attempt.submitted_at,
+            submitted_at=datetime.now(timezone.utc),
             total_questions=len(question_results),
-            processed_count=len(question_results) - failed_count,
-            failed_count=failed_count,
+            processed_count=len(question_results),
+            failed_count=0,
             question_results=question_results,
-            ai_overall_scores=overall_scores,
-            ai_total_points=ai_total_points,
-            ai_rubric_scores=ai_rubric,
+            ai_overall_scores=None,
+            ai_total_points=0.0,
+            ai_rubric_scores=None,
             max_total_points=total_max_points,
             status=attempt.status.value,
             requires_teacher_review=True,
             processing_time_seconds=round(processing_time, 2)
         )
+
+    async def _grade_speaking_in_background(
+        self,
+        attempt_id: UUID,
+        question_ids: List[UUID],
+        file_ids_map: Dict[str, str],  # question_id_str -> file_upload_id_str
+        response_items_flagged: Dict[str, bool],  # question_id_str -> flagged
+        user_id: UUID
+    ):
+        """
+        Background task to perform AI grading for speaking questions.
+        Uses a fresh database session to avoid closed connection errors.
+        """
+        from app.core.database import SessionLocal
+        db = SessionLocal()
+        try:
+            # 1. Fetch attempt
+            attempt = db.query(TestAttempt).filter(TestAttempt.id == attempt_id).first()
+            if not attempt:
+                return
+            
+            # 2. Fetch questions
+            questions = db.query(QuestionBank).filter(
+                QuestionBank.id.in_(question_ids)
+            ).all()
+            question_map = {q.id: q for q in questions}
+            
+            # 3. Fetch file uploads
+            file_ids = list(file_ids_map.values())
+            files = db.query(FileUpload).filter(
+                FileUpload.id.in_(file_ids)
+            ).all()
+            file_map = {str(f.id): f for f in files}
+            
+            # 4. Get points for each question
+            test_questions = db.query(TestQuestion).filter(
+                TestQuestion.test_id == attempt.test_id,
+                TestQuestion.question_id.in_(question_ids)
+            ).all()
+            points_map = {tq.question_id: float(tq.points) for tq in test_questions}
+            
+            # 5. Create grading tasks
+            grading_tasks = []
+            valid_questions = []
+            
+            for q_id in question_ids:
+                question = question_map.get(q_id)
+                f_id = file_ids_map.get(str(q_id))
+                file_meta = file_map.get(str(f_id))
+                if not question or not file_meta:
+                    continue
+                
+                valid_questions.append(question)
+                grading_tasks.append(
+                    self._grade_single_question(
+                        question=question,
+                        audio_url=file_meta.file_path,
+                        file_upload_id=file_meta.id
+                    )
+                )
+            
+            # Run parallel AI grading
+            grading_results = await asyncio.gather(
+                *grading_tasks,
+                return_exceptions=True
+            )
+            
+            # 6. Save results
+            for i, question in enumerate(valid_questions):
+                grading_result = grading_results[i]
+                f_id = file_ids_map.get(str(question.id))
+                file_meta = file_map.get(str(f_id))
+                max_points = points_map.get(question.id, 0.0)
+                flagged = response_items_flagged.get(str(question.id), False)
+                
+                if isinstance(grading_result, Exception):
+                    # Save response without AI results
+                    continue
+                
+                # Extract AI results
+                raw = grading_result.get("raw", {})
+                ai_band = float(raw.get("overallScore", 0))
+                
+                # Map rubric scores supporting both snake_case and camelCase
+                criteria = raw.get("criteriaScores", {}) or raw.get("rubricScores", {}) or {}
+                val_fc = float(criteria.get("fluencyCoherence") or criteria.get("fluency_coherence") or 0.0)
+                val_lr = float(criteria.get("lexicalResource") or criteria.get("lexical_resource") or 0.0)
+                val_gr = float(criteria.get("grammaticalRange") or criteria.get("grammatical_range") or 0.0)
+                val_pr = float(criteria.get("pronunciation") or 0.0)
+                ai_rubric = {
+                    "fluency_coherence": val_fc,
+                    "fluencyCoherence": val_fc,
+                    "lexical_resource": val_lr,
+                    "lexicalResource": val_lr,
+                    "grammatical_range": val_gr,
+                    "grammaticalRange": val_gr,
+                    "pronunciation": val_pr
+                }
+                
+                ai_feedback = raw.get("detailedFeedback")
+                ai_transcript = raw.get("transcript")
+                refined_transcript = raw.get("refinedTranscript")
+                better_version = raw.get("betterVersion")
+                pronunciation_breakdown = raw.get("pronunciationBreakdown", [])
+                
+                # Convert band score to points
+                ai_points = 0.0
+                if ai_band > 0:
+                    ai_points = round((ai_band / 9.0) * max_points, 2)
+                
+                # Save Response to DB
+                self._save_or_update_response(
+                    db=db,
+                    attempt_id=attempt_id,
+                    question_id=question.id,
+                    file_upload_id=file_meta.id,
+                    audio_url=file_meta.file_path,
+                    transcript=ai_transcript,
+                    ai_band_score=ai_band,
+                    ai_rubric_scores=ai_rubric,
+                    ai_feedback=ai_feedback,
+                    ai_points_earned=ai_points,
+                    flagged=flagged,
+                    refined_transcript=refined_transcript,
+                    better_version=better_version,
+                    pronunciation_breakdown=pronunciation_breakdown
+                )
+            
+            db.commit()
+        except Exception as e:
+            print(f"Error in background speaking grading task: {e}")
+        finally:
+            db.close()
     
     # ============================================================
     # HELPER METHODS
@@ -478,7 +531,10 @@ class SpeakingService:
         ai_rubric_scores: Dict = None,
         ai_feedback: str = None,
         ai_points_earned: float = None,
-        flagged: bool = False
+        flagged: bool = False,
+        refined_transcript: str = None,
+        better_version: str = None,
+        pronunciation_breakdown: List = None
     ):
         """Save or update TestResponse"""
         
@@ -491,6 +547,12 @@ class SpeakingService:
             "file_upload_id": str(file_upload_id),
             "audio_url": audio_url
         }
+        if refined_transcript is not None:
+            response_data["refined_transcript"] = refined_transcript
+        if better_version is not None:
+            response_data["better_version"] = better_version
+        if pronunciation_breakdown is not None:
+            response_data["pronunciation_breakdown"] = pronunciation_breakdown
         
         if response:
             # Update existing

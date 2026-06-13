@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -27,7 +27,8 @@ from app.schemas.test.test_attempt import (
     SubmitAttemptRequest,
     SubmitAttemptResponse,
     TestAttemptSummaryResponse,
-    GradeAttemptRequest
+    GradeAttemptRequest,
+    TestAttemptHistoryResponse
 )
 
 from app.services.test.test import test_service
@@ -239,11 +240,29 @@ async def pre_upload_speaking_audio(
 async def batch_submit_speaking(
     attempt_id: UUID,
     request: BatchSubmitSpeakingRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    result = await speaking_service.batch_submit_speaking(db=db, attempt_id=attempt_id, request=request, user_id=current_user.id)
+    result = await speaking_service.batch_submit_speaking(
+        db=db,
+        attempt_id=attempt_id,
+        request=request,
+        user_id=current_user.id,
+        background_tasks=background_tasks
+    )
     return ApiResponse(data=result)
+
+@router.get("/attempts/my-history", response_model=ApiResponse[List[TestAttemptHistoryResponse]])
+def get_student_attempts_history(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user)
+):
+    attempts = attempt_service.list_student_attempts_history(
+        db=db,
+        student_id=current_user.id
+    )
+    return ApiResponse(data=attempts)
 
 @router.get("/{test_id}/my-attempts", response_model=ApiResponse[List[TestAttemptSummaryResponse]])
 def list_my_attempts(

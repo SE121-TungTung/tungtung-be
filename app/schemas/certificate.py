@@ -7,8 +7,8 @@ class CertificateBase(BaseModel):
     student_id: UUID4
     course_id: UUID4
     class_id: Optional[UUID4] = None
-    certificate_code: str
-    issue_date: date
+    certificate_code: Optional[str] = None
+    issue_date: Optional[date] = None
     certificate_url: Optional[str] = None
     final_score: Optional[Decimal] = None
     attendance_rate: Optional[Decimal] = None

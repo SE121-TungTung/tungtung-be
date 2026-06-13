@@ -237,6 +237,7 @@ class TestAttemptDetailResponse(BaseModel):
     test_id: UUID4
     test_title: str
     student_id: UUID4
+    student_name: Optional[str] = None
 
     attempt_number: int
     started_at: datetime

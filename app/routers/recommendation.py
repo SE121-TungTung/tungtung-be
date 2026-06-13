@@ -44,7 +44,11 @@ async def get_history(params: CommonQueryParams = Depends(), db: Session = Depen
             "id": str(log.id),
             "generated_at": log.generated_at.isoformat() if log.generated_at else None,
             "recommendation_type": log.recommendation_type,
-            "is_read": log.is_read
+            "is_read": log.is_read,
+            "predicted_band": float(log.predicted_band) if log.predicted_band is not None else None,
+            "target_band": float(log.target_band) if log.target_band is not None else None,
+            "attendance_rate": float(log.attendance_rate) if log.attendance_rate is not None else None,
+            "skill_scores": log.skill_scores
         })
     return ApiResponse(data=result)
 
