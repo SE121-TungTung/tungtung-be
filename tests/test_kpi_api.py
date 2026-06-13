@@ -210,4 +210,31 @@ def test_tc10_resolve_dispute(mock_service, override_centeradmin):
     response = client.put(f"/kpi/dispute/{dispute_id}/resolve", json=payload)
     assert response.status_code == 200
     assert response.json()["data"]["status"] == "RESOLVED"
+
+
+@patch('app.routers.kpi.kpi_dispute_service')
+def test_list_disputes(mock_service, override_centeradmin):
+    """Test GET /kpi/disputes"""
+    mock_service_inst = mock_service
+    dispute_id = str(uuid4())
+    mock_service_inst.list_disputes.return_value = ([
+        {
+            "id": dispute_id,
+            "kpi_record_id": str(uuid4()),
+            "teacher_id": str(uuid4()),
+            "reason": "Thiếu điểm chuyên cần",
+            "status": "PENDING",
+            "resolution_note": None,
+            "created_at": "2024-03-01T00:00:00Z",
+            "teacher_name": "Nguyen Van A",
+            "period_name": "Kỳ 1"
+        }
+    ], 1)
+
+    response = client.get("/kpi/disputes?status=PENDING&page=1&limit=20")
+    assert response.status_code == 200
+    assert response.json()["success"] == True
+    assert len(response.json()["data"]) == 1
+    assert response.json()["data"][0]["teacher_name"] == "Nguyen Van A"
+
     

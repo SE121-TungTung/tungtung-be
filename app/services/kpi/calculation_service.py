@@ -234,12 +234,30 @@ class KPICalculationService:
     ) -> Decimal:
         """Calculate total teaching hours from completed ClassSessions using actual duration."""
         from app.models.kpi import KPIPeriod
-        from sqlalchemy import or_
+        from app.models.user import User, UserRole
+        from app.models.academic import Class
 
         period = db.query(KPIPeriod).filter(KPIPeriod.id == record.period_id).first()
         if not period:
             return Decimal("0")
 
+        user = db.query(User).filter(User.id == record.staff_id).first()
+        if user and user.role == UserRole.TA:
+            # For TA: count of completed sessions
+            sessions_count = (
+                db.query(ClassSession)
+                .join(Class, ClassSession.class_id == Class.id)
+                .filter(
+                    ClassSession.status == SessionStatus.COMPLETED,
+                    ClassSession.session_date >= period.start_date,
+                    ClassSession.session_date <= period.end_date,
+                    Class.ta_id == record.staff_id,
+                )
+                .count()
+            )
+            return Decimal(sessions_count)
+
+        # For Teacher: regular completed teaching hours (excluding substitute sessions they did)
         total_seconds = (
             db.query(
                 func.coalesce(
@@ -253,10 +271,8 @@ class KPICalculationService:
                 ClassSession.status == SessionStatus.COMPLETED,
                 ClassSession.session_date >= period.start_date,
                 ClassSession.session_date <= period.end_date,
-                or_(
-                    (ClassSession.teacher_id == record.staff_id) & (ClassSession.substitute_teacher_id.is_(None)),
-                    ClassSession.substitute_teacher_id == record.staff_id
-                )
+                ClassSession.teacher_id == record.staff_id,
+                ClassSession.substitute_teacher_id.is_(None)
             )
             .scalar()
         )

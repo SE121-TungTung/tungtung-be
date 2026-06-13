@@ -345,6 +345,8 @@ class KpiDisputeResponse(BaseModel):
     resolution_note : Optional[str]  = None
     created_at      : datetime
     resolved_at     : Optional[datetime] = None
+    teacher_name    : Optional[str] = None
+    period_name     : Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 
