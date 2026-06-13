@@ -131,6 +131,10 @@ class ClassSessionResponse(BaseModel):
     actual_start_time: Optional[datetime] = None
     actual_end_time: Optional[datetime] = None
 
+    # QR Code fields
+    qr_token: Optional[str] = None
+    qr_expires_at: Optional[datetime] = None
+
     class Config:
         from_attributes = True
 

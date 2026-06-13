@@ -1,7 +1,7 @@
 import sys
 import os
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, time
 from decimal import Decimal
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -160,7 +160,8 @@ def seed_data():
             {"name": "IELTS-FD-01", "course": "IELTS Foundation", "teacher": "teacher.an@tungtung.edu.vn", "ta": "ta.giang@tungtung.edu.vn", "room": "Room 101", "start": date(2026, 5, 1), "end": date(2026, 8, 1), "fee": 4500000, "status": ClassStatus.ACTIVE},
             {"name": "IELTS-IT-01", "course": "IELTS Intensive", "teacher": "teacher.binh@tungtung.edu.vn", "ta": "ta.hai@tungtung.edu.vn", "room": "Lab 201", "start": date(2026, 5, 15), "end": date(2026, 9, 15), "fee": 6800000, "status": ClassStatus.ACTIVE},
             {"name": "GE-A2-01", "course": "General English A2", "teacher": "teacher.chi@tungtung.edu.vn", "ta": None, "room": "Room 102", "start": date(2026, 6, 1), "end": date(2026, 8, 15), "fee": 3000000, "status": ClassStatus.ACTIVE},
-            {"name": "BIZ-COM-01", "course": "Business Communication", "teacher": "teacher.dung@tungtung.edu.vn", "ta": None, "room": "Room 103", "start": date(2026, 7, 1), "end": date(2026, 9, 15), "fee": 5500000, "status": ClassStatus.SCHEDULED}
+            {"name": "BIZ-COM-01", "course": "Business Communication", "teacher": "teacher.dung@tungtung.edu.vn", "ta": None, "room": "Room 103", "start": date(2026, 7, 1), "end": date(2026, 9, 15), "fee": 5500000, "status": ClassStatus.SCHEDULED},
+            {"name": "IELTS-COMPLETED-01", "course": "IELTS Intensive", "teacher": "teacher.an@tungtung.edu.vn", "ta": None, "room": "Room 101", "start": date(2026, 3, 1), "end": date(2026, 5, 20), "fee": 6800000, "status": ClassStatus.COMPLETED}
         ]
         
         classes_map = {}
@@ -199,33 +200,46 @@ def seed_data():
         # IELTS-IT-01: student.minh, student.khoi, student.an, student.nam, student.vy (5 students)
         # GE-A2-01: student.binh, student.cuong, student.dung, student.huong, student.lan, student.nam, student.vy (7 students)
         enrollments = [
-            ("IELTS-FD-01", "student.minh@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("IELTS-FD-01", "student.khoi@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("IELTS-FD-01", "student.an@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("IELTS-FD-01", "student.binh@gmail.com", PaymentStatus.PENDING, EnrollmentStatus.ACTIVE),
-            ("IELTS-FD-01", "student.cuong@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("IELTS-FD-01", "student.dung@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("IELTS-FD-01", "student.huong@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("IELTS-FD-01", "student.lan@gmail.com", PaymentStatus.PENDING, EnrollmentStatus.ACTIVE),
+            ("IELTS-FD-01", "student.minh@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("IELTS-FD-01", "student.khoi@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("IELTS-FD-01", "student.an@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("IELTS-FD-01", "student.binh@gmail.com", PaymentStatus.PENDING, EnrollmentStatus.ACTIVE, None),
+            ("IELTS-FD-01", "student.cuong@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("IELTS-FD-01", "student.dung@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("IELTS-FD-01", "student.huong@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("IELTS-FD-01", "student.lan@gmail.com", PaymentStatus.PENDING, EnrollmentStatus.ACTIVE, None),
             
-            ("IELTS-IT-01", "student.minh@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("IELTS-IT-01", "student.khoi@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("IELTS-IT-01", "student.an@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("IELTS-IT-01", "student.nam@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("IELTS-IT-01", "student.vy@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
+            ("IELTS-IT-01", "student.minh@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("IELTS-IT-01", "student.khoi@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("IELTS-IT-01", "student.an@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("IELTS-IT-01", "student.nam@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("IELTS-IT-01", "student.vy@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
             
-            ("GE-A2-01", "student.binh@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("GE-A2-01", "student.cuong@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("GE-A2-01", "student.dung@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("GE-A2-01", "student.huong@gmail.com", PaymentStatus.PENDING, EnrollmentStatus.ACTIVE),
-            ("GE-A2-01", "student.lan@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("GE-A2-01", "student.nam@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE),
-            ("GE-A2-01", "student.vy@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE)
+            ("GE-A2-01", "student.binh@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("GE-A2-01", "student.cuong@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("GE-A2-01", "student.dung@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("GE-A2-01", "student.huong@gmail.com", PaymentStatus.PENDING, EnrollmentStatus.ACTIVE, None),
+            ("GE-A2-01", "student.lan@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("GE-A2-01", "student.nam@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+            ("GE-A2-01", "student.vy@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, None),
+
+            ("IELTS-COMPLETED-01", "student.an@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, Decimal("8.5")),
+            ("IELTS-COMPLETED-01", "student.binh@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, Decimal("5.5")),
+            ("IELTS-COMPLETED-01", "student.cuong@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, Decimal("9.0")),
+            ("IELTS-COMPLETED-01", "student.dung@gmail.com", PaymentStatus.PAID, EnrollmentStatus.ACTIVE, Decimal("6.0"))
         ]
         
-        for class_name, student_email, pay_status, enroll_status in enrollments:
+        for class_name, student_email, pay_status, enroll_status, final_grade in enrollments:
             clazz = classes_map[class_name]
             stud = users_map[student_email]
+            
+            att_rate = Decimal(90.0)
+            if class_name == "IELTS-COMPLETED-01":
+                if student_email in ["student.an@gmail.com", "student.binh@gmail.com"]:
+                    att_rate = Decimal(100.0)
+                else:
+                    att_rate = Decimal(50.0)
+
             enroll = ClassEnrollment(
                 class_id=clazz.id,
                 student_id=stud.id,
@@ -233,7 +247,8 @@ def seed_data():
                 fee_paid=clazz.fee_amount if pay_status == PaymentStatus.PAID else Decimal(0),
                 payment_status=pay_status,
                 status=enroll_status,
-                attendance_rate=Decimal(90.0) if enroll_status == EnrollmentStatus.ACTIVE else Decimal(0),
+                attendance_rate=att_rate if enroll_status == EnrollmentStatus.ACTIVE else Decimal(0),
+                final_grade=final_grade,
                 notes="Đăng ký tự động qua hệ thống"
             )
             db.add(enroll)
@@ -269,13 +284,17 @@ def seed_data():
                 "student.binh@gmail.com", "student.cuong@gmail.com", "student.dung@gmail.com",
                 "student.huong@gmail.com", "student.lan@gmail.com", "student.nam@gmail.com",
                 "student.vy@gmail.com"
+            ],
+            "IELTS-COMPLETED-01": [
+                "student.an@gmail.com", "student.binh@gmail.com", "student.cuong@gmail.com",
+                "student.dung@gmail.com"
             ]
         }
         
         today_date = date(2026, 6, 11)
         
         for class_name, clazz in classes_map.items():
-            if clazz.status != ClassStatus.ACTIVE:
+            if clazz.status not in [ClassStatus.ACTIVE, ClassStatus.COMPLETED]:
                 continue
                 
             student_emails = class_students_map.get(class_name, [])
@@ -299,7 +318,7 @@ def seed_data():
             while curr_date <= clazz.end_date:
                 if curr_date.weekday() in pref_weekdays:
                     # Determine start and end times based on class
-                    if class_name == "IELTS-FD-01":
+                    if class_name in ["IELTS-FD-01", "IELTS-COMPLETED-01"]:
                         start_time = datetime.strptime("19:00", "%H:%M").time()
                         end_time = datetime.strptime("21:00", "%H:%M").time()
                         time_slots = [9, 10]
@@ -311,18 +330,18 @@ def seed_data():
                         start_time = datetime.strptime("08:00", "%H:%M").time()
                         end_time = datetime.strptime("10:00", "%H:%M").time()
                         time_slots = [1, 2]
-
+ 
                     # Determine status and attendance
                     if curr_date < today_date:
                         status = SessionStatus.COMPLETED
                         attendance_taken = True
                     elif curr_date == today_date:
                         if end_time <= today_time:
-                            status = SessionStatus.COMPLETED
-                            attendance_taken = True
+                             status = SessionStatus.COMPLETED
+                             attendance_taken = True
                         else:
-                            status = SessionStatus.SCHEDULED
-                            attendance_taken = False
+                             status = SessionStatus.SCHEDULED
+                             attendance_taken = False
                     else:
                         status = SessionStatus.SCHEDULED
                         attendance_taken = False
@@ -352,11 +371,17 @@ def seed_data():
                             late_mins = 0
                             
                             # Simple deterministic pattern for reproducibility
-                            if (s_idx + session_index) % 15 == 0:
-                                status_choice = AttendanceStatus.ABSENT
-                            elif (s_idx + session_index) % 11 == 0:
-                                status_choice = AttendanceStatus.LATE
-                                late_mins = 15
+                            if class_name == "IELTS-COMPLETED-01":
+                                if std.email in ["student.an@gmail.com", "student.binh@gmail.com"]:
+                                    status_choice = AttendanceStatus.PRESENT
+                                else:
+                                    status_choice = AttendanceStatus.PRESENT if session_index % 2 == 0 else AttendanceStatus.ABSENT
+                            else:
+                                if (s_idx + session_index) % 15 == 0:
+                                    status_choice = AttendanceStatus.ABSENT
+                                elif (s_idx + session_index) % 11 == 0:
+                                    status_choice = AttendanceStatus.LATE
+                                    late_mins = 15
                                 
                             att = AttendanceRecord(
                                 session_id=session.id,
@@ -378,8 +403,14 @@ def seed_data():
         now = datetime.now()
         today_dt = now.date()
         # Start time: 5 minutes ago, End time: 2 hours from now
-        special_start = (now - timedelta(minutes=5)).time()
-        special_end = (now + timedelta(hours=2)).time()
+        special_start_dt = now - timedelta(minutes=5)
+        special_end_dt = now + timedelta(hours=2)
+        if special_end_dt.date() > special_start_dt.date():
+            special_start = time(21, 59, 0)
+            special_end = time(23, 59, 0)
+        else:
+            special_start = special_start_dt.time()
+            special_end = special_end_dt.time()
         
         for class_name, clazz in classes_map.items():
             if clazz.status != ClassStatus.ACTIVE:

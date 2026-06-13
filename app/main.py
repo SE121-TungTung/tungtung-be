@@ -96,4 +96,6 @@ api_router.include_router(certificate.router)
 app.include_router(api_router, prefix="/api/v1")
 
 os.makedirs("media/receipts", exist_ok=True)
+os.makedirs("media/certificates", exist_ok=True)
 app.mount("/receipts", StaticFiles(directory="media/receipts"), name="receipts")
+app.mount("/media", StaticFiles(directory="media"), name="media")
