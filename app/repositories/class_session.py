@@ -16,7 +16,7 @@ class ClassRepository(CRUDBase):
     def __init__(self):
         super().__init__(Class)
     
-def get_classes_by_teacher(
+    def get_classes_by_teacher(
         self, 
         db: Session, 
         teacher_id: UUID, 
@@ -62,7 +62,14 @@ def get_classes_by_teacher(
         )
 
         # 5. Explicit Mapping: Ép kiểu tường minh từng ORM Object sang Pydantic Model
-        results = [ClassResponse.model_validate(c) for c in classes]
+        results = []
+        for c in classes:
+            item = ClassResponse.model_validate(c)
+            item.course_name = c.course.name if c.course else None
+            item.teacher_name = c.teacher.full_name if c.teacher else None
+            item.substitute_teacher_name = c.substitute_teacher.full_name if c.substitute_teacher else None
+            item.room_name = c.room.name if c.room else None
+            results.append(item)
 
         # 6. Trả về chuẩn format
         return PaginationResponse(

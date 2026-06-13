@@ -61,6 +61,11 @@ class ClassSession(BaseModel):
     room = relationship("Room")
     attendance_records = relationship("AttendanceRecord", back_populates="session")
 
+    @property
+    def class_name(self) -> str:
+        return self.session_class.name if self.session_class else ""
+
+
 class AttendanceRecord(BaseModel):
     __tablename__ = "attendance_records"
     

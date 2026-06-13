@@ -89,9 +89,11 @@ class ScheduleService:
         
         # 1. Check trong DB (Lịch đã lưu)
         query = db.query(ClassSession).filter(
-            ClassSession.teacher_id == teacher_id,
             ClassSession.session_date == session_date,
             ClassSession.status.in_(['scheduled', 'in_progress'])
+        ).filter(
+            ((ClassSession.teacher_id == teacher_id) & (ClassSession.substitute_teacher_id.is_(None))) |
+            (ClassSession.substitute_teacher_id == teacher_id)
         )
         
         if exclude_session_id:
@@ -457,8 +459,10 @@ class ScheduleService:
             
         # 3. Lọc theo Cá nhân (User ID)
         if user_id:
-            # Lọc nếu user là giáo viên
-            query = query.filter(ClassSession.teacher_id == user_id)
+            # Lọc nếu user là giáo viên chính hoặc giáo viên dạy thế
+            query = query.filter(
+                (ClassSession.teacher_id == user_id) | (ClassSession.substitute_teacher_id == user_id)
+            )
             # TODO: Thêm logic phức tạp để lọc nếu user là học viên
             # Ví dụ: Lọc qua bảng class_enrollments
         
@@ -468,14 +472,17 @@ class ScheduleService:
         schedule_data = []
         for session in sessions:
             class_obj = self.class_repo.get(db, session.class_id)
-            teacher = self.user_repo.get(db, session.teacher_id)
+            
+            # Lấy giáo viên thực tế (dạy thế nếu có, ngược lại dùng GV chính)
+            active_teacher_id = session.substitute_teacher_id if session.substitute_teacher_id else session.teacher_id
+            teacher = self.user_repo.get(db, active_teacher_id)
             room = self.room_repo.get(db, session.room_id)
             
             schedule_data.append(WeeklySession(
                 session_id=session.id,
                 session_date=session.session_date,
                 class_name=class_obj.name,
-                teacher_name=f"{teacher.first_name} {teacher.last_name}",
+                teacher_name=f"{teacher.first_name} {teacher.last_name}" if teacher else "N/A",
                 room_name=room.name if room else "N/A",
                 day_of_week=session.session_date.strftime('%A'),
                 start_time=session.start_time,
@@ -730,17 +737,20 @@ class ScheduleService:
     def _to_response(self, db: Session, session) -> SessionResponse:
         """Convert DB model to response schema"""
         class_obj = self.class_repo.get(db, session.class_id)
-        teacher = self.user_repo.get(db, session.teacher_id)
+        
+        # Lấy giáo viên thực tế (dạy thế nếu có, ngược lại dùng GV chính)
+        active_teacher_id = session.substitute_teacher_id if session.substitute_teacher_id else session.teacher_id
+        teacher = self.user_repo.get(db, active_teacher_id)
         room = self.room_repo.get(db, session.room_id)
         
         return SessionResponse(
             id=session.id,
             class_id=session.class_id,
             class_name=class_obj.name,
-            teacher_id=session.teacher_id,
-            teacher_name=f"{teacher.first_name} {teacher.last_name}",
+            teacher_id=active_teacher_id,
+            teacher_name=f"{teacher.first_name} {teacher.last_name}" if teacher else "N/A",
             room_id=session.room_id,
-            room_name=room.name,
+            room_name=room.name if room else "N/A",
             session_date=session.session_date,
             start_time=session.start_time,
             end_time=session.end_time,

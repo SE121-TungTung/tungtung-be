@@ -65,15 +65,16 @@ def decline_substitution(
 @router.post("/{request_id}/approve", response_model=ApiResponse[SubstitutionRequestResponse])
 def admin_approve_substitution(
     request_id: UUID,
+    target_substitute_id: UUID = None,
     admin_note: str = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_admin_user)
 ):
     """
-    Admin approves a substitution request that was accepted by a substitute.
-    Updates the ClassSession substitute_teacher_id.
+    Admin approves a substitution request.
+    Can choose or override target_substitute_id.
     """
-    request = substitution_service.admin_approve(db, request_id, current_user.id, admin_note)
+    request = substitution_service.admin_approve(db, request_id, current_user.id, target_substitute_id, admin_note)
     return ApiResponse(data=SubstitutionRequestResponse.model_validate(request))
 
 @router.post("/{request_id}/reject", response_model=ApiResponse[SubstitutionRequestResponse])

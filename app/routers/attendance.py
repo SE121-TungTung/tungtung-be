@@ -126,7 +126,7 @@ def student_self_check_in(
         success=success,
         status=result.get("status"),
         check_in_time=result.get("check_in_time"),
-        late_minutes=result.get("late_minutes", 0),
+        late_minutes=result.get("late_minutes") if result.get("late_minutes") is not None else 0,
         message=result.get("message", "")
     )
     
@@ -251,6 +251,35 @@ def check_certificate_eligibility(
         db=db, enrollment_id=enrollment_id
     )
     return ApiResponse(success=True, data=res, message="Kiểm tra điều kiện nhận chứng chỉ thành công")
+
+
+@class_router.get("/certificate-eligibility", response_model=ApiResponse[List[CertificateEligibilityResponse]])
+def get_class_certificate_eligibility(
+    class_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_teacher_or_admin),
+):
+    """Lấy danh sách điều kiện nhận chứng chỉ của tất cả học viên trong lớp."""
+    from app.models.academic import Class, ClassEnrollment
+    clazz = db.query(Class).filter(Class.id == class_id).first()
+    if not clazz:
+        raise APIException(
+            status_code=404,
+            code="CLASS_NOT_FOUND",
+            message="Không tìm thấy lớp học",
+        )
+        
+    enrollments = db.query(ClassEnrollment).filter(
+        ClassEnrollment.class_id == class_id
+    ).all()
+    
+    res = []
+    for enroll in enrollments:
+        eligibility = attendance_service.check_certificate_eligibility(db, enroll.id)
+        res.append(eligibility)
+        
+    return ApiResponse(success=True, data=res, message="Kiểm tra điều kiện nhận chứng chỉ cả lớp thành công")
+
 
 
 # ============================================================

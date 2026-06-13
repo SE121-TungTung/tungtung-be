@@ -131,7 +131,12 @@ class CertificateEligibilityResponse(BaseModel):
     class_name: str
     attendance_rate: float          # Rate dùng cho certificate (EXCUSED = attended)
     min_rate_required: float
+    final_grade: Optional[float] = None
+    min_grade_required: float = 7.0
     is_eligible: bool
+    certificate_code: Optional[str] = None
+    certificate_url: Optional[str] = None
+    is_issued: bool = False
 
     model_config = {"from_attributes": True}
 
