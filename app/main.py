@@ -13,7 +13,7 @@ from app.routers import (
     kpi,
     invoice, payment, report, refund,
     chatbot, audit_log, recommendation,
-    substitution, certificate)
+    substitution, certificate, class_posts)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 from contextlib import asynccontextmanager
@@ -92,6 +92,7 @@ api_router.include_router(audit_log.router)
 api_router.include_router(recommendation.router)
 api_router.include_router(substitution.router)
 api_router.include_router(certificate.router)
+api_router.include_router(class_posts.router)
 
 app.include_router(api_router, prefix="/api/v1")
 
