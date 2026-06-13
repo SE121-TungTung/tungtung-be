@@ -95,10 +95,22 @@ class NotificationService:
         content: str,
         priority: str = "normal",
         action_url: Optional[str] = None,
-        channels: List[str] = ["in_app"]
+        channels: List[str] = ["in_app"],
+        notification_type: Optional[str] = None
     ):
         from app.models.notification import Notification, NotificationType, NotificationPriority
         
+        # Determine notification type enum
+        noti_type_enum = NotificationType.SYSTEM_ALERT
+        if notification_type:
+            if isinstance(notification_type, str):
+                try:
+                    noti_type_enum = NotificationType(notification_type)
+                except ValueError:
+                    noti_type_enum = NotificationType.SYSTEM_ALERT
+            else:
+                noti_type_enum = notification_type
+
         # 1. Bulk insert to DB
         notifications = []
         for u_id in user_ids:
@@ -106,7 +118,7 @@ class NotificationService:
                 user_id=u_id,
                 title=title,
                 content=content,
-                notification_type=NotificationType.SYSTEM_ALERT,
+                notification_type=noti_type_enum,
                 priority=NotificationPriority(priority) if isinstance(priority, str) else priority,
                 action_url=action_url,
                 channels=channels
@@ -141,7 +153,8 @@ async def run_broadcast_task(
     content: str,
     priority: str,
     action_url: Optional[str],
-    channels: List[str]
+    channels: List[str],
+    notification_type: Optional[str] = None
 ):
     from app.core.database import SessionLocal
     db = SessionLocal()
@@ -153,7 +166,8 @@ async def run_broadcast_task(
             content=content,
             priority=priority,
             action_url=action_url,
-            channels=channels
+            channels=channels,
+            notification_type=notification_type
         )
     finally:
         db.close()

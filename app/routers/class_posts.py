@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form
+from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import List, Optional, Any
@@ -21,6 +21,7 @@ router = APIRouter(prefix="/classes", tags=["Class Posts"], route_class=Response
 @router.post("/{class_id}/posts", response_model=ApiResponse[ClassPostResponse])
 async def create_class_post(
     class_id: UUID,
+    background_tasks: BackgroundTasks,
     title: str = Form(...),
     content: Optional[str] = Form(None),
     post_type: str = Form("announcement"),
@@ -77,6 +78,33 @@ async def create_class_post(
     db.commit()
     db.refresh(db_post)
     
+    # 5. Notify enrolled active students in the class
+    try:
+        from app.models.academic import EnrollmentStatus
+        from app.services.notification_service import run_broadcast_task
+        
+        active_student_ids = [
+            enroll.student_id 
+            for enroll in class_obj.enrollments 
+            if enroll.status == EnrollmentStatus.ACTIVE and enroll.deleted_at is None
+        ]
+        
+        if active_student_ids:
+            post_type_text = "thông báo mới" if post_type == "announcement" else "tài liệu học tập mới"
+            background_tasks.add_task(
+                run_broadcast_task,
+                user_ids=active_student_ids,
+                title=f"Lớp {class_obj.name} có {post_type_text}",
+                content=title,
+                priority="normal",
+                action_url="/student/class",
+                channels=["in_app"],
+                notification_type="class_announcement"
+            )
+    except Exception as notif_err:
+        # Prevent notification failures from failing the post creation
+        print(f"Error dispatching class post notifications: {notif_err}")
+
     return ApiResponse(data=db_post, message="Tạo bài viết thành công")
 
 @router.get("/{class_id}/posts", response_model=PaginationResponse[ClassPostResponse])
