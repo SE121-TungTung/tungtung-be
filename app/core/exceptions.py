@@ -16,6 +16,18 @@ class APIException(Exception):
         self.message: str = message
         self.details: Any = details
 
+class AIServiceException(APIException):
+    def __init__(self, message: str, code: str = "AI_SERVICE_ERROR", status_code: int = 500, details: Any = None):
+        super().__init__(status_code=status_code, code=code, message=message, details=details)
+
+class AIConfigurationException(AIServiceException):
+    def __init__(self, message: str, details: Any = None):
+        super().__init__(message=message, code="AI_CONFIG_ERROR", status_code=500, details=details)
+
+class AIRequestException(AIServiceException):
+    def __init__(self, message: str, status_code: int = 500, details: Any = None):
+        super().__init__(message=message, code="AI_REQUEST_ERROR", status_code=status_code, details=details)
+
 async def api_exception_handler(request: Request, exc: APIException):
     error_content = ErrorResponse(
         success=False,

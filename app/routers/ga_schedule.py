@@ -5,7 +5,7 @@ API endpoints for the Genetic Algorithm schedule optimizer.
 
 All endpoints require admin authentication.
 """
-from fastapi import APIRouter, BackgroundTasks, Depends, Path, Query, status
+from fastapi import APIRouter, Depends, Path, Query, status
 from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 from uuid import UUID
@@ -22,17 +22,22 @@ from app.schemas.ga_schedule import (
     TeacherUnavailabilityCreate,
     TeacherUnavailabilityResponse,
 )
+from app.schemas.ai_schedule import AIAnalyzeRequest, AIAnalyzeResponse
 from app.services.schedule.ga_service import ga_schedule_service
-
+from app.services.schedule.ai_service import ai_schedule_service
+from app.tasks.ga_tasks import execute_ga_task
 
 router = APIRouter(
     prefix="/schedule/ga",
     tags=["GA Schedule Optimizer"],
     route_class=ResponseWrapperRoute,
+    dependencies=[Depends(get_current_admin_user)],
 )
 
-from app.schemas.ai_schedule import AIAnalyzeRequest, AIAnalyzeResponse
-from app.services.schedule.ai_service import ai_schedule_service
+
+# ============================================================
+# AI ANALYSIS ENDPOINTS
+# ============================================================
 
 @router.post(
     "/analyze-constraints",
@@ -42,13 +47,12 @@ from app.services.schedule.ai_service import ai_schedule_service
 async def analyze_constraints(
     request: AIAnalyzeRequest,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin_user),
 ):
     """
     Sử dụng AI (LLM) để phân tích yêu cầu bằng ngôn ngữ tự nhiên.
     Trả về cấu trúc JSON để UI hiển thị trước cho Admin duyệt (preview).
     """
-    result = ai_schedule_service.analyze_schedule_constraints(db, request)
+    result = await ai_schedule_service.analyze_schedule_constraints(db, request)
     return ApiResponse(data=result)
 
 
@@ -64,9 +68,7 @@ async def analyze_constraints(
 )
 async def run_ga_schedule(
     request: GAScheduleRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin_user),
 ):
     """
     Khởi chạy Genetic Algorithm để tối ưu hóa thời khóa biểu.
@@ -77,12 +79,8 @@ async def run_ga_schedule(
     """
     result = ga_schedule_service.run_ga_schedule(db, request)
 
-    # Schedule GA execution as background task
-    background_tasks.add_task(
-        ga_schedule_service.execute_ga_background,
-        run_id=result.run_id,
-        request=request,
-    )
+    # Trigger Celery background task instead of FastAPI BackgroundTasks
+    execute_ga_task.delay(str(result.run_id), request.model_dump())
 
     return ApiResponse(data=result, message="GA đã bắt đầu chạy. Dùng run_id để theo dõi kết quả.")
 
@@ -94,7 +92,6 @@ async def run_ga_schedule(
 async def get_ga_run_history(
     params: CommonQueryParams = Depends(),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin_user),
 ):
     """Lấy danh sách các lần chạy GA với phân trang."""
     return ga_schedule_service.get_run_history(db, page=params.page, limit=params.limit)
@@ -108,7 +105,6 @@ async def get_ga_run_history(
 async def get_ga_run_detail(
     run_id: UUID = Path(..., description="ID của GA run"),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin_user),
 ):
     """
     Lấy chi tiết kết quả của một lần chạy GA.
@@ -131,7 +127,6 @@ async def get_ga_run_detail(
 async def apply_ga_proposal(
     run_id: UUID = Path(..., description="ID của GA run cần apply"),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin_user),
 ):
     """
     Admin xác nhận và áp dụng đề xuất GA vào lịch học thực tế.
@@ -153,7 +148,6 @@ async def apply_ga_proposal(
 async def delete_ga_run(
     run_id: UUID = Path(..., description="ID của GA run cần xóa"),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin_user),
 ):
     """Soft delete GA run và tất cả proposals liên quan."""
     result = ga_schedule_service.delete_run(db, run_id)
@@ -173,7 +167,6 @@ async def delete_ga_run(
 async def create_teacher_unavailability(
     data: TeacherUnavailabilityCreate,
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin_user),
 ):
     """
     Thêm lịch bận cho giáo viên (input cho GA).
@@ -195,7 +188,6 @@ async def get_teacher_unavailability(
     teacher_id: Optional[UUID] = Query(None, description="Lọc theo teacher_id"),
     params: CommonQueryParams = Depends(),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin_user),
 ):
     """Lấy danh sách lịch bận giáo viên với phân trang."""
     return ga_schedule_service.get_teacher_unavailability(
@@ -211,7 +203,6 @@ async def get_teacher_unavailability(
 async def delete_teacher_unavailability(
     record_id: UUID = Path(..., description="ID của record lịch bận"),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_admin_user),
 ):
     """Soft delete lịch bận giáo viên."""
     result = ga_schedule_service.delete_teacher_unavailability(db, record_id)
