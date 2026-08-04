@@ -75,6 +75,45 @@ class SalaryService:
         db.refresh(salary)
         return salary
 
+    def pay(self, db: Session, salary_id: UUID, admin_id: UUID) -> Salary:
+        salary = db.query(Salary).filter(Salary.id == salary_id).with_for_update().first()
+        if not salary:
+            raise HTTPException(status_code=404, detail="Không tìm thấy phiếu lương")
+            
+        if salary.status != SalaryStatus.APPROVED:
+            raise HTTPException(
+                status_code=400, 
+                detail="Chỉ có thể thanh toán phiếu lương đang ở trạng thái APPROVED"
+            )
+
+        teacher = db.query(User).filter(User.id == salary.teacher_id).with_for_update().first()
+        if not teacher:
+            raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản giáo viên")
+
+        teacher.wallet_balance += salary.net_salary
+
+        from app.models.finance import WalletTransaction, TransactionType, WalletRefType, WalletTxStatus
+        
+        tx = WalletTransaction(
+            user_id=salary.teacher_id,
+            type=TransactionType.CREDIT,
+            amount=salary.net_salary,
+            balance_after=teacher.wallet_balance,
+            reference_type=WalletRefType.SALARY,
+            reference_id=salary.id,
+            status=WalletTxStatus.APPROVED,
+            created_by=admin_id,
+            note=f"Thanh toán lương kỳ {salary.period}",
+        )
+        db.add(tx)
+
+        salary.status = SalaryStatus.PAID
+
+        db.commit()
+        db.refresh(salary)
+        return salary
+
+
     def add_adjustment(self, db: Session, salary_id: UUID, payload: SalaryAdjustmentCreate, admin_id: UUID) -> SalaryAdjustment:
         salary = db.query(Salary).filter(Salary.id == salary_id).first()
         if not salary:

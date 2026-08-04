@@ -2,6 +2,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from uuid import UUID
 from typing import Optional, List, Any
 from datetime import datetime
+from app.schemas.user import UserMiniResponse
 
 # ============================================================
 # 1. REQUEST SCHEMAS (Giữ nguyên của bạn - Frontend gửi lên)
@@ -91,7 +92,7 @@ class MessageResponse(BaseModel):
     id: UUID
     sender_id: Optional[UUID] = None
     chat_room_id: Optional[UUID] = None
-    sender: Optional[Any] = None  # UserMiniResponse khi có sender
+    sender: Optional[UserMiniResponse] = None
 
     message_type: str
     content: str
@@ -115,3 +116,8 @@ class UnreadCountResponse(BaseModel):
 
 class MessageEditRequest(BaseModel):
     new_content: str = Field(..., min_length=1)
+
+class MessageReadResponse(BaseModel):
+    success: bool
+    room_id: UUID
+    marked_count: int

@@ -637,6 +637,17 @@ async def approve_salary(
     return ApiResponse(success=True, data=salary, message="Thành công")
 
 
+@router.post("/salaries/{salary_id}/pay", response_model=ApiResponse[SalaryResponse])
+async def pay_salary(
+    salary_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = CenterAdminUp,
+):
+    salary = salary_service.pay(db, salary_id, current_user.id)
+    return ApiResponse(success=True, data=salary, message="Thành công")
+
+
+
 @router.patch(
     "/salaries/{salary_id}/adjustments",
     response_model=ApiResponse[SalaryAdjustmentResponse],

@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from app.models.finance import (
     Invoice, InvoiceStatus,
     Payment, PaymentGateway, PaymentStatus,
+    WalletTransaction, TransactionType, WalletRefType, WalletTxStatus,
 )
 from app.models.user import User, UserRole
 from app.models.academic import ClassEnrollment, PaymentStatus as AcademicPaymentStatus
@@ -69,7 +70,66 @@ class PaymentService:
                 detail=f"Số tiền thanh toán ({payload.amount}) không khớp với hóa đơn ({invoice.final_amount})",
             )
 
-        # 3. Tạo Payment
+        # 3. Handle Internal Wallet Payment directly or regular gateway
+        if payload.gateway == PaymentGateway.INTERNAL_WALLET:
+            # Lock the user record to deduct balance safely
+            student = db.query(User).filter(User.id == student_id).with_for_update().first()
+            if not student:
+                raise HTTPException(status_code=404, detail="Không tìm thấy thông tin tài khoản")
+
+            if student.wallet_balance < payload.amount:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Số dư ví không đủ. Vui lòng nạp thêm tiền để tiếp tục."
+                )
+
+            # Deduct balance
+            student.wallet_balance -= payload.amount
+
+            # Create Wallet transaction
+            tx = WalletTransaction(
+                user_id=student_id,
+                type=TransactionType.DEBIT,
+                amount=payload.amount,
+                balance_after=student.wallet_balance,
+                reference_type=WalletRefType.TUITION,
+                reference_id=invoice.id,
+                status=WalletTxStatus.APPROVED,
+                created_by=student_id,
+                note=f"Thanh toán học phí cho hóa đơn {invoice.id.hex[:8].upper()}"
+            )
+            db.add(tx)
+
+            # Create Payment record as SUCCESS
+            payment = Payment(
+                invoice_id=invoice.id,
+                student_id=student_id,
+                amount=payload.amount,
+                gateway=payload.gateway,
+                status=PaymentStatus.SUCCESS,
+                idempotency_key=idempotency_key,
+                paid_at=datetime.now(timezone.utc),
+            )
+            db.add(payment)
+            db.flush()
+
+            # Mark Invoice and Enrollment as Paid
+            invoice.status = InvoiceStatus.PAID
+            enrollment = db.query(ClassEnrollment).filter(
+                ClassEnrollment.id == invoice.enrollment_id
+            ).first()
+            if enrollment:
+                enrollment.payment_status = AcademicPaymentStatus.PAID
+                enrollment.fee_paid = invoice.final_amount
+
+            db.commit()
+            db.refresh(payment)
+
+            resp = self._to_response(payment)
+            resp.payment_url = ""
+            return resp
+
+        # 3. Tạo Payment (VNPay/Momo/Cash/Bank Transfer)
         payment = Payment(
             invoice_id=invoice.id,
             student_id=student_id,

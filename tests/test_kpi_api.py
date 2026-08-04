@@ -143,6 +143,30 @@ def test_tc07_approve_salary(mock_service, override_centeradmin):
     assert response.json()["data"]["status"] == "APPROVED"
 
 @patch('app.routers.kpi.salary_service')
+def test_tc07_pay_salary(mock_service, override_centeradmin):
+    """TC-07_Pay: Thanh toán lương"""
+    mock_service_inst = mock_service
+    salary_id = str(uuid4())
+    mock_service_inst.pay.return_value = {
+        "id": salary_id, 
+        "teacher_id": str(uuid4()),
+        "period": "2024-03",
+        "contract_type": "FULL_TIME",
+        "lesson_count": 0,
+        "base_salary_calc": 10000000,
+        "kpi_bonus_calc": 5000000,
+        "fixed_allowance": 0,
+        "total_adjustments": 0,
+        "status": "PAID", 
+        "net_salary": 15000000
+    }
+
+    response = client.post(f"/salaries/{salary_id}/pay")
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "PAID"
+
+
+@patch('app.routers.kpi.salary_service')
 def test_tc08_view_salary_history_teacher(mock_service, override_teacher):
     """TC-08: Xem lịch sử lương (Teacher Me)"""
     mock_service_inst = mock_service

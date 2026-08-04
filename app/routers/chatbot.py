@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
@@ -295,7 +295,13 @@ async def delete_document(
     try:
         # Only delete from AI server if document was completed
         if doc.doc_id and doc.status == DocStatus.completed:
-            await chatbot_service.delete_document(doc.doc_id)
+            try:
+                await chatbot_service.delete_document(doc.doc_id)
+            except HTTPException as he:
+                if he.status_code == 404:
+                    logger.warning(f"Document {doc.doc_id} not found on AI server (404), proceeding with database deletion.")
+                else:
+                    raise he
         
         # Xóa trên Database
         db.delete(doc)
@@ -372,7 +378,13 @@ async def update_document(
         
     try:
         # Xóa trên AI Server
-        await chatbot_service.delete_document(doc_id)
+        try:
+            await chatbot_service.delete_document(doc_id)
+        except HTTPException as he:
+            if he.status_code == 404:
+                logger.warning(f"Document {doc_id} not found on AI server for update (404), proceeding with new upload.")
+            else:
+                raise he
         
         # Upload mới
         result = await chatbot_service.upload_document(file, doc.category.value)

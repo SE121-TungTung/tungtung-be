@@ -15,7 +15,7 @@ from .kpi import (
     TeacherPayrollConfig, PayrollRun,
     KpiDispute, Salary, SalaryAdjustment
 )
-from .finance import Invoice, Payment, Refund, ReportExportJob
+from .finance import Invoice, Payment, Refund, ReportExportJob, WalletTransaction
 from .ga_schedule import GARun, GAScheduleProposal, TeacherUnavailability
 from .recommendation import RecommendationLog
 from .substitution import SubstitutionRequest

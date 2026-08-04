@@ -232,7 +232,7 @@ class RefundService:
         """Danh sách yêu cầu hoàn tiền (phân trang)."""
         query = db.query(Refund)
         if status:
-            query = query.filter(Refund.status == status)
+            query = query.filter(Refund.status == status.lower())
         if student_id:
             query = query.filter(Refund.student_id == student_id)
 

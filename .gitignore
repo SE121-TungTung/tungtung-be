@@ -8,3 +8,8 @@ media/
 clear_enrollment_data.py
 clear_student_recs.py
 seed_finance_data.py
+*.log
+.pytest_cache/
+.cache/
+scratch_*.json
+

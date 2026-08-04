@@ -22,7 +22,8 @@ from app.schemas.message import (
     GroupUpdateRequest,
     MessageResponse,
     UnreadCountResponse,
-    MessageEditRequest
+    MessageEditRequest,
+    MessageReadResponse
 )
 
 from app.services.websocket import websocket_manager
@@ -98,7 +99,7 @@ async def get_conversations(
         meta={"page": params.page, "limit": params.limit, "total": len(result), "total_pages": 1}
     )
 
-@router.post("/conversations/{room_id}/read", response_model=ApiResponse[bool])
+@router.post("/conversations/{room_id}/read", response_model=ApiResponse[MessageReadResponse])
 async def mark_conversation_read(
     room_id: UUID,
     db: Session = Depends(get_db),

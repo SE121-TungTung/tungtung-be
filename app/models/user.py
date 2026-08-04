@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Enum, Boolean, Date, Text, Integer, TIMESTAMP, Index, text
+from sqlalchemy import Column, String, Enum, Boolean, Date, Text, Integer, TIMESTAMP, Index, text, Numeric
 from sqlalchemy.dialects.postgresql import JSONB
 from app.models.base import BaseModel
 import enum
@@ -50,6 +50,7 @@ class User(BaseModel):
     must_change_password = Column(Boolean, default=False)
     failed_login_attempts = Column(Integer, default=0)
     locked_until = Column(TIMESTAMP(timezone=True))
+    wallet_balance = Column(Numeric(12, 2), nullable=False, default=0.00)
 
     @property
     def full_name(self) -> str:
