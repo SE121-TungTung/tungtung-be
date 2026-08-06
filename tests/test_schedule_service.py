@@ -88,9 +88,9 @@ def mock_class_query_result(db_mock, result_list, filter_count=1):
 
 # --- TEST CASES V1 (Gốc) ---
 
-@patch('app.services.schedule.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
-@patch('app.services.schedule.ScheduleService._check_teacher_conflict', return_value=False)
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
+@patch('app.services.schedule_service.ScheduleService._check_teacher_conflict', return_value=False)
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_successful_schedule_generation(
     mock_select_rule, mock_check_teacher_conflict, mock_find_room, schedule_service, mock_repos, mock_data
 ):
@@ -124,9 +124,9 @@ def test_successful_schedule_generation(
     assert mock_select_rule.call_count == 3
 
 
-@patch('app.services.schedule.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
-@patch('app.services.schedule.ScheduleService._check_teacher_conflict', return_value=False)
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
+@patch('app.services.schedule_service.ScheduleService._check_teacher_conflict', return_value=False)
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_conflict_from_request_constraint(
     mock_select_rule, mock_check_teacher_conflict, mock_find_room, schedule_service, mock_repos, mock_data
 ):
@@ -160,8 +160,8 @@ def test_conflict_from_request_constraint(
     assert conflict.session_date == mock_data['start_date']
 
 
-@patch('app.services.schedule.ScheduleService._attempt_to_schedule_session')
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._attempt_to_schedule_session')
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_max_slots_violation_fixed_rule(
     mock_select_rule, mock_attempt_session, schedule_service, mock_repos, mock_data
 ):
@@ -198,8 +198,8 @@ def test_max_slots_violation_fixed_rule(
     assert "Cannot fulfill target of 2 sessions" in exc_info.value.detail
 
 
-@patch('app.services.schedule.ScheduleService._attempt_to_schedule_session')
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._attempt_to_schedule_session')
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_hard_exception_when_cannot_fulfill_target(
     mock_select_rule, mock_attempt_session, schedule_service, mock_repos, mock_data
 ):
@@ -237,8 +237,8 @@ def test_hard_exception_when_cannot_fulfill_target(
 # --- NEW COMPLEX TEST CASES (T5 - T16) ---
 # --------------------------------------------------------------------------
 
-@patch('app.services.schedule.ScheduleService._attempt_to_schedule_session')
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._attempt_to_schedule_session')
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_target_calculation_partial_week(mock_select_rule, mock_attempt_session, schedule_service, mock_repos, mock_data):
     """(T5) Kiểm tra tính toán mục tiêu session cho khoảng thời gian lẻ (10 ngày -> Target 3)."""
     db_mock = MagicMock()
@@ -266,8 +266,8 @@ def test_target_calculation_partial_week(mock_select_rule, mock_attempt_session,
     assert mock_attempt_session.call_count == 3
     assert mock_select_rule.call_count == 3 
 
-@patch('app.services.schedule.ScheduleService._attempt_to_schedule_session')
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._attempt_to_schedule_session')
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_no_schedule_rule_for_the_day(mock_select_rule, mock_attempt_session, schedule_service, mock_repos, mock_data):
     """(T6) Kiểm tra rằng nếu không có quy tắc nào cho ngày (fixed rule), ngày đó bị bỏ qua."""
     db_mock = MagicMock()
@@ -299,8 +299,8 @@ def test_no_schedule_rule_for_the_day(mock_select_rule, mock_attempt_session, sc
     assert proposal.successful_sessions == 1
     assert mock_attempt_session.call_count == 1 
 
-@patch('app.services.schedule.ScheduleService._attempt_to_schedule_session')
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._attempt_to_schedule_session')
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_prefer_morning_soft_preference(mock_select_rule, mock_attempt_session, schedule_service, mock_repos, mock_data):
     """(T7) Kiểm tra rằng rule được chọn có ưu tiên buổi sáng (kiểm tra gián tiếp)."""
     db_mock = MagicMock()
@@ -343,8 +343,8 @@ def test_prefer_morning_soft_preference(mock_select_rule, mock_attempt_session, 
     assert called, "Expected at least one _attempt_to_schedule_session call with rule slots [1]"
     assert mock_select_rule.call_count == 2 
 
-@patch('app.services.schedule.ScheduleService._attempt_to_schedule_session')
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._attempt_to_schedule_session')
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_max_slots_violation_on_random_rule(mock_select_rule, mock_attempt_session, schedule_service, mock_repos, mock_data):
     """(T8) Kiểm tra rằng các quy tắc ngẫu nhiên bị loại bỏ nếu chúng vi phạm max_slots_per_session (từ chối 3-slot)."""
     db_mock = MagicMock()
@@ -366,8 +366,8 @@ def test_max_slots_violation_on_random_rule(mock_select_rule, mock_attempt_sessi
     assert proposal.conflict_count == 0 
     assert mock_attempt_session.call_count == 0
 
-@patch('app.services.schedule.ScheduleService._attempt_to_schedule_session')
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._attempt_to_schedule_session')
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_fixed_rule_on_max_slots_boundary(mock_select_rule, mock_attempt_session, schedule_service, mock_repos, mock_data):
     """(T9) Kiểm tra quy tắc cố định khớp chính xác giới hạn max_slots (không bị từ chối)."""
     db_mock = MagicMock()
@@ -399,8 +399,8 @@ def test_fixed_rule_on_max_slots_boundary(mock_select_rule, mock_attempt_session
     assert proposal.conflict_count == 0 
     assert mock_attempt_session.call_count == 1
 
-@patch('app.services.schedule.ScheduleService._attempt_to_schedule_session')
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._attempt_to_schedule_session')
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_multiple_classes_scenario(mock_select_rule, mock_attempt_session, schedule_service, mock_repos, mock_data):
     """(T10) Kiểm tra xử lý nhiều lớp học, với một lớp thành công và một lớp bị xung đột."""
     db_mock = MagicMock()
@@ -459,9 +459,9 @@ def test_multiple_classes_scenario(mock_select_rule, mock_attempt_session, sched
     assert proposal.successful_sessions == 3 
     assert proposal.conflict_count == 1 
 
-@patch('app.services.schedule.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
-@patch('app.services.schedule.ScheduleService._check_teacher_conflict', return_value=True) # Forces DB conflict
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
+@patch('app.services.schedule_service.ScheduleService._check_teacher_conflict', return_value=True) # Forces DB conflict
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_teacher_db_conflict_hard_constraint(
     mock_select_rule, mock_check_teacher_conflict, mock_find_room, schedule_service, mock_repos, mock_data
 ):
@@ -485,9 +485,9 @@ def test_teacher_db_conflict_hard_constraint(
     assert "Cannot fulfill target of 2 sessions" in exc_info.value.detail
 
 
-@patch('app.services.schedule.ScheduleService._find_available_room', return_value=None) # Forces Room Unavailable
-@patch('app.services.schedule.ScheduleService._check_teacher_conflict', return_value=False)
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._find_available_room', return_value=None) # Forces Room Unavailable
+@patch('app.services.schedule_service.ScheduleService._check_teacher_conflict', return_value=False)
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_room_db_conflict_hard_constraint(
     mock_select_rule, mock_check_teacher_conflict, mock_find_room, schedule_service, mock_repos, mock_data
 ):
@@ -510,9 +510,9 @@ def test_room_db_conflict_hard_constraint(
     assert exc_info.value.status_code == 409
     assert "Cannot fulfill target of 2 sessions" in exc_info.value.detail
 
-@patch('app.services.schedule.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
-@patch('app.services.schedule.ScheduleService._check_teacher_conflict', return_value=False)
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
+@patch('app.services.schedule_service.ScheduleService._check_teacher_conflict', return_value=False)
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_class_request_conflict_hard_constraint(
     mock_select_rule, mock_check_teacher_conflict, mock_find_room, schedule_service, mock_repos, mock_data
 ):
@@ -544,9 +544,9 @@ def test_class_request_conflict_hard_constraint(
     assert proposal.conflict_count == 1
     assert proposal.conflicts[0].conflict_type == "request_class_conflict"
 
-@patch('app.services.schedule.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
-@patch('app.services.schedule.ScheduleService._check_teacher_conflict', return_value=False)
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
+@patch('app.services.schedule_service.ScheduleService._check_teacher_conflict', return_value=False)
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_schedule_two_weeks_full_success(
     mock_select_rule, mock_check_teacher_conflict, mock_find_room, schedule_service, mock_repos, mock_data
 ):
@@ -573,9 +573,9 @@ def test_schedule_two_weeks_full_success(
     assert proposal.conflict_count == 0
     assert mock_select_rule.call_count == 4
 
-@patch('app.services.schedule.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
-@patch('app.services.schedule.ScheduleService._check_teacher_conflict', return_value=False)
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule')
+@patch('app.services.schedule_service.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
+@patch('app.services.schedule_service.ScheduleService._check_teacher_conflict', return_value=False)
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule')
 def test_target_fulfilled_early(
     mock_select_rule, mock_check_teacher_conflict, mock_find_room, schedule_service, mock_repos, mock_data
 ):
@@ -603,9 +603,9 @@ def test_target_fulfilled_early(
     assert mock_select_rule.call_count == 2 
 
 
-@patch('app.services.schedule.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
-@patch('app.services.schedule.ScheduleService._check_teacher_conflict', return_value=False)
-@patch('app.services.schedule.ScheduleService._select_and_validate_rule', return_value=({'day': 'monday', 'slots': [1]}, None))
+@patch('app.services.schedule_service.ScheduleService._find_available_room', return_value=UUID('55555555-5555-5555-5555-555555555555'))
+@patch('app.services.schedule_service.ScheduleService._check_teacher_conflict', return_value=False)
+@patch('app.services.schedule_service.ScheduleService._select_and_validate_rule', return_value=({'day': 'monday', 'slots': [1]}, None))
 def test_request_class_id_filter(mock_select_rule, mock_check_teacher_conflict, mock_find_room, schedule_service, mock_repos, mock_data):
     """(T16) Kiểm tra rằng chỉ những class_id được cung cấp trong request mới được xử lý."""
     db_mock = MagicMock()
@@ -618,7 +618,7 @@ def test_request_class_id_filter(mock_select_rule, mock_check_teacher_conflict, 
     mock_repos['user_repo'].get.return_value = mock_data['test_user']
     mock_repos['room_repo'].get.return_value = mock_data['test_room']
 
-    with patch('app.services.schedule.ScheduleService._attempt_to_schedule_session') as mock_attempt_session:
+    with patch('app.services.schedule_service.ScheduleService._attempt_to_schedule_session') as mock_attempt_session:
         mock_attempt_session.side_effect = [
             SessionProposal(
                 class_id=class_1.id, class_name="Mock 101", teacher_id=class_1.teacher_id,

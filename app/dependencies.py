@@ -140,12 +140,11 @@ async def get_current_user_from_token(token: str):
     except JWTError:
         raise HTTPException(401, "Could not validate credentials")
 
-# Common query parameters
 class CommonQueryParams:
     def __init__(
         self,
         page: int = Query(1, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
-        limit: int = Query(20, ge=1, le=100, description="Số lượng bản ghi trên mỗi trang"),
+        limit: int = Query(20, ge=1, le=1000, description="Số lượng bản ghi trên mỗi trang"),
     ):
         self.page = page
         self.limit = limit

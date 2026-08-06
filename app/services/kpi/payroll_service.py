@@ -12,6 +12,7 @@ from app.models.kpi import (
     KPIRecord, KPIPeriod, ApprovalStatus,
 )
 from app.models.user import User, UserRole
+from app.models.session_attendance import ClassSession, SessionStatus
 from app.schemas.kpi import SalaryAdjustmentCreate, TeacherPayrollConfigUpdate, PayrollRunCreate
 
 class SalaryService:
@@ -73,6 +74,45 @@ class SalaryService:
         db.commit()
         db.refresh(salary)
         return salary
+
+    def pay(self, db: Session, salary_id: UUID, admin_id: UUID) -> Salary:
+        salary = db.query(Salary).filter(Salary.id == salary_id).with_for_update().first()
+        if not salary:
+            raise HTTPException(status_code=404, detail="Không tìm thấy phiếu lương")
+            
+        if salary.status != SalaryStatus.APPROVED:
+            raise HTTPException(
+                status_code=400, 
+                detail="Chỉ có thể thanh toán phiếu lương đang ở trạng thái APPROVED"
+            )
+
+        teacher = db.query(User).filter(User.id == salary.teacher_id).with_for_update().first()
+        if not teacher:
+            raise HTTPException(status_code=404, detail="Không tìm thấy tài khoản giáo viên")
+
+        teacher.wallet_balance += salary.net_salary
+
+        from app.models.finance import WalletTransaction, TransactionType, WalletRefType, WalletTxStatus
+        
+        tx = WalletTransaction(
+            user_id=salary.teacher_id,
+            type=TransactionType.CREDIT,
+            amount=salary.net_salary,
+            balance_after=teacher.wallet_balance,
+            reference_type=WalletRefType.SALARY,
+            reference_id=salary.id,
+            status=WalletTxStatus.APPROVED,
+            created_by=admin_id,
+            note=f"Thanh toán lương kỳ {salary.period}",
+        )
+        db.add(tx)
+
+        salary.status = SalaryStatus.PAID
+
+        db.commit()
+        db.refresh(salary)
+        return salary
+
 
     def add_adjustment(self, db: Session, salary_id: UUID, payload: SalaryAdjustmentCreate, admin_id: UUID) -> SalaryAdjustment:
         salary = db.query(Salary).filter(Salary.id == salary_id).first()
@@ -231,7 +271,22 @@ class PayrollRunService:
                         Salary.period == period
                     ).first()
 
-                    base_calc = config.base_salary if config.contract_type == ContractType.FULL_TIME else 0
+                    from app.services.system_setting_service import system_setting_service
+                    native_mult = Decimal(str(system_setting_service.get_setting_float(db, "salary.native_multiplier", 1.0)))
+                    
+                    hours_or_lessons = Decimal(str(kpi.teaching_hours or 0))
+                    
+                    if config.contract_type == ContractType.FULL_TIME:
+                        base_calc = config.base_salary
+                    elif config.contract_type == ContractType.NATIVE:
+                        if config.base_salary > 0:
+                            base_calc = config.base_salary * native_mult
+                        else:
+                            base_calc = hours_or_lessons * config.lesson_rate * native_mult
+                    elif config.contract_type == ContractType.PART_TIME:
+                        base_calc = hours_or_lessons * config.lesson_rate
+                    else:
+                        base_calc = Decimal("0")
 
                     # Guard: check if bonus from this KPI period was already paid
                     # in a different month's salary
@@ -244,6 +299,19 @@ class PayrollRunService:
 
                     kpi_bonus = Decimal("0") if already_paid else (kpi.bonus_amount or Decimal("0"))
                     
+                    # Calculate sub-pay
+                    sub_sessions_count = (
+                        db.query(ClassSession)
+                        .filter(
+                            ClassSession.status == SessionStatus.COMPLETED,
+                            ClassSession.substitute_teacher_id == kpi.staff_id,
+                            extract("year", ClassSession.session_date) == year,
+                            extract("month", ClassSession.session_date) == month,
+                        )
+                        .count()
+                    )
+                    sub_pay = Decimal(sub_sessions_count) * config.lesson_rate
+
                     if not salary:
                         salary = Salary(
                             teacher_id=kpi.staff_id,
@@ -253,21 +321,56 @@ class PayrollRunService:
                             base_salary_calc=base_calc,
                             kpi_bonus_calc=kpi_bonus,
                             fixed_allowance=config.fixed_allowance,
-                            net_salary=base_calc + kpi_bonus + config.fixed_allowance,
+                            total_adjustments=sub_pay,
+                            net_salary=base_calc + kpi_bonus + config.fixed_allowance + sub_pay,
                             status=SalaryStatus.DRAFT,
                             bonus_from_kpi_period_id=kpi_period.id if kpi_bonus > 0 else None,
                         )
                         db.add(salary)
+                        db.flush()
                     elif salary.status == SalaryStatus.DRAFT:
+                        # Clear old automatic sub-pay adjustments
+                        db.query(SalaryAdjustment).filter(
+                            SalaryAdjustment.salary_id == salary.id,
+                            SalaryAdjustment.reason.like("Dạy thế:%")
+                        ).delete(synchronize_session=False)
+                        db.flush()
+
+                        # Re-calculate total_adjustments from non-sub-pay adjustments
+                        other_adjustments_sum = db.query(func.coalesce(func.sum(
+                            db.case(
+                                (SalaryAdjustment.adjustment_type == AdjustmentType.ALLOWANCE, SalaryAdjustment.amount),
+                                else_=-SalaryAdjustment.amount
+                            )
+                        ), 0)).filter(
+                            SalaryAdjustment.salary_id == salary.id,
+                            ~SalaryAdjustment.reason.like("Dạy thế:%")
+                        ).scalar()
+
                         salary.contract_type = config.contract_type
                         salary.lesson_count = int(kpi.teaching_hours or 0)
                         salary.base_salary_calc = base_calc
                         salary.kpi_bonus_calc = kpi_bonus
                         salary.fixed_allowance = config.fixed_allowance
                         salary.bonus_from_kpi_period_id = kpi_period.id if kpi_bonus > 0 else salary.bonus_from_kpi_period_id
-                        
+                        salary.total_adjustments = Decimal(other_adjustments_sum) + sub_pay
                         salary.net_salary = base_calc + kpi_bonus + config.fixed_allowance + salary.total_adjustments
-                    
+                        db.flush()
+
+                    # Add new sub-pay adjustment record if sub_pay > 0
+                    if sub_pay > 0:
+                        admin_user = db.query(User).filter(User.role == UserRole.CENTER_ADMIN).first()
+                        created_by_id = admin_user.id if admin_user else kpi.staff_id
+                        adj = SalaryAdjustment(
+                            salary_id=salary.id,
+                            adjustment_type=AdjustmentType.ALLOWANCE,
+                            amount=sub_pay,
+                            reason=f"Dạy thế: {sub_sessions_count} buổi",
+                            created_by=created_by_id,
+                        )
+                        db.add(adj)
+                        db.flush()
+
                     processed += 1
                 except Exception as e:
                     errors.append(f"Lỗi tính lương GV {kpi.staff_id}: {str(e)}")

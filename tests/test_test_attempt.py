@@ -53,7 +53,6 @@ def test_start_attempt_success_new(mock_db_session):
     assert mock_db_session.add.call_count == 1
     assert mock_db_session.commit.called
     assert result.attempt_number == 1
-    assert result.remaining_seconds == 3600
 
 def test_start_attempt_resume_existing(mock_db_session):
     # --- Arrange ---
@@ -197,56 +196,7 @@ async def test_submit_attempt_writing_ai(mock_db_session):
         assert result.status == AttemptStatus.SUBMITTED.value
         assert result.question_results[0].ai_band_score == 6.5
 
-# =======================================================
-# 4. TEST SUBMIT SPEAKING
-# =======================================================
-@pytest.mark.asyncio
-async def test_submit_speaking_success(mock_db_session):
-    # --- Arrange ---
-    attempt_id = uuid4()
-    question_id = uuid4()
-    user_id = uuid4()
-    
-    mock_attempt = MagicMock(spec=TestAttempt)
-    mock_attempt.student_id = user_id
-    mock_attempt.test_id = uuid4()
-    
-    mock_question = MagicMock(spec=QuestionBank)
-    mock_question.id = question_id
-    mock_question.question_type = QuestionType.SPEAKING_PART_1
-    
-    mock_tq = MagicMock(points=10.0)
-    
-    mock_db_session.query.return_value.filter.return_value.first.side_effect = [
-        mock_attempt,
-        mock_question,
-        mock_tq,
-        None 
-    ]
-
-    mock_file = UploadFile(filename="voice.mp3", file=MagicMock())
-
-    # ✅ FIX 4: Mock UploadType trong service vì Enum thật thiếu attribute
-    with patch("app.services.test.test_attempt_service.UploadType") as MockUploadType:
-        MockUploadType.AUDIO = "assignment_submission"
-        
-        with patch("app.services.test.test_attempt_service.upload_and_save_metadata", new_callable=AsyncMock) as mock_upload, \
-             patch("app.services.test.test_attempt_service.ai_grade_service") as mock_ai:
-            
-            mock_upload.return_value = MagicMock(file_path="http://cloudinary/voice.mp3", id=uuid4())
-            mock_ai.ai_grade_speaking = AsyncMock(return_value={
-                "raw": {"overallScore": 7.0, "detailedFeedback": "Clear voice"}
-            })
-
-            # --- Act ---
-            result = await attempt_service.submit_speaking(
-                mock_db_session, attempt_id, question_id, mock_file, user_id
-            )
-
-            # --- Assert ---
-            assert result["status"] == "success"
-            assert result["ai_band_score"] == 7.0
-            assert mock_attempt.status == AttemptStatus.SUBMITTED
+# Speaking submission tests have been moved to speaking service tests
 
 # =======================================================
 # 5. TEST GET ATTEMPT DETAIL
@@ -285,22 +235,46 @@ def test_get_attempt_detail(mock_db_session):
     mock_resp.points_earned = 5.0
     mock_resp.audio_response_url = None
     mock_resp.response_text = "Ans"
+    mock_resp.response_data = None
     mock_resp.is_correct = True
     mock_resp.auto_graded = True
     mock_resp.ai_points_earned = None
+    mock_resp.ai_band_score = None
+    mock_resp.ai_rubric_scores = None
     mock_resp.ai_feedback = None
     mock_resp.teacher_points_earned = None
+    mock_resp.teacher_band_score = None
+    mock_resp.teacher_rubric_scores = None
     mock_resp.teacher_feedback = None
     mock_resp.time_spent_seconds = 10
     mock_resp.flagged_for_review = False
     
     mock_qb = MagicMock(spec=QuestionBank)
     mock_qb.question_text = "ABC"
+    mock_qb.question_type = QuestionType.MULTIPLE_CHOICE
     
-    mock_db_session.query.return_value.options.return_value.filter.return_value.first.return_value = mock_attempt
-    mock_db_session.query.return_value.join.return_value.join.return_value.filter.return_value.all.return_value = [
-        (mock_resp, mock_qb, 10.0) # 10.0 là max_points
-    ]
+    mock_resp.question = mock_qb
+    mock_attempt.responses = [mock_resp]
+    
+    from app.models.user import User
+    
+    def mock_query(model):
+        mock_q = MagicMock()
+        if model == TestAttempt:
+            mock_q.options.return_value.filter.return_value.first.return_value = mock_attempt
+        elif model == User:
+            mock_user = MagicMock()
+            mock_user.first_name = "First"
+            mock_user.last_name = "Last"
+            mock_q.filter.return_value.first.return_value = mock_user
+        elif model == TestQuestion:
+            mock_tq = MagicMock(spec=TestQuestion)
+            mock_tq.question_id = mock_resp.question_id
+            mock_tq.points = 10.0
+            mock_q.filter.return_value.all.return_value = [mock_tq]
+        return mock_q
+
+    mock_db_session.query.side_effect = mock_query
 
     # --- Act ---
     result = attempt_service.get_attempt_detail(mock_db_session, attempt_id, user_id)

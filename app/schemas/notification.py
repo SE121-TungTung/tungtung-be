@@ -36,3 +36,13 @@ class NotificationResponse(NotificationBase):
 class NotificationListResponse(BaseModel):
     notifications: List[NotificationResponse]
     total: int
+
+class BroadcastNotificationCreate(BaseModel):
+    target_type: str  # "all", "role", "specific_users"
+    target_role: Optional[str] = None  # "student", "teacher", "admin", "center_admin"
+    target_user_ids: Optional[List[UUID]] = None
+    title: str
+    content: str
+    priority: NotificationPriority = NotificationPriority.NORMAL
+    action_url: Optional[str] = None
+    channels: List[str] = ["in_app"]

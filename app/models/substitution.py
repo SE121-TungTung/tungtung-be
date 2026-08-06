@@ -6,12 +6,12 @@ from app.models.base import BaseModel
 import enum
 
 class SubstitutionStatus(enum.Enum):
-    PENDING = "pending" # Đang chờ substitute teacher confirm
-    ACCEPTED = "accepted" # Substitute teacher đồng ý, chuyển sang chờ admin duyệt
-    DECLINED = "declined" # Substitute teacher từ chối
-    APPROVED = "approved" # Admin đã duyệt (hoàn tất)
-    REJECTED = "rejected" # Admin từ chối
-    CANCELLED = "cancelled" # GV xin nghỉ hủy yêu cầu
+    PENDING = "PENDING" # Đang chờ substitute teacher confirm
+    ACCEPTED = "ACCEPTED" # Substitute teacher đồng ý, chuyển sang chờ admin duyệt
+    DECLINED = "DECLINED" # Substitute teacher từ chối
+    APPROVED = "APPROVED" # Admin đã duyệt (hoàn tất)
+    REJECTED = "REJECTED" # Admin từ chối
+    CANCELLED = "CANCELLED" # GV xin nghỉ hủy yêu cầu
 
 class SubstitutionRequest(BaseModel):
     __tablename__ = "substitution_requests"
@@ -35,3 +35,16 @@ class SubstitutionRequest(BaseModel):
     requesting_teacher = relationship("User", foreign_keys=[requesting_teacher_id])
     target_substitute = relationship("User", foreign_keys=[target_substitute_id])
     resolver = relationship("User", foreign_keys=[resolved_by])
+
+    @property
+    def requesting_teacher_name(self) -> str:
+        return self.requesting_teacher.full_name if self.requesting_teacher else ""
+
+    @property
+    def target_substitute_name(self) -> str:
+        return self.target_substitute.full_name if self.target_substitute else ""
+
+    @property
+    def class_session(self):
+        return self.session
+

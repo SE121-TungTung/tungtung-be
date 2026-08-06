@@ -2,7 +2,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Any, Dict
 from uuid import UUID
 
-from app.schemas.ga_schedule import GAClassPreference
+from app.schemas.ga_schedule import GAClassPreference, GAClassUnavailability
 
 class AIAnalyzeRequest(BaseModel):
     """Request gửi lên từ client để AI phân tích ràng buộc tự nhiên."""
@@ -18,6 +18,10 @@ class AIAnalyzeResponse(BaseModel):
     class_preferences: Optional[List[GAClassPreference]] = Field(
         default=[],
         description="Ca học ưu tiên của lớp (sáng/chiều/tối)"
+    )
+    class_unavailabilities: Optional[List[GAClassUnavailability]] = Field(
+        default=[],
+        description="Các ràng buộc không học được của lớp học (ngày bận do học viên hoặc giáo viên)"
     )
     penalties_override: Optional[Dict[str, float]] = Field(
         default=None,

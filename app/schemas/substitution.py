@@ -1,7 +1,20 @@
 from pydantic import BaseModel, UUID4
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, date, time
 from app.models.substitution import SubstitutionStatus
+
+class SubstitutionClassSessionResponse(BaseModel):
+    id: UUID4
+    session_date: date
+    start_time: time
+    end_time: time
+    topic: Optional[str] = None
+    class_id: UUID4
+    class_name: Optional[str] = None
+
+    model_config = {
+        "from_attributes": True
+    }
 
 class SubstitutionRequestCreate(BaseModel):
     class_session_id: UUID4
@@ -21,6 +34,11 @@ class SubstitutionRequestResponse(BaseModel):
     admin_note: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
+    
+    # Extra fields for frontend
+    class_session: Optional[SubstitutionClassSessionResponse] = None
+    requesting_teacher_name: Optional[str] = None
+    target_substitute_name: Optional[str] = None
 
     model_config = {
         "from_attributes": True

@@ -24,7 +24,7 @@ from app.dependencies import (
 )
 from app.schemas.base_schema import ApiResponse, PaginationResponse, PaginationMetadata
 from app.models.user import User, UserRole
-from app.models.kpi import ApprovalStatus
+from app.models.kpi import ApprovalStatus, DisputeStatus
 
 from app.schemas.kpi import (
     # Template
@@ -58,8 +58,12 @@ from app.services.kpi.record_service import kpi_record_service
 from app.services.kpi.calculation_service import kpi_calculation_service
 from app.services.kpi.support_calc_service import support_calc_service
 from app.services.kpi.dashboard_service import kpi_dashboard_service
-from app.services.kpi.dispute_service import kpi_dispute_service
-from app.services.kpi.payroll_service import salary_service, teacher_payroll_config_service, payroll_run_service
+from app.services.kpi.dispute_service import kpi_dispute_service, KpiDisputeService
+from app.services.kpi.payroll_service import (
+    salary_service, SalaryService,
+    teacher_payroll_config_service, TeacherPayrollConfigService,
+    payroll_run_service
+)
 
 router = APIRouter(prefix="", tags=["KPI & Payroll"])
 
@@ -138,7 +142,7 @@ async def get_template_metrics(
 @router.get("/kpi/periods", response_model=ApiResponse[List[KPIPeriodResponse]])
 async def list_periods(
     db: Session = Depends(get_db),
-    current_user: User = CenterAdminUp,
+    current_user: User = TeacherOrAdmin,
 ):
     periods = kpi_period_service.list_periods(db)
     return ApiResponse(success=True, data=periods, message="Thành công")
@@ -428,6 +432,24 @@ async def resolve_kpi_dispute(
     return ApiResponse(success=True, data=dispute, message="Thành công")
 
 
+@router.get("/kpi/disputes", response_model=PaginationResponse[KpiDisputeResponse])
+async def list_kpi_disputes(
+    status: Optional[DisputeStatus] = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = OfficeAdminUp,
+):
+    disputes, total = kpi_dispute_service.list_disputes(
+        db, status=status, page=page, limit=limit
+    )
+    meta = PaginationMetadata(
+        page=page, limit=limit, total=total,
+        total_pages=math.ceil(total / limit) if limit else 0,
+    )
+    return PaginationResponse(success=True, data=disputes, meta=meta, message="Thành công")
+
+
 # ===========================================================================
 # 7. Teacher KPI Views (self / admin) — Uses new system
 # ===========================================================================
@@ -440,6 +462,24 @@ async def get_my_kpi(
 ):
     detail = kpi_record_service.get_my_record(db, current_user.id, period_id)
     return ApiResponse(success=True, data=detail, message="Thành công")
+
+
+@router.get("/teachers/me/kpi-disputes", response_model=PaginationResponse[KpiDisputeResponse])
+async def list_my_kpi_disputes(
+    status: Optional[DisputeStatus] = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    disputes, total = kpi_dispute_service.list_disputes(
+        db, status=status, teacher_id=current_user.id, page=page, limit=limit
+    )
+    meta = PaginationMetadata(
+        page=page, limit=limit, total=total,
+        total_pages=math.ceil(total / limit) if limit else 0,
+    )
+    return PaginationResponse(success=True, data=disputes, meta=meta, message="Thành công")
 
 
 def _assert_admin_or_self(current_user: User, teacher_id: UUID):
@@ -595,6 +635,17 @@ async def approve_salary(
 ):
     salary = salary_service.approve(db, salary_id, current_user.id)
     return ApiResponse(success=True, data=salary, message="Thành công")
+
+
+@router.post("/salaries/{salary_id}/pay", response_model=ApiResponse[SalaryResponse])
+async def pay_salary(
+    salary_id: UUID = Path(...),
+    db: Session = Depends(get_db),
+    current_user: User = CenterAdminUp,
+):
+    salary = salary_service.pay(db, salary_id, current_user.id)
+    return ApiResponse(success=True, data=salary, message="Thành công")
+
 
 
 @router.patch(

@@ -120,3 +120,13 @@ class GradeQuestionRequest(BaseModel):
 class GradeAttemptRequest(BaseModel):
     questions: list[GradeQuestionRequest]
     overall_feedback: Optional[str] = None
+
+class TestAttemptHistoryResponse(BaseModel):
+    id: UUID
+    test_id: UUID
+    test_title: str
+    status: str
+    score: Optional[float] = None
+    started_at: datetime
+    submitted_at: Optional[datetime] = None
+

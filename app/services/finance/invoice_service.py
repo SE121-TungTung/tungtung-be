@@ -131,7 +131,7 @@ class InvoiceService:
         query = db.query(Invoice).filter(Invoice.deleted_at.is_(None))
 
         if status:
-            query = query.filter(Invoice.status == status)
+            query = query.filter(Invoice.status == status.lower())
         if student_id:
             query = query.filter(Invoice.student_id == student_id)
 

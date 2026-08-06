@@ -21,6 +21,12 @@ class GAClassPreference(BaseModel):
         description="Buổi ưu thích: morning / afternoon / evening"
     )
 
+class GAClassUnavailability(BaseModel):
+    """Ràng buộc không học được của lớp học (ngày bận)."""
+    class_id: UUID
+    day: str = Field(..., description="Thứ trong tuần (tiếng Anh viết thường: monday, tuesday...)")
+    slots: List[int] = Field(..., description="Các tiết bận, ví dụ: [1, 2, 3, 4, 5]")
+
 class GAScheduleRequest(BaseModel):
     """Request body for running the GA schedule optimizer."""
     start_date: date = Field(..., description="Ngày bắt đầu khoảng TKB cần xếp")
@@ -50,6 +56,12 @@ class GAScheduleRequest(BaseModel):
     class_preferences: Optional[List[GAClassPreference]] = Field(
         None,
         description="Buổi ưa thích cho từng lớp. Nếu không nhập, tự suy từ preferred_slots."
+    )
+
+    # Class-level day unavailabilities (e.g. from student unavailabilities extracted by AI)
+    class_unavailabilities: Optional[List[GAClassUnavailability]] = Field(
+        None,
+        description="Ràng buộc không học được bổ sung cho từng lớp học."
     )
 
     @field_validator('end_date')

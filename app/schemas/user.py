@@ -71,6 +71,8 @@ class UserResponse(UserBase):
     status: UserStatus
     avatar_url: Optional[str] = None
     last_login: Optional[datetime] = None
+    emergency_contact: Optional[Dict[str, Any]] = None
+    preferences: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
     
@@ -122,11 +124,16 @@ class ClassSessionResponse(BaseModel):
     # Đảm bảo bạn đã import SessionStatus, nếu chưa thì thay bằng str tạm thời
     status: Any # Thay Any bằng SessionStatus nếu đã import
     attendance_taken: bool
+    student_checked_in: Optional[bool] = None
     notes: Optional[str] = None
 
     # Actual times
     actual_start_time: Optional[datetime] = None
     actual_end_time: Optional[datetime] = None
+
+    # QR Code fields
+    qr_token: Optional[str] = None
+    qr_expires_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -134,9 +141,11 @@ class ClassSessionResponse(BaseModel):
 class ClassWithMembersResponse(BaseModel):
     id: UUID
     name: str
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
     status: Optional[str] = None
+    course_name: Optional[str] = None
+    room_name: Optional[str] = None
     teacher: Optional[UserMiniResponse] = None
     students: List[UserMiniResponse] = []
     sessions: List[ClassSessionResponse] = []

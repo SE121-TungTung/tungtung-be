@@ -102,6 +102,9 @@ class DebtListResponse(BaseModel):
     student_id: UUID
     student_name: str
     student_email: Optional[str] = None
+    phone: Optional[str] = None
+    course_name: Optional[str] = None
+    debt_amount: Decimal = Field(..., description="Số tiền nợ")
 
     final_amount: Decimal = Field(..., description="Số tiền cần thanh toán")
     due_date: Optional[datetime] = None

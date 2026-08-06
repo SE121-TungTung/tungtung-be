@@ -1,5 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
+import os
 import app.core.database as database
 from app.core.config import settings
 from app.core.exceptions import APIException, api_exception_handler, http_exception_handler, global_exception_handler, validation_exception_handler
@@ -11,7 +13,7 @@ from app.routers import (
     kpi,
     invoice, payment, report, refund,
     chatbot, audit_log, recommendation,
-    substitution, certificate)
+    substitution, certificate, class_posts, wallet)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 from contextlib import asynccontextmanager
@@ -90,5 +92,12 @@ api_router.include_router(audit_log.router)
 api_router.include_router(recommendation.router)
 api_router.include_router(substitution.router)
 api_router.include_router(certificate.router)
+api_router.include_router(class_posts.router)
+api_router.include_router(wallet.router)
 
 app.include_router(api_router, prefix="/api/v1")
+
+os.makedirs("media/receipts", exist_ok=True)
+os.makedirs("media/certificates", exist_ok=True)
+app.mount("/receipts", StaticFiles(directory="media/receipts"), name="receipts")
+app.mount("/media", StaticFiles(directory="media"), name="media")

@@ -225,8 +225,11 @@ class ReportService:
         now = datetime.now(timezone.utc)
 
         query = (
-            db.query(Invoice, User)
+            db.query(Invoice, User, Course)
             .join(User, User.id == Invoice.student_id)
+            .outerjoin(ClassEnrollment, ClassEnrollment.id == Invoice.enrollment_id)
+            .outerjoin(Class, Class.id == ClassEnrollment.class_id)
+            .outerjoin(Course, Course.id == Class.course_id)
             .filter(
                 Invoice.status == InvoiceStatus.PENDING,
                 Invoice.due_date.isnot(None),
@@ -240,13 +243,16 @@ class ReportService:
         rows = query.offset((page - 1) * limit).limit(limit).all()
 
         items = []
-        for invoice, user in rows:
+        for invoice, user, course in rows:
             days_overdue = (now - invoice.due_date).days if invoice.due_date else 0
             items.append(DebtListResponse(
                 invoice_id=invoice.id,
                 student_id=user.id,
                 student_name=f"{user.first_name} {user.last_name}",
                 student_email=user.email,
+                phone=user.phone,
+                course_name=course.name if course else "—",
+                debt_amount=invoice.final_amount,
                 final_amount=invoice.final_amount,
                 due_date=invoice.due_date,
                 days_overdue=max(days_overdue, 0),
@@ -386,14 +392,416 @@ class ReportService:
             job.status = ExportJobStatus.PROCESSING
             db.commit()
 
-            # Stub: giả lập tạo file
-            # Thực tế sẽ query data theo job.report_type + job.filters,
-            # generate file (Excel/CSV/PDF), upload S3, lấy presigned URL
-            import time
-            time.sleep(1)  # Simulate processing
+            import openpyxl
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from openpyxl.utils import get_column_letter
+            import os
+
+            filters = job.filters or {}
+            date_from_str = filters.get("date_from")
+            date_to_str = filters.get("date_to")
+
+            date_from = None
+            if date_from_str:
+                try:
+                    date_from = date.fromisoformat(date_from_str[:10])
+                except Exception:
+                    pass
+            date_to = None
+            if date_to_str:
+                try:
+                    date_to = date.fromisoformat(date_to_str[:10])
+                except Exception:
+                    pass
+
+            os.makedirs("media/exports", exist_ok=True)
+            file_path = f"media/exports/{job.id}.xlsx"
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Báo cáo"
+
+            # Show grid lines
+            ws.views.sheetView[0].showGridLines = True
+
+            # Styling helpers
+            font_title = Font(name="Segoe UI", size=16, bold=True, color="1F497D")
+            font_section = Font(name="Segoe UI", size=13, bold=True, color="1F497D")
+            font_header = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
+            font_bold = Font(name="Segoe UI", size=11, bold=True)
+            font_normal = Font(name="Segoe UI", size=11)
+            font_meta = Font(name="Segoe UI", size=10, italic=True, color="595959")
+
+            fill_header = PatternFill(start_color="1F497D", end_color="1F497D", fill_type="solid")
+            fill_zebra = PatternFill(start_color="F9FAFB", end_color="F9FAFB", fill_type="solid")
+            fill_summary_label = PatternFill(start_color="F2F5F8", end_color="F2F5F8", fill_type="solid")
+
+            thin_border = Border(
+                left=Side(style='thin', color='D9D9D9'),
+                right=Side(style='thin', color='D9D9D9'),
+                top=Side(style='thin', color='D9D9D9'),
+                bottom=Side(style='thin', color='D9D9D9')
+            )
+
+            align_center = Alignment(horizontal="center", vertical="center")
+            align_left = Alignment(horizontal="left", vertical="center")
+            align_right = Alignment(horizontal="right", vertical="center")
+
+            if job.report_type == ReportType.REVENUE:
+                rep = self.get_revenue_report(db, date_from, date_to, group_by_course=True)
+                
+                # Title
+                ws.append(["BÁO CÁO DOANH THU"])
+                ws.cell(1, 1).font = font_title
+                ws.row_dimensions[1].height = 30
+                
+                # Metadata
+                ws.append([f"Từ ngày: {date_from_str or 'Tất cả'}"])
+                ws.cell(2, 1).font = font_meta
+                ws.append([f"Đến ngày: {date_to_str or 'Tất cả'}"])
+                ws.cell(3, 1).font = font_meta
+                ws.append([]) # Row 4 empty
+                
+                # Key Summary Card
+                ws.append(["Tổng doanh thu", rep.total_revenue])
+                ws.append(["Số lượng hóa đơn", rep.total_invoices])
+                ws.append(["Trung bình mỗi hóa đơn", rep.avg_payment_value])
+                
+                # Style key summary card
+                for r in range(5, 8):
+                    ws.cell(r, 1).font = font_bold
+                    ws.cell(r, 1).fill = fill_summary_label
+                    ws.cell(r, 1).border = thin_border
+                    ws.cell(r, 2).font = font_bold
+                    ws.cell(r, 2).border = thin_border
+                    if r in (5, 7):
+                        ws.cell(r, 2).number_format = '#,##0" đ"'
+                        ws.cell(r, 2).alignment = align_right
+                    else:
+                        ws.cell(r, 2).number_format = '#,##0'
+                        ws.cell(r, 2).alignment = align_right
+                        
+                ws.append([]) # Row 8 empty
+                ws.append([]) # Row 9 empty
+                
+                # Course details header
+                ws.append(["CHI TIẾT DOANH THU THEO KHÓA HỌC"])
+                ws.cell(10, 1).font = font_section
+                
+                # Table headers
+                headers = ["Khóa học", "Doanh thu", "Số hóa đơn"]
+                ws.append(headers)
+                ws.row_dimensions[11].height = 25
+                for col_idx in range(1, 4):
+                    cell = ws.cell(11, col_idx)
+                    cell.font = font_header
+                    cell.fill = fill_header
+                    cell.alignment = align_center
+                    cell.border = thin_border
+                    
+                # Table rows
+                start_row = 12
+                for idx, b in enumerate(rep.breakdown_by_course or []):
+                    row_data = [b.course_name, b.total_revenue, b.total_invoices]
+                    ws.append(row_data)
+                    curr_row = start_row + idx
+                    ws.row_dimensions[curr_row].height = 20
+                    
+                    # Col 1: Course Name
+                    c1 = ws.cell(curr_row, 1)
+                    c1.font = font_normal
+                    c1.border = thin_border
+                    c1.alignment = align_left
+                    if idx % 2 == 1:
+                        c1.fill = fill_zebra
+                        
+                    # Col 2: Revenue
+                    c2 = ws.cell(curr_row, 2)
+                    c2.font = font_normal
+                    c2.border = thin_border
+                    c2.number_format = '#,##0" đ"'
+                    c2.alignment = align_right
+                    if idx % 2 == 1:
+                        c2.fill = fill_zebra
+                        
+                    # Col 3: Invoice count
+                    c3 = ws.cell(curr_row, 3)
+                    c3.font = font_normal
+                    c3.border = thin_border
+                    c3.number_format = '#,##0'
+                    c3.alignment = align_center
+                    if idx % 2 == 1:
+                        c3.fill = fill_zebra
+
+            elif job.report_type == ReportType.EXPENSES:
+                rep = self.get_expenses_report(db, date_from, date_to, cost_type="ALL")
+                
+                # Title
+                ws.append(["BÁO CÁO CHI PHÍ"])
+                ws.cell(1, 1).font = font_title
+                ws.row_dimensions[1].height = 30
+                
+                # Metadata
+                ws.append([f"Từ ngày: {date_from_str or 'Tất cả'}"])
+                ws.cell(2, 1).font = font_meta
+                ws.append([f"Đến ngày: {date_to_str or 'Tất cả'}"])
+                ws.cell(3, 1).font = font_meta
+                ws.append([]) # Row 4 empty
+                
+                # Key Summary Card
+                ws.append(["Tổng chi phí", rep.total_expenses])
+                ws.cell(5, 1).font = font_bold
+                ws.cell(5, 1).fill = fill_summary_label
+                ws.cell(5, 1).border = thin_border
+                ws.cell(5, 2).font = font_bold
+                ws.cell(5, 2).border = thin_border
+                ws.cell(5, 2).number_format = '#,##0" đ"'
+                ws.cell(5, 2).alignment = align_right
+                
+                ws.append([]) # Row 6 empty
+                ws.append([]) # Row 7 empty
+                
+                # Section header
+                ws.append(["CHI TIẾT CHI PHÍ THEO DANH MỤC"])
+                ws.cell(8, 1).font = font_section
+                
+                # Table headers
+                headers = ["Danh mục", "Số tiền"]
+                ws.append(headers)
+                ws.row_dimensions[9].height = 25
+                for col_idx in range(1, 3):
+                    cell = ws.cell(9, col_idx)
+                    cell.font = font_header
+                    cell.fill = fill_header
+                    cell.alignment = align_center
+                    cell.border = thin_border
+                    
+                # Table rows
+                start_row = 10
+                category_labels = {
+                    "FULL_TIME": "Lương cố định (Full-time)",
+                    "PART_TIME": "Lương theo giờ (Part-time)",
+                    "NATIVE": "Lương GV bản xứ",
+                    "KPI_BONUS": "Thưởng KPI giáo viên",
+                    "FACILITY": "Cơ sở vật chất",
+                    "MARKETING": "Marketing",
+                    "UTILITY": "Điện nước",
+                    "OTHER": "Khác",
+                }
+                
+                for idx, b in enumerate(rep.breakdown_by_category or []):
+                    lbl = category_labels.get(b.category, b.category)
+                    row_data = [lbl, b.total]
+                    ws.append(row_data)
+                    curr_row = start_row + idx
+                    ws.row_dimensions[curr_row].height = 20
+                    
+                    # Col 1: Category
+                    c1 = ws.cell(curr_row, 1)
+                    c1.font = font_normal
+                    c1.border = thin_border
+                    c1.alignment = align_left
+                    if idx % 2 == 1:
+                        c1.fill = fill_zebra
+                        
+                    # Col 2: Amount
+                    c2 = ws.cell(curr_row, 2)
+                    c2.font = font_normal
+                    c2.border = thin_border
+                    c2.number_format = '#,##0" đ"'
+                    c2.alignment = align_right
+                    if idx % 2 == 1:
+                        c2.fill = fill_zebra
+
+            elif job.report_type == ReportType.PROFIT:
+                rep = self.get_profit_report(db, date_from, date_to)
+                
+                # Title
+                ws.append(["BÁO CÁO LỢI NHUẬN TỔNG HỢP"])
+                ws.cell(1, 1).font = font_title
+                ws.row_dimensions[1].height = 30
+                
+                # Metadata
+                ws.append([f"Từ ngày: {date_from_str or 'Tất cả'}"])
+                ws.cell(2, 1).font = font_meta
+                ws.append([f"Đến ngày: {date_to_str or 'Tất cả'}"])
+                ws.cell(3, 1).font = font_meta
+                ws.append([]) # Row 4 empty
+                
+                # Summary card
+                ws.append(["Doanh thu", rep.total_revenue])
+                ws.append(["Chi phí", rep.total_expenses])
+                ws.append(["Lợi nhuận ròng", rep.profit])
+                ws.append(["Biên lợi nhuận", rep.profit_margin / 100])
+                
+                # Style summary card
+                for r in range(5, 9):
+                    ws.cell(r, 1).font = font_bold
+                    ws.cell(r, 1).fill = fill_summary_label
+                    ws.cell(r, 1).border = thin_border
+                    ws.cell(r, 2).font = font_bold
+                    ws.cell(r, 2).border = thin_border
+                    if r in (5, 6, 7):
+                        ws.cell(r, 2).number_format = '#,##0" đ"'
+                        ws.cell(r, 2).alignment = align_right
+                    else:
+                        ws.cell(r, 2).number_format = '0.00%'
+                        ws.cell(r, 2).alignment = align_right
+                        
+                ws.append([]) # Row 9 empty
+                ws.append([]) # Row 10 empty
+                
+                # Section Header
+                ws.append(["XU HƯỚNG THEO THÁNG"])
+                ws.cell(11, 1).font = font_section
+                
+                # Table headers
+                headers = ["Tháng", "Doanh thu", "Chi phí", "Lợi nhuận"]
+                ws.append(headers)
+                ws.row_dimensions[12].height = 25
+                for col_idx in range(1, 5):
+                    cell = ws.cell(12, col_idx)
+                    cell.font = font_header
+                    cell.fill = fill_header
+                    cell.alignment = align_center
+                    cell.border = thin_border
+                    
+                # Table rows
+                start_row = 13
+                for idx, t in enumerate(rep.monthly_trends or []):
+                    row_data = [t.month, t.revenue, t.expenses, t.profit]
+                    ws.append(row_data)
+                    curr_row = start_row + idx
+                    ws.row_dimensions[curr_row].height = 20
+                    
+                    # Col 1: Month
+                    c1 = ws.cell(curr_row, 1)
+                    c1.font = font_normal
+                    c1.border = thin_border
+                    c1.alignment = align_center
+                    if idx % 2 == 1:
+                        c1.fill = fill_zebra
+                        
+                    # Col 2-4: Revenue, Expenses, Profit
+                    for col_idx in range(2, 5):
+                        c = ws.cell(curr_row, col_idx)
+                        c.font = font_normal
+                        c.border = thin_border
+                        c.number_format = '#,##0" đ"'
+                        c.alignment = align_right
+                        if idx % 2 == 1:
+                            c.fill = fill_zebra
+
+            elif job.report_type == ReportType.DEBTS:
+                items, total = self.get_debt_report(db, page=1, limit=1000)
+                
+                # Title
+                ws.append(["BÁO CÁO CÔNG NỢ HỌC VIÊN"])
+                ws.cell(1, 1).font = font_title
+                ws.row_dimensions[1].height = 30
+                
+                # Summary
+                ws.append(["Tổng số học viên nợ phí", total])
+                ws.cell(2, 1).font = font_bold
+                ws.cell(2, 1).fill = fill_summary_label
+                ws.cell(2, 1).border = thin_border
+                ws.cell(2, 2).font = font_bold
+                ws.cell(2, 2).border = thin_border
+                ws.cell(2, 2).number_format = '#,##0'
+                ws.cell(2, 2).alignment = align_right
+                
+                ws.append([]) # Row 3 empty
+                
+                # Table headers
+                headers = ["Học viên", "SĐT", "Khóa học", "Số tiền nợ", "Hạn thanh toán", "Quá hạn"]
+                ws.append(headers)
+                ws.row_dimensions[4].height = 25
+                for col_idx in range(1, 7):
+                    cell = ws.cell(4, col_idx)
+                    cell.font = font_header
+                    cell.fill = fill_header
+                    cell.alignment = align_center
+                    cell.border = thin_border
+                    
+                # Table rows
+                start_row = 5
+                for idx, d in enumerate(items):
+                    due_str = d.due_date.strftime("%Y-%m-%d") if d.due_date else "—"
+                    row_data = [d.student_name, str(d.phone) if d.phone else "—", d.course_name or "—", d.debt_amount, due_str, f"{d.days_overdue} ngày"]
+                    ws.append(row_data)
+                    curr_row = start_row + idx
+                    ws.row_dimensions[curr_row].height = 20
+                    
+                    # Col 1: Student Name
+                    c1 = ws.cell(curr_row, 1)
+                    c1.font = font_normal
+                    c1.border = thin_border
+                    c1.alignment = align_left
+                    if idx % 2 == 1:
+                        c1.fill = fill_zebra
+                        
+                    # Col 2: Phone (Save as string to prevent scientific notation)
+                    c2 = ws.cell(curr_row, 2)
+                    c2.font = font_normal
+                    c2.border = thin_border
+                    c2.number_format = '@' # Text format
+                    c2.alignment = align_center
+                    if idx % 2 == 1:
+                        c2.fill = fill_zebra
+                        
+                    # Col 3: Course Name
+                    c3 = ws.cell(curr_row, 3)
+                    c3.font = font_normal
+                    c3.border = thin_border
+                    c3.alignment = align_left
+                    if idx % 2 == 1:
+                        c3.fill = fill_zebra
+                        
+                    # Col 4: Debt Amount
+                    c4 = ws.cell(curr_row, 4)
+                    c4.font = font_normal
+                    c4.border = thin_border
+                    c4.number_format = '#,##0" đ"'
+                    c4.alignment = align_right
+                    if idx % 2 == 1:
+                        c4.fill = fill_zebra
+                        
+                    # Col 5: Due Date
+                    c5 = ws.cell(curr_row, 5)
+                    c5.font = font_normal
+                    c5.border = thin_border
+                    c5.alignment = align_center
+                    if idx % 2 == 1:
+                        c5.fill = fill_zebra
+                        
+                    # Col 6: Days Overdue
+                    c6 = ws.cell(curr_row, 6)
+                    c6.font = font_normal
+                    c6.border = thin_border
+                    c6.alignment = align_center
+                    if idx % 2 == 1:
+                        c6.fill = fill_zebra
+
+            # Auto-adjust column widths
+            for col in ws.columns:
+                max_len = 0
+                col_letter = get_column_letter(col[0].column)
+                for cell in col:
+                    # Ignore the title row when calculating column widths to avoid excessively wide columns
+                    if cell.row == 1:
+                        continue
+                    val = str(cell.value or '')
+                    # If it's a formatted number, add some estimated padding
+                    if cell.number_format and ('đ' in cell.number_format or '%' in cell.number_format):
+                        max_len = max(max_len, len(val) + 6)
+                    else:
+                        max_len = max(max_len, len(val))
+                ws.column_dimensions[col_letter].width = max(max_len + 3, 12)
+
+            wb.save(file_path)
 
             job.status = ExportJobStatus.COMPLETED
-            job.file_url = f"/exports/{job.id}.xlsx"
+            job.file_url = f"/media/exports/{job.id}.xlsx"
             job.completed_at = datetime.now(timezone.utc)
             db.commit()
 

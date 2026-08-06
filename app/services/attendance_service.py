@@ -198,6 +198,10 @@ class AttendanceService:
         )
 
         db.commit()
+        try:
+            self.update_enrollment_attendance_rate(db, session.class_id)
+        except Exception as e:
+            print(f"Error updating enrollment attendance rate: {e}")
         return {"message": "Điểm danh thành công"}
 
     # ==========================================================
@@ -311,12 +315,15 @@ class AttendanceService:
                     message="Mã QR không hợp lệ",
                 )
             # Check expiry
-            if session.qr_expires_at and datetime.now() > session.qr_expires_at:
-                raise APIException(
-                    status_code=400,
-                    code="QR_EXPIRED",
-                    message="Mã QR đã hết hạn",
-                )
+            if session.qr_expires_at:
+                expires_at = session.qr_expires_at
+                now = datetime.now(expires_at.tzinfo) if expires_at.tzinfo is not None else datetime.now()
+                if now > expires_at:
+                    raise APIException(
+                        status_code=400,
+                        code="QR_EXPIRED",
+                        message="Mã QR đã hết hạn",
+                    )
             session_id = session.id
         else:
             session = self._get_session_or_404(db, session_id)
@@ -399,6 +406,10 @@ class AttendanceService:
         )
         db.add(new_record)
         db.commit()
+        try:
+            self.update_enrollment_attendance_rate(db, session.class_id)
+        except Exception as e:
+            print(f"Error updating enrollment attendance rate: {e}")
         db.refresh(new_record)
 
         return {
@@ -695,6 +706,17 @@ class AttendanceService:
         full_name = f"{user.first_name} {user.last_name}".strip() if user else "N/A"
         class_name = class_obj.name if class_obj else "N/A"
 
+        from app.models.certificate import Certificate
+        cert = db.query(Certificate).filter(
+            Certificate.class_id == enrollment.class_id,
+            Certificate.student_id == enrollment.student_id
+        ).first()
+
+        final_grade = float(enrollment.final_grade) if enrollment.final_grade is not None else None
+        min_grade = 7.0
+
+        is_eligible = (cert_rate >= min_rate) and (final_grade is not None and final_grade >= min_grade)
+
         return CertificateEligibilityResponse(
             enrollment_id=enrollment_id,
             student_id=enrollment.student_id,
@@ -702,7 +724,12 @@ class AttendanceService:
             class_name=class_name,
             attendance_rate=cert_rate,
             min_rate_required=min_rate,
-            is_eligible=(cert_rate >= min_rate),
+            final_grade=final_grade,
+            min_grade_required=min_grade,
+            is_eligible=is_eligible,
+            certificate_code=cert.certificate_code if cert else None,
+            certificate_url=cert.certificate_url if cert else None,
+            is_issued=cert is not None,
         )
 
     # ==========================================================

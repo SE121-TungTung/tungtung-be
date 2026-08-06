@@ -9,7 +9,7 @@ from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 
-from app.models.academic import ClassEnrollment, Class, Course
+from app.models.academic import ClassEnrollment, Class, Course, CourseLevel, CourseStatus
 from app.models.session_attendance import ClassSession
 from app.models.test import TestAttempt, TestResponse, QuestionBank, AttemptStatus, Test, SkillArea, DifficultyLevel, ContentStatus, TestQuestion
 from app.models.user import User
@@ -133,7 +133,8 @@ class RecommendationService:
         prefs = user.preferences
         return {
             "target_band": prefs.get("target_band"),
-            "target_cefr": prefs.get("target_cefr")
+            "target_cefr": prefs.get("target_cefr"),
+            "expected_exam_date": prefs.get("expected_exam_date")
         }
 
     def get_days_since_last_activity(self, db: Session, student_id: UUID) -> int:
@@ -287,9 +288,14 @@ class RecommendationService:
                     data = resp.json()
                     if data.get("status") == "success":
                         materials = []
+                        admin_keywords = ["nội quy", "noi quy", "policy", "chính sách", "chinh sach", "rule", "hướng dẫn", "huong dan", "quy định", "quy dinh"]
                         for res in data.get("results", []):
+                            filename = res.get("filename", "Tài liệu học tập")
+                            filename_lower = filename.lower()
+                            if any(kw in filename_lower for kw in admin_keywords):
+                                continue
                             materials.append({
-                                "title": res.get("filename", "Tài liệu học tập"),
+                                "title": filename,
                                 "source": "RAG Center",
                                 "relevance_score": round(1.0 / (1.0 + res.get("distance", 1.0)), 2)
                             })
@@ -302,19 +308,26 @@ class RecommendationService:
     def get_suggested_course(self, db: Session, predicted_band: float) -> Optional[Dict[str, Any]]:
         """
         Suggest the next course based on predicted band.
-        Finds a course where required_band <= predicted_band, ordered by required_band DESC.
         """
+        if predicted_band < 4.5:
+            target_levels = [CourseLevel.ELEMENTARY]
+        elif predicted_band < 5.5:
+            target_levels = [CourseLevel.INTERMEDIATE]
+        elif predicted_band < 6.5:
+            target_levels = [CourseLevel.UPPER_INTERMEDIATE]
+        else:
+            target_levels = [CourseLevel.ADVANCED]
+
         course = db.query(Course)\
-            .filter(Course.status == 'active', Course.required_band <= predicted_band)\
-            .order_by(desc(Course.required_band))\
+            .filter(Course.status == CourseStatus.ACTIVE, Course.level.in_(target_levels))\
             .first()
             
         if course:
+            level_val = course.level.value if hasattr(course.level, 'value') else str(course.level)
             return {
                 "id": str(course.id),
                 "name": course.name,
-                "required_band": float(course.required_band) if course.required_band else 0.0,
-                "target_band": float(course.target_band) if course.target_band else 0.0,
+                "level": level_val,
                 "description": course.description
             }
         return None
@@ -404,6 +417,7 @@ class RecommendationService:
             "days_enrolled": days_enrolled,
             "target_band": target.get("target_band"),
             "target_cefr": target.get("target_cefr"),
+            "expected_exam_date": target.get("expected_exam_date"),
             "exam_type": "ielts",
             "days_since_last_activity": self.get_days_since_last_activity(db, student_id),
             "recent_ai_feedback": recent_ai_feedback,
@@ -417,8 +431,38 @@ class RecommendationService:
         weak_skill = ai_resp.get("weakest_skill", weakest_skill)
         materials = await self.get_rag_materials(weak_skill)
         
-        pred_band = ai_resp.get("predicted_band", 0.0)
-        suggested_course = self.get_suggested_course(db, float(pred_band))
+        pred_band = ai_resp.get("predicted_band")
+        if pred_band is None or pred_band == 0.0:
+            # Query student's average test score
+            attempts_query = db.query(TestAttempt.total_score).filter(
+                TestAttempt.student_id == student_id,
+                TestAttempt.status == AttemptStatus.GRADED
+            ).all()
+            valid_scores = [a[0] for a in attempts_query if a[0] is not None]
+            if valid_scores:
+                pred_band = sum(valid_scores) / len(valid_scores)
+            else:
+                pred_band = None
+
+        pred_cefr = ai_resp.get("predicted_cefr")
+        if (pred_cefr is None or pred_cefr == "N/A" or pred_cefr == "") and pred_band is not None:
+            # Map band to CEFR
+            if pred_band >= 8.5:
+                pred_cefr = "C2"
+            elif pred_band >= 7.0:
+                pred_cefr = "C1"
+            elif pred_band >= 5.5:
+                pred_cefr = "B2"
+            elif pred_band >= 4.0:
+                pred_cefr = "B1"
+            elif pred_band >= 3.0:
+                pred_cefr = "A2"
+            else:
+                pred_cefr = "A1"
+
+        suggested_course = None
+        if pred_band is not None:
+            suggested_course = self.get_suggested_course(db, float(pred_band))
         
         if "recommendation_data" not in ai_resp:
             ai_resp["recommendation_data"] = {}
@@ -434,8 +478,8 @@ class RecommendationService:
             attendance_rate=attendance_rate,
             target_band=target.get("target_band"),
             target_cefr=target.get("target_cefr"),
-            predicted_band=ai_resp.get("predicted_band"),
-            predicted_cefr=ai_resp.get("predicted_cefr"),
+            predicted_band=pred_band,
+            predicted_cefr=pred_cefr,
             weakest_skill=ai_resp.get("weakest_skill"),
             estimated_weeks=ai_resp.get("estimated_weeks"),
             recommendation_type=ai_resp.get("recommendation_type"),

@@ -21,6 +21,7 @@ class PaymentGateway(enum.Enum):
     MOMO = "momo"
     CASH = "cash"
     BANK_TRANSFER = "bank_transfer"
+    INTERNAL_WALLET = "internal_wallet"
 
 
 class PaymentStatus(enum.Enum):
@@ -49,6 +50,25 @@ class ExportJobStatus(enum.Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+
+
+class TransactionType(enum.Enum):
+    CREDIT = "credit"
+    DEBIT = "debit"
+
+
+class WalletRefType(enum.Enum):
+    TUITION = "tuition"
+    SALARY = "salary"
+    REFUND = "refund"
+    TOP_UP = "top_up"
+    WITHDRAWAL = "withdrawal"
+
+
+class WalletTxStatus(enum.Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 # ---------------------------------------------------------------------------
@@ -199,3 +219,36 @@ class ReportExportJob(BaseModel):
 
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     completed_at = Column(TIMESTAMP(timezone=True))
+
+
+class WalletTransaction(BaseModel):
+    __tablename__ = "wallet_transactions"
+    __table_args__ = (
+        Index("ix_wallet_transactions_user_id", "user_id"),
+        Index("ix_wallet_transactions_status", "status"),
+    )
+
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    type = Column(
+        Enum(TransactionType, values_callable=lambda obj: [e.value for e in obj],
+             native_enum=False, name="transaction_type"),
+        nullable=False
+    )
+    amount = Column(Numeric(12, 2), nullable=False)
+    balance_after = Column(Numeric(12, 2), nullable=False)
+    
+    reference_type = Column(
+        Enum(WalletRefType, values_callable=lambda obj: [e.value for e in obj],
+             native_enum=False, name="wallet_ref_type"),
+        nullable=False
+    )
+    reference_id = Column(UUID(as_uuid=True), nullable=True)
+    status = Column(
+        Enum(WalletTxStatus, values_callable=lambda obj: [e.value for e in obj],
+             native_enum=False, name="wallet_tx_status"),
+        default=WalletTxStatus.PENDING, nullable=False
+    )
+    
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    note = Column(Text)
+    extra_metadata = Column("metadata", JSONB, default={})

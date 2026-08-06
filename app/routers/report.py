@@ -181,3 +181,23 @@ async def create_export_job(
         data=result,
         message="Đã khởi tạo tiến trình xuất báo cáo. Vui lòng chờ hoàn tất.",
     )
+
+
+@router.get("/export-jobs/{job_id}", response_model=ApiResponse[ExportJobResponse])
+async def get_export_job(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_any_role(UserRole.OFFICE_ADMIN, UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN)),
+):
+    from uuid import UUID
+    from fastapi import HTTPException
+    from app.models.finance import ReportExportJob
+    try:
+        uuid_obj = UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID không hợp lệ")
+
+    job = db.query(ReportExportJob).filter(ReportExportJob.id == uuid_obj).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu xuất báo cáo")
+    return ApiResponse(success=True, data=ExportJobResponse.model_validate(job), message="Thành công")
