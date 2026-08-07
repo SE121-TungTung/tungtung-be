@@ -4,7 +4,7 @@ from uuid import UUID
 from typing import List, Optional
 
 from app.core.database import get_db
-from app.dependencies import get_current_admin_user, get_current_active_user, get_current_user, CommonQueryParams
+from app.dependencies import get_current_admin_user, get_current_active_user, get_current_user, CommonQueryParams, require_non_guest
 from app.models.academic import Class
 from app.routers.generator import create_crud_router
 from app.schemas.classes import ClassResponse

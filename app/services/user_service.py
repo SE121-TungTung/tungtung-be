@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, List
 from uuid import UUID
 import uuid
@@ -196,6 +196,36 @@ class UserService(BaseService):
         db.commit()
         return created_users
     
+    async def create_guest_user(self, db: Session) -> User:
+        """
+        Tạo tài khoản Guest tạm thời (không cần đăng ký).
+        - email: guest_{uuid8}@temp.tungtung.local
+        - role: GUEST, status: ACTIVE
+        - preferences.guest_expires_at: now + 30 ngày (dùng cho cron xóa)
+        - Không gửi email, không yêu cầu thay đổi mật khẩu
+        """
+        uid = str(uuid.uuid4())[:8]
+        temp_email = f"guest_{uid}@temp.tungtung.local"
+        raw_password = generate_strong_password(16)
+        expires_at = (datetime.utcnow() + timedelta(days=30)).isoformat()
+
+        user_data = {
+            "email": temp_email,
+            "password_hash": get_password_hash(raw_password),
+            "role": UserRole.GUEST,
+            "status": UserStatus.ACTIVE,
+            "first_name": "Guest",
+            "last_name": uid,
+            "is_first_login": False,
+            "must_change_password": False,
+            "preferences": {"guest_expires_at": expires_at},
+        }
+
+        new_user = self.repository.create_user(db, user_data)
+        db.commit()
+        db.refresh(new_user)
+        return new_user
+
     async def authenticate_user(self, db: Session, email: str, password: str) -> Optional[User]:
         user = self.repository.authenticate(db, email, password)
         if not user:

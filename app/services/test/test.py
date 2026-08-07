@@ -1,8 +1,9 @@
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, case
+from sqlalchemy import func, case, cast
+from sqlalchemy.dialects.postgresql import JSONB
 from uuid import UUID
 from fastapi import HTTPException
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 
 from app.schemas.base_schema import PaginationResponse, PaginationMetadata
@@ -538,6 +539,7 @@ class TestService:
         student_id: UUID,
         class_id: Optional[UUID] = None,
         skill: Optional[SkillArea] = None,
+        tags: Optional[Dict[str, str]] = None,  # e.g. {"task_type": "writing_task_1", "chart_type": "bar_chart"}
         skip: int = 0,
         limit: int = 20
     ):
@@ -567,6 +569,22 @@ class TestService:
                         .filter(TestSection.skill_area == skill)
                     )
                 )
+
+            # Tags filter — JSONB containment trên QuestionBank.tags
+            # Đi qua chain: Test → TestQuestion → QuestionBank
+            if tags:
+                for tag_key, tag_value in tags.items():
+                    if tag_value:  # bỏ qua nếu value rỗng
+                        containment = {tag_key: tag_value}
+                        base_query = base_query.filter(
+                            Test.id.in_(
+                                db.query(TestQuestion.test_id)
+                                .join(QuestionBank, QuestionBank.id == TestQuestion.question_id)
+                                .filter(
+                                    cast(QuestionBank.tags, JSONB).contains(containment)
+                                )
+                            )
+                        )
 
             # ============================================================
             # 2. TOTAL & METADATA

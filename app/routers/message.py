@@ -5,7 +5,7 @@ from typing import List, Optional
 import logging
 
 from app.core.database import get_db
-from app.dependencies import get_current_user, CommonQueryParams
+from app.dependencies import get_current_user, CommonQueryParams, require_non_guest
 from app.models.user import UserRole
 
 # Step 1: Import core components
@@ -45,7 +45,7 @@ async def send_message_rest(
     message_data: MessageCreate,
     background_tasks: BackgroundTasks, 
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     result = await message_sender_service.handle_new_message(
         db=db,
@@ -60,7 +60,7 @@ async def get_history(
     room_id: UUID,
     params: CommonQueryParams = Depends(),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     """Get chat history for a room with pagination"""
     return await message_conversation_service.get_chat_history(
@@ -75,7 +75,7 @@ async def get_history(
 async def get_direct_conversation(
     other_user_id: UUID,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     """Get or create a direct conversation"""
     result = await message_conversation_service.get_or_create_direct_conversation(
@@ -87,7 +87,7 @@ async def get_direct_conversation(
 async def get_conversations(
     params: CommonQueryParams = Depends(),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     """Get list of conversations for the current user"""
     result = await message_conversation_service.get_user_conversations(
@@ -102,7 +102,7 @@ async def get_conversations(
 async def mark_conversation_read(
     room_id: UUID,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     """Mark all messages in a conversation as read"""
     result = await message_interaction_service.mark_conversation_as_read(db, room_id, current_user.id)
@@ -119,7 +119,7 @@ async def create_group(
     member_ids: str = Form(...),
     avatar: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user=Depends(get_current_user),
+    current_user=Depends(require_non_guest),
 ):
     """Create a new group chat"""
     try:
@@ -145,7 +145,7 @@ async def create_group(
 async def get_group_details(
     room_id: UUID,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     """Get group details and members"""
     result = await message_group_service.get_group_details(db, room_id, current_user.id)
@@ -156,7 +156,7 @@ async def add_group_members(
     room_id: UUID,
     request: AddMembersRequest,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     """Add members to group"""
     result = await message_group_service.add_members_to_group(
@@ -170,7 +170,7 @@ async def remove_group_member(
     user_id: UUID,
     new_admin_id: Optional[UUID] = Query(None),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     """Remove a member from group"""
     result = await message_group_service.remove_member_from_group(
@@ -185,7 +185,7 @@ async def update_group(
     description: Optional[str] = Form(None),
     avatar: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
+    current_user = Depends(require_non_guest),
 ):
     """Update group information"""
     update_data = GroupUpdateRequest(title=title, description=description)
@@ -206,7 +206,7 @@ async def update_group(
 async def delete_chat_room(
     room_id: UUID,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user),
+    current_user = Depends(require_non_guest),
 ):
     result = await message_interaction_service.delete_chat_room(
         db=db,
@@ -220,7 +220,7 @@ async def edit_message(
     message_id: UUID,
     payload: MessageEditRequest, # Lấy nội dung từ Body thay vì Query
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     """Edit a previously sent message"""
     result = await message_interaction_service.edit_message(
@@ -237,7 +237,7 @@ async def search_messages(
     room_id: UUID = Query(None, description="Optional room ID to filter messages"),
     params: CommonQueryParams = Depends(),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     """Search messages with pagination"""
     return await message_interaction_service.search_messages(
@@ -252,7 +252,7 @@ async def search_messages(
 @router.get("/unread-count", response_model=ApiResponse[UnreadCountResponse])
 async def get_total_unread_count(
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     count = message_interaction_service.get_total_unread_count(db, current_user.id)
     return ApiResponse(data=UnreadCountResponse(unread_count=count))
@@ -261,7 +261,7 @@ async def get_total_unread_count(
 async def mute_conversation(
     room_id: UUID,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     result = await message_interaction_service.toggle_mute(db, room_id, current_user.id, True)
     return ApiResponse(data=result)
@@ -270,7 +270,7 @@ async def mute_conversation(
 async def unmute_conversation(
     room_id: UUID,
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_user)
+    current_user = Depends(require_non_guest)
 ):
     result = await message_interaction_service.toggle_mute(db, room_id, current_user.id, False)
     return ApiResponse(data=result)

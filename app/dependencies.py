@@ -73,6 +73,19 @@ def require_any_role(*roles: UserRole):
         return current_user
     return role_checker
 
+def require_non_guest(
+    current_user: User = Depends(get_current_active_user)
+) -> User:
+    """Chặn Guest truy cập các tính năng yêu cầu tài khoản thật.
+    Dùng cho: tham gia lớp học, chat giáo viên, xem hồ sơ cá nhân đầy đủ, v.v.
+    """
+    if current_user.role == UserRole.GUEST:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This feature is not available for guest accounts. Please register to continue."
+        )
+    return current_user
+
 def get_current_week_range() -> Tuple[date, date]:
     today = date.today()
     # today.weekday() trả về 0 cho Thứ Hai, 6 cho Chủ Nhật

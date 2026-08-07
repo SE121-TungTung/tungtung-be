@@ -77,14 +77,31 @@ def list_tests_student(
     params: CommonQueryParams = Depends(),
     class_id: Optional[UUID] = None,
     skill: Optional[str] = None,
+    # Tags filter (Writing Task 1/2 chart type, essay type, topic...)
+    tags_task_type: Optional[str] = None,   # e.g. writing_task_1 | writing_task_2
+    tags_chart_type: Optional[str] = None,  # e.g. bar_chart | line_graph | pie_chart
+    tags_essay_type: Optional[str] = None,  # e.g. agree_disagree | discussion | adv_disadv
+    tags_topic: Optional[str] = None,       # e.g. environment | technology
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
+    # Build tags dict — chỉ truyền các key có giá trị
+    tags = {}
+    if tags_task_type:
+        tags["task_type"] = tags_task_type
+    if tags_chart_type:
+        tags["chart_type"] = tags_chart_type
+    if tags_essay_type:
+        tags["essay_type"] = tags_essay_type
+    if tags_topic:
+        tags["topics"] = tags_topic  # QuestionBank.tags["topics"] là array, dùng contains khớp 1 phần tử
+
     return test_service.list_tests_for_student(
         db=db,
         student_id=current_user.id,
         class_id=class_id,
         skill=skill,
+        tags=tags if tags else None,
         skip=params.skip,
         limit=params.limit
     )

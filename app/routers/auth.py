@@ -194,3 +194,28 @@ async def logout(refresh_data: Optional[RefreshTokenRequest] = None):
     """Logout endpoint - revokes refresh token if provided"""
     await user_service.logout(refresh_token=refresh_data.refresh_token if refresh_data else None)
     return ApiResponse(data={"message": "Logout successful"})
+
+
+@router.post("/guest-login", response_model=ApiResponse[LoginResponse])
+async def guest_login(db: Session = Depends(get_db)):
+    """
+    Đăng nhập 1-click không cần đăng ký.
+    - Tạo tài khoản Guest tạm thời (hết hạn sau 30 ngày)
+    - Trả JWT bình thường để FE sử dụng ngay
+    - Guest chỉ được: xem đề public, làm bài, xem kết quả
+    - Guest KHÔNG được: tham gia lớp, chat GV, xem chứng chỉ
+    """
+    guest_user = await user_service.create_guest_user(db=db)
+
+    access_token = create_access_token(
+        subject=guest_user.email,
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    refresh_token = create_refresh_token(subject=guest_user.email)
+
+    return ApiResponse(data={
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "is_first_login": False,
+    })
