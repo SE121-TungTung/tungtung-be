@@ -105,4 +105,17 @@ class ClassPost(BaseModel):
         back_populates="post",
         foreign_keys="ClassPostReaction.post_id",
     )
+    views = relationship(
+        "ClassPostView",
+        back_populates="post",
+        foreign_keys="ClassPostView.post_id",
+    )
+
+    @property
+    def view_count(self) -> int:
+        return len(self.views) if self.views is not None else 0
+
+    @property
+    def comment_count(self) -> int:
+        return len(self.comments) if self.comments is not None else 0
 

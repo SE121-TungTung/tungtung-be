@@ -73,6 +73,9 @@ class ClassPostResponse(BaseModel):
     comment_count:     int                       = 0
     reactions_summary: Optional[ReactionsSummary] = None
 
+    # Phase 3: View tracking
+    view_count:        int                       = 0
+
     # Audit fields
     created_at:        datetime
     updated_at:        datetime

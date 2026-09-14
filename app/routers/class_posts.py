@@ -23,6 +23,8 @@ from app.models.class_post import ClassPostType, MaterialCategory
 from app.repositories.class_post import class_post_repo
 from app.schemas.class_post import ClassPostResponse, ClassPostUpdate, ClassPostPinRequest
 from app.schemas.class_post_reaction import ReactionToggleRequest, ReactionToggleResponse
+from app.schemas.class_post_view import RecordViewResponse, ViewersSummaryResponse
+from app.repositories.class_post_view import class_post_view_repo
 from app.services import class_post_service
 from app.services import class_post_reaction_service
 from app.services.notification_service import run_broadcast_task
@@ -361,4 +363,89 @@ def lock_post_comments(
 
     state = "Khóa" if body.is_comment_locked else "Mở khóa"
     return ApiResponse(data=post, message=f"{state} bình luận bài viết thành công.")
+
+
+# ─── POST /view — Ghi nhận lượt xem (Học viên) ──────────────────────────────
+
+@router.post("/{class_id}/posts/{post_id}/view", response_model=ApiResponse[RecordViewResponse])
+def record_post_view(
+    class_id: UUID,
+    post_id:  UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Ghi nhận lượt xem bài viết của học viên (idempotent).
+    
+    - Chỉ học viên (role = STUDENT) được ghi nhận lượt xem vào DB.
+    - GV / TA / Admin khi xem bài sẽ không được ghi nhận vào bảng class_post_views.
+    """
+    class_obj = _get_class_or_404(db, class_id)
+    _check_class_access(current_user, class_obj)
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    # Chỉ ghi nhận lượt xem cho học viên
+    if current_user.role == UserRole.STUDENT:
+        view_record, is_new = class_post_view_repo.record_view(db, post_id=post_id, user_id=current_user.id)
+        view_count = class_post_view_repo.get_view_count(db, post_id=post_id)
+        return ApiResponse(
+            data=RecordViewResponse(
+                post_id=post_id,
+                viewed=True,
+                viewed_at=view_record.viewed_at,
+                view_count=view_count,
+            ),
+            message="Đã ghi nhận lượt xem." if is_new else "Bài viết đã được xem trước đó.",
+        )
+
+    # Nếu là GV/TA/Admin: Không lưu vào DB, trả về count hiện tại
+    view_count = class_post_view_repo.get_view_count(db, post_id=post_id)
+    return ApiResponse(
+        data=RecordViewResponse(
+            post_id=post_id,
+            viewed=False,
+            viewed_at=None,
+            view_count=view_count,
+        ),
+        message="Không ghi nhận lượt xem cho tài khoản quản trị/giảng viên.",
+    )
+
+
+# ─── GET /views — Danh sách người đã xem (GV / TA / Admin) ─────────────────
+
+@router.get("/{class_id}/posts/{post_id}/views", response_model=ApiResponse[ViewersSummaryResponse])
+def get_post_viewers(
+    class_id: UUID,
+    post_id:  UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Lấy danh sách học viên đã xem và chưa xem bài viết.
+    
+    Quyền hạn: Chỉ Giáo viên chủ nhiệm, Giáo viên dạy thay, Trợ giảng hoặc Quản trị viên.
+    """
+    class_obj = _get_class_or_404(db, class_id)
+
+    user_id_str = str(current_user.id)
+    is_staff = (
+        current_user.role in (UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN)
+        or str(class_obj.teacher_id) == user_id_str
+        or (class_obj.substitute_teacher_id and str(class_obj.substitute_teacher_id) == user_id_str)
+        or (class_obj.ta_id and str(class_obj.ta_id) == user_id_str)
+    )
+    if not is_staff:
+        raise APIException(
+            status_code=403,
+            code="AUTH_PERMISSION_DENIED",
+            message="Chỉ Giáo viên / Trợ giảng / Quản trị viên mới có quyền xem danh sách người đã xem.",
+        )
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    summary = class_post_view_repo.get_viewers_summary(db, post_id=post_id, class_id=class_id)
+    return ApiResponse(data=summary, message="Lấy danh sách người đã xem thành công.")
 
