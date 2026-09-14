@@ -22,7 +22,9 @@ from app.models.academic import Class, EnrollmentStatus
 from app.models.class_post import ClassPostType, MaterialCategory
 from app.repositories.class_post import class_post_repo
 from app.schemas.class_post import ClassPostResponse, ClassPostUpdate, ClassPostPinRequest
+from app.schemas.class_post_reaction import ReactionToggleRequest, ReactionToggleResponse
 from app.services import class_post_service
+from app.services import class_post_reaction_service
 from app.services.notification_service import run_broadcast_task
 from app.core.route import ResponseWrapperRoute
 from app.schemas.base_schema import ApiResponse, PaginationResponse
@@ -271,3 +273,92 @@ def pin_class_post(
     )
     action = "Ghim" if body.pin else "Bỏ ghim"
     return ApiResponse(data=updated_post, message=f"{action} bài viết thành công.")
+
+
+# ─── POST /reactions — Toggle reaction ───────────────────────────────────────
+
+@router.post("/{class_id}/posts/{post_id}/reactions", response_model=ApiResponse[ReactionToggleResponse])
+def toggle_post_reaction(
+    class_id: UUID,
+    post_id:  UUID,
+    body:     ReactionToggleRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Toggle reaction (Like / Heart / Understood) trên bài viết.
+
+    - Click lần 1 → thêm reaction.
+    - Click lần 2 (cùng type) → bỏ reaction.
+    - 1 user có thể active nhiều type cùng lúc trên cùng bài viết.
+    """
+    class_obj = _get_class_or_404(db, class_id)
+    _check_class_access(current_user, class_obj)
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    result = class_post_reaction_service.toggle_reaction(
+        db=db,
+        post=post,
+        user_id=current_user.id,
+        reaction_type=body.reaction_type,
+    )
+    action_text = "Đã thêm" if result.action == "added" else "Đã bỏ"
+    return ApiResponse(data=result, message=f"{action_text} reaction '{body.reaction_type}'.")
+
+
+# ─── PATCH /lock-comments — Khóa / Mở bình luận ─────────────────────────────
+
+class _LockCommentsBody(ClassPostUpdate):
+    pass  # Tái dùng ClassPostUpdate nhưng chỉ cần is_comment_locked
+
+
+from pydantic import BaseModel as PydanticBaseModel
+
+class LockCommentsRequest(PydanticBaseModel):
+    is_comment_locked: bool
+
+
+@router.patch("/{class_id}/posts/{post_id}/lock-comments", response_model=ApiResponse[ClassPostResponse])
+def lock_post_comments(
+    class_id: UUID,
+    post_id:  UUID,
+    body:     LockCommentsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Bật / tắt khóa bình luận cho 1 bài viết.
+
+    Khi khóa: Học viên không thể đăng bình luận mới.
+    Quyền hạn: Chỉ Giáo viên / Trợ giảng / Quản trị viên.
+    """
+    class_obj = _get_class_or_404(db, class_id)
+
+    # Chỉ staff/admin mới được khóa
+    user_id_str = str(current_user.id)
+    is_staff = (
+        current_user.role in (UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN)
+        or str(class_obj.teacher_id) == user_id_str
+        or (class_obj.substitute_teacher_id and str(class_obj.substitute_teacher_id) == user_id_str)
+        or (class_obj.ta_id and str(class_obj.ta_id) == user_id_str)
+    )
+    if not is_staff:
+        raise APIException(
+            status_code=403,
+            code="AUTH_PERMISSION_DENIED",
+            message="Chỉ Giáo viên / Trợ giảng / Quản trị viên mới có quyền khóa bình luận.",
+        )
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    post.is_comment_locked = body.is_comment_locked
+    post.updated_by = current_user.id
+    db.commit()
+    db.refresh(post)
+
+    state = "Khóa" if body.is_comment_locked else "Mở khóa"
+    return ApiResponse(data=post, message=f"{state} bình luận bài viết thành công.")
+

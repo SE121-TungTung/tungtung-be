@@ -91,3 +91,18 @@ class ClassPost(BaseModel):
     author    = relationship("User",  foreign_keys=[author_id],  backref="class_posts")
     class_rel = relationship("Class", foreign_keys=[class_id],   backref="posts")
     deleter   = relationship("User",  foreign_keys=[deleted_by])
+
+    # Phase 2 relationships
+    comments  = relationship(
+        "ClassPostComment",
+        back_populates="post",
+        foreign_keys="ClassPostComment.post_id",
+        primaryjoin="and_(ClassPostComment.post_id==ClassPost.id, ClassPostComment.deleted_at==None, ClassPostComment.parent_comment_id==None)",
+        order_by="ClassPostComment.created_at.asc()",
+    )
+    reactions = relationship(
+        "ClassPostReaction",
+        back_populates="post",
+        foreign_keys="ClassPostReaction.post_id",
+    )
+

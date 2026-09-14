@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from app.models.class_post import ClassPostType, MaterialCategory
+from app.schemas.class_post_reaction import ReactionsSummary
 
 
 # ─── Sub-schemas ─────────────────────────────────────────────────────────────
@@ -67,6 +68,10 @@ class ClassPostResponse(BaseModel):
     pinned_at:         Optional[datetime]         = None
     is_comment_locked: bool
     is_edited:         bool
+
+    # Phase 2: Comments & Reactions
+    comment_count:     int                       = 0
+    reactions_summary: Optional[ReactionsSummary] = None
 
     # Audit fields
     created_at:        datetime
