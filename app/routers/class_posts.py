@@ -172,6 +172,54 @@ def get_class_posts(
     return PaginationResponse(data=posts, total=total, page=page, limit=limit)
 
 
+# ─── GET — Kho Học Liệu (Material Library) ──────────────────────────────────
+
+@router.get("/{class_id}/materials", response_model=PaginationResponse[ClassPostResponse])
+def get_class_materials(
+    class_id: UUID,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    material_category: Optional[str] = Query(None, description="Filter: 'lecture_slide' | 'exercise' | 'reference' | 'audio' | 'video' | 'other'"),
+    search: Optional[str] = Query(None, max_length=200, description="Tìm kiếm theo title hoặc tên file đính kèm"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Kho Học Liệu — lấy tất cả bài đăng type=material của lớp.
+
+    Hỗ trợ:
+    - Lọc theo material_category (lecture_slide, exercise, reference, audio, video, other).
+    - Tìm kiếm theo title hoặc tên file trong attachments.
+    - Phân trang chuẩn (page, limit).
+    """
+    class_obj = _get_class_or_404(db, class_id)
+    _check_class_access(current_user, class_obj)
+
+    mat_cat_enum: Optional[MaterialCategory] = None
+    if material_category:
+        try:
+            mat_cat_enum = MaterialCategory(material_category)
+        except ValueError:
+            raise APIException(
+                status_code=400,
+                code="INVALID_MATERIAL_CATEGORY",
+                message=f"Danh mục tài liệu không hợp lệ: '{material_category}'.",
+            )
+
+    search_term = search.strip() if search else None
+
+    skip = (page - 1) * limit
+    posts = class_post_repo.get_materials(
+        db, class_id=class_id, skip=skip, limit=limit,
+        material_category=mat_cat_enum, search=search_term,
+    )
+    total = class_post_repo.count_materials(
+        db, class_id=class_id,
+        material_category=mat_cat_enum, search=search_term,
+    )
+
+    return PaginationResponse(data=posts, total=total, page=page, limit=limit)
+
+
 # ─── PUT — Chỉnh sửa bài viết ────────────────────────────────────────────────
 
 @router.put("/{class_id}/posts/{post_id}", response_model=ApiResponse[ClassPostResponse])
