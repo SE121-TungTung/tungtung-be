@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks, Query, Request
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from uuid import UUID
@@ -26,6 +26,7 @@ from app.schemas.test.test_attempt import (
     StartAttemptResponse,
     SubmitAttemptRequest,
     SubmitAttemptResponse,
+    GuestSubmitAttemptResponse,
     TestAttemptSummaryResponse,
     GradeAttemptRequest,
     TestAttemptHistoryResponse
@@ -41,6 +42,12 @@ from app.schemas.test.speaking import (
 )
 from app.services.test.speaking_service import speaking_service
 from app.services.cloudinary import upload_and_save_metadata
+
+from app.schemas.dictation import DictationResponse
+from app.services.test.dictation_service import dictation_service
+
+from app.schemas.speaking_random import SpeakingPart1Response
+from app.services.test.speaking_random_service import speaking_random_service
 
 router = APIRouter(tags=["Tests"], prefix="/tests", route_class=ResponseWrapperRoute)
 
@@ -72,23 +79,78 @@ def list_tests(
         status=status,
         skill=skill
     )
+@router.get("/public", response_model=PaginationResponse[StudentTestListResponse])
+def list_tests_public(
+    params: CommonQueryParams = Depends(),
+    skill: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    return test_service.list_tests_for_guest(
+        db=db,
+        skill=skill,
+        skip=params.skip,
+        limit=params.limit
+    )
 
 @router.get("/student", response_model=PaginationResponse[StudentTestListResponse])
 def list_tests_student(
     params: CommonQueryParams = Depends(),
     class_id: Optional[UUID] = None,
     skill: Optional[str] = None,
+    # Tags filter (Writing Task 1/2 chart type, essay type, topic...)
+    tags_task_type: Optional[str] = None,   # e.g. writing_task_1 | writing_task_2
+    tags_chart_type: Optional[str] = None,  # e.g. bar_chart | line_graph | pie_chart
+    tags_essay_type: Optional[str] = None,  # e.g. agree_disagree | discussion | adv_disadv
+    tags_topic: Optional[str] = None,       # e.g. environment | technology
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user)
 ):
+    # Build tags dict — chỉ truyền các key có giá trị
+    tags = {}
+    if tags_task_type:
+        tags["task_type"] = tags_task_type
+    if tags_chart_type:
+        tags["chart_type"] = tags_chart_type
+    if tags_essay_type:
+        tags["essay_type"] = tags_essay_type
+    if tags_topic:
+        tags["topics"] = tags_topic  # QuestionBank.tags["topics"] là array, dùng contains khớp 1 phần tử
+
     return test_service.list_tests_for_student(
         db=db,
         student_id=current_user.id,
         class_id=class_id,
         skill=skill,
+        tags=tags if tags else None,
         skip=params.skip,
         limit=params.limit
     )
+
+# ============================================================
+# SPEAKING RANDOM PART 1
+# ============================================================
+@router.get("/speaking/random-part1", response_model=ApiResponse[SpeakingPart1Response])
+def get_random_speaking_part1(
+    num_topics: int = Query(3, ge=1, le=10, description="Số topics cần lấy ngẫu nhiên"),
+    questions_per_topic: int = Query(4, ge=1, le=5, description="Số câu hỏi mỗi topic (1-5)"),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    **Lấy ngẫu nhiên câu hỏi Speaking Part 1 theo topic.**
+
+    - Lấy ngẫu nhiên `num_topics` topics từ Question Bank.
+    - Mỗi topic sẽ có `questions_per_topic` câu hỏi.
+    - Kết quả **không persist vào DB** — mỗi lần gọi trả về bộ câu hỏi khác nhau.
+    - Dùng cho chế độ luyện tập tự do (không tính điểm chính thức).
+    """
+    data = speaking_random_service.get_random_part1(
+        db=db,
+        num_topics=num_topics,
+        questions_per_topic=questions_per_topic,
+    )
+    return ApiResponse(data=data)
+
 
 # ============================================================
 # CREATE / UPDATE / DELETE / PUBLISH
@@ -168,6 +230,28 @@ def delete_test(
     return ApiResponse(data=result)
 
 # ============================================================
+# DICTATION MODE
+# ============================================================
+@router.get("/{test_id}/dictation-segments", response_model=ApiResponse[DictationResponse])
+def get_dictation_segments(
+    test_id: UUID,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    **Lấy toàn bộ segments cho chế độ Dictation (Listening).**
+
+    - Chỉ hoạt động với các test có section **Listening**.
+    - Mỗi Part của section sẽ trả về: `audio_url` + danh sách câu/đoạn (`segments`).
+    - `start_ms` / `end_ms` có giá trị nếu audio đã được xử lý kèm SRT/VTT, \
+      ngược lại là `null` (frontend tự quản lý timer).
+    - Học viên (Student, Guest) đều có thể truy cập.
+    """
+    data = dictation_service.get_dictation_segments(db=db, test_id=test_id)
+    return ApiResponse(data=data)
+
+
+# ============================================================
 # STUDENT VIEW & ATTEMPTS
 # ============================================================
 @router.get("/{test_id}", response_model=ApiResponse[TestDetailResponse])
@@ -208,6 +292,44 @@ async def submit_test_attempt(
 ):
     result = await attempt_service.submit_attempt(db=db, attempt_id=attempt_id, data=payload, user_id=current_user.id)
     return ApiResponse(data=result)
+
+@router.post("/{test_id}/guest-start", response_model=ApiResponse[StartAttemptResponse])
+def start_guest_test_attempt(
+    test_id: UUID,
+    guest_session_id: str = Query(..., description="Unique session ID from localStorage"),
+    db: Session = Depends(get_db)
+):
+    """Bắt đầu làm bài thi cho Guest (không cần login)."""
+    return ApiResponse(data=attempt_service.start_guest_attempt(db=db, test_id=test_id, guest_session_id=guest_session_id))
+
+@router.post("/attempts/guest/{attempt_id}/submit", response_model=ApiResponse[GuestSubmitAttemptResponse])
+async def submit_guest_test_attempt(
+    request: Request,
+    attempt_id: UUID,
+    payload: SubmitAttemptRequest,
+    guest_session_id: str = Query(..., description="Guest Session ID stored in client localStorage"),
+    db: Session = Depends(get_db),
+):
+    ip_address = request.client.host if request.client else "unknown"
+    result = await attempt_service.submit_guest_attempt(
+        db=db, 
+        attempt_id=attempt_id, 
+        data=payload, 
+        guest_session_id=guest_session_id,
+        ip_address=ip_address
+    )
+    return ApiResponse(data=result)
+
+@router.get("/attempts/guest/{attempt_id}", response_model=ApiResponse[GuestSubmitAttemptResponse])
+def get_guest_test_attempt(
+    attempt_id: UUID,
+    guest_session_id: str = Query(..., description="Unique session ID from localStorage"),
+    db: Session = Depends(get_db)
+):
+    """Xem điểm tổng bài thi cho Guest."""
+    result = attempt_service.get_guest_attempt_summary(db=db, attempt_id=attempt_id, guest_session_id=guest_session_id)
+    return ApiResponse(data=result)
+
 
 # ============================================================
 # SPEAKING PROCESS

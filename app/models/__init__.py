@@ -21,4 +21,6 @@ from .recommendation import RecommendationLog
 from .substitution import SubstitutionRequest
 from .certificate import Certificate
 from .chatbot_document import ChatbotDocument, DocCategory
-from .class_post import ClassPost, ClassPostType
+from .class_post import ClassPost, ClassPostType
+from .vocabulary import UserVocabulary
+from .lead import Lead

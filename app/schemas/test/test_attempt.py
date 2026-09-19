@@ -130,3 +130,19 @@ class TestAttemptHistoryResponse(BaseModel):
     started_at: datetime
     submitted_at: Optional[datetime] = None
 
+class GuestSubmitAttemptResponse(BaseModel):
+    attempt_id: UUID
+    submitted_at: datetime
+    time_taken_seconds: int
+
+    status: str
+    total_score: float
+    percentage_score: float
+    band_score: Optional[float] = None
+    passed: Optional[bool] = None
+    question_results: list = []
+
+    model_config = {
+        "from_attributes": True
+    }
+

@@ -30,3 +30,9 @@ class RefreshTokenRequest(BaseModel):
 class PasswordResetResponse(BaseModel):
     message: str
     detail: Optional[str] = None
+
+class DualHookRequest(BaseModel):
+    full_name: str
+    email: str
+    phone: str
+    guest_session_id: str

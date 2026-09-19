@@ -30,13 +30,20 @@ def get_current_admin_user(
         )
     return current_user
 
-def require_role(required_role: UserRole):
+def require_role(required_role: UserRole | list[UserRole]):
     def role_checker(current_user: User = Depends(get_current_active_user)) -> User:
-        if current_user.role != required_role:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not enough permissions"
-            )
+        if isinstance(required_role, list):
+            if current_user.role not in required_role:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not enough permissions"
+                )
+        else:
+            if current_user.role != required_role:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not enough permissions"
+                )
         return current_user
     return role_checker
 
@@ -72,6 +79,19 @@ def require_any_role(*roles: UserRole):
             )
         return current_user
     return role_checker
+
+def require_non_guest(
+    current_user: User = Depends(get_current_active_user)
+) -> User:
+    """Chặn Guest truy cập các tính năng yêu cầu tài khoản thật.
+    Dùng cho: tham gia lớp học, chat giáo viên, xem hồ sơ cá nhân đầy đủ, v.v.
+    """
+    if current_user.role in [UserRole.GUEST, UserRole.GUEST_STUDENT]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This feature is not available for guest accounts. Please register to continue."
+        )
+    return current_user
 
 def get_current_week_range() -> Tuple[date, date]:
     today = date.today()
@@ -140,6 +160,32 @@ async def get_current_user_from_token(token: str):
     except JWTError:
         raise HTTPException(401, "Could not validate credentials")
 
+from fastapi.security import OAuth2PasswordBearer
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
+
+async def get_current_user_optional(
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme_optional)
+) -> User | None:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        if email is None:
+            return None
+    except JWTError:
+        return None
+    
+    from app.services.user_service import user_service
+    user = await user_service.get_user_by_email(db, email=email)
+    if user is None:
+        return None
+    return user
+
+# Common query parameters
 class CommonQueryParams:
     def __init__(
         self,

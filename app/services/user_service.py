@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, List
 from uuid import UUID
 import uuid
@@ -196,6 +196,85 @@ class UserService(BaseService):
         db.commit()
         return created_users
     
+    async def create_guest_user(self, db: Session) -> User:
+        """
+        Tạo tài khoản Guest tạm thời (không cần đăng ký).
+        - email: guest_{uuid8}@temp.tungtung.local
+        - role: GUEST, status: ACTIVE
+        - preferences.guest_expires_at: now + 30 ngày (dùng cho cron xóa)
+        - Không gửi email, không yêu cầu thay đổi mật khẩu
+        """
+        uid = str(uuid.uuid4())[:8]
+        temp_email = f"guest_{uid}@temp.tungtung.local"
+        raw_password = generate_strong_password(16)
+        expires_at = (datetime.utcnow() + timedelta(days=30)).isoformat()
+
+        user_data = {
+            "email": temp_email,
+            "password_hash": get_password_hash(raw_password),
+            "role": UserRole.GUEST,
+            "status": UserStatus.ACTIVE,
+            "first_name": "Guest",
+            "last_name": uid,
+            "is_first_login": False,
+            "must_change_password": False,
+            "preferences": {"guest_expires_at": expires_at},
+        }
+
+        new_user = self.repository.create_user(db, user_data)
+        db.commit()
+        db.refresh(new_user)
+        return new_user
+
+    async def handle_dual_hook(self, db: Session, full_name: str, email: str, phone: str, guest_session_id: str):
+        from app.models.lead import Lead, LeadStatus
+        
+        # Split full_name into first_name and last_name for User model
+        parts = full_name.strip().split(' ', 1)
+        if len(parts) > 1:
+            first_name = parts[1]
+            last_name = parts[0]
+        else:
+            first_name = full_name
+            last_name = ""
+
+        # 1. Check if email exists
+        user = self.repository.get_by_email(db, email)
+        if not user:
+            raw_password = generate_strong_password(10)
+            user_data = {
+                "email": email,
+                "first_name": first_name,
+                "last_name": last_name,
+                "phone": phone,
+                "password_hash": get_password_hash(raw_password),
+                "role": UserRole.GUEST_STUDENT, # Assign guest_student role
+                "status": UserStatus.ACTIVE,
+                "is_first_login": False,
+                "must_change_password": False,
+            }
+            user = self.repository.create_user(db, user_data)
+        
+        # 2. Create Lead
+        lead = Lead(
+            full_name=full_name,
+            email=email,
+            phone=phone,
+            guest_session_id=guest_session_id,
+            status=LeadStatus.NEW
+        )
+        db.add(lead)
+        
+        # 3. Update Attempt with user.id
+        db.query(TestAttempt).filter(
+            TestAttempt.guest_session_id == guest_session_id,
+            TestAttempt.student_id.is_(None)
+        ).update({"student_id": user.id})
+        
+        db.commit()
+        db.refresh(user)
+        return user
+
     async def authenticate_user(self, db: Session, email: str, password: str) -> Optional[User]:
         user = self.repository.authenticate(db, email, password)
         if not user:

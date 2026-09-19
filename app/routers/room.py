@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from app.core.database import get_db
-from app.dependencies import CommonQueryParams, get_current_admin_user
+from app.dependencies import CommonQueryParams, get_current_admin_user, require_any_role
+from app.models.user import UserRole
 from app.models.academic import Room
 from app.schemas.base_schema import PaginationResponse
 from app.services.room_service import room_service
@@ -12,7 +13,7 @@ from app.schemas.room import RoomResponse
 base_router = create_crud_router(
     model=Room,
     db_dependency=get_db,
-    auth_dependency=get_current_admin_user
+    auth_dependency=require_any_role(UserRole.SYSTEM_ADMIN, UserRole.CENTER_ADMIN, UserRole.OFFICE_ADMIN)
 )
 
 # Main router
@@ -27,7 +28,7 @@ async def get_available_rooms(
     params: CommonQueryParams = Depends(),
     min_capacity: Optional[int] = Query(None, description="Minimum capacity"),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_admin_user)
+    current_user = Depends(require_any_role(UserRole.SYSTEM_ADMIN, UserRole.CENTER_ADMIN, UserRole.OFFICE_ADMIN))
 ):
     """Get available rooms with optional capacity filter"""
     

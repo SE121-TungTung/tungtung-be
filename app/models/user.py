@@ -10,6 +10,8 @@ class UserRole(enum.Enum):
     OFFICE_ADMIN = "office_admin"
     CENTER_ADMIN = "center_admin"
     SYSTEM_ADMIN = "system_admin"
+    GUEST = "guest"  # Tài khoản tạm, hết hạn sau 30 ngày
+    GUEST_STUDENT = "guest_student"  # Tài khoản Guest đã nhập thông tin (Lead)
 
 class UserStatus(enum.Enum):
     ACTIVE = "active"

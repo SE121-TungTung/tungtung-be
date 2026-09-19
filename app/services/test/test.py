@@ -1,8 +1,9 @@
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, case
+from sqlalchemy import func, case, cast
+from sqlalchemy.dialects.postgresql import JSONB
 from uuid import UUID
 from fastapi import HTTPException
-from typing import Optional, List
+from typing import Optional, List, Dict
 from datetime import datetime
 
 from app.schemas.base_schema import PaginationResponse, PaginationMetadata
@@ -538,6 +539,7 @@ class TestService:
         student_id: UUID,
         class_id: Optional[UUID] = None,
         skill: Optional[SkillArea] = None,
+        tags: Optional[Dict[str, str]] = None,  # e.g. {"task_type": "writing_task_1", "chart_type": "bar_chart"}
         skip: int = 0,
         limit: int = 20
     ):
@@ -567,6 +569,22 @@ class TestService:
                         .filter(TestSection.skill_area == skill)
                     )
                 )
+
+            # Tags filter — JSONB containment trên QuestionBank.tags
+            # Đi qua chain: Test → TestQuestion → QuestionBank
+            if tags:
+                for tag_key, tag_value in tags.items():
+                    if tag_value:  # bỏ qua nếu value rỗng
+                        containment = {tag_key: tag_value}
+                        base_query = base_query.filter(
+                            Test.id.in_(
+                                db.query(TestQuestion.test_id)
+                                .join(QuestionBank, QuestionBank.id == TestQuestion.question_id)
+                                .filter(
+                                    cast(QuestionBank.tags, JSONB).contains(containment)
+                                )
+                            )
+                        )
 
             # ============================================================
             # 2. TOTAL & METADATA
@@ -679,6 +697,96 @@ class TestService:
 
         except Exception as e:
             raise APIException(status_code=500, code="LIST_TESTS_ERROR", message=None)
+
+    def list_tests_for_guest(
+        self,
+        db: Session,
+        skill: Optional[SkillArea] = None,
+        skip: int = 0,
+        limit: int = 20
+    ):
+        try:
+            now = datetime.now(timezone.utc)
+            base_query = (
+                db.query(Test)
+                .filter(
+                    Test.deleted_at.is_(None),
+                    Test.status == TestStatus.PUBLISHED,
+                    Test.class_id.is_(None),
+                    (Test.start_time.is_(None)) | (Test.start_time <= now),
+                    (Test.end_time.is_(None)) | (Test.end_time >= now),
+                )
+            )
+
+            if skill:
+                base_query = base_query.filter(
+                    Test.id.in_(
+                        db.query(TestSection.test_id)
+                        .filter(TestSection.skill_area == skill)
+                    )
+                )
+
+            total = base_query.count()
+            page = (skip // limit) + 1 if limit > 0 else 1
+            total_pages = math.ceil(total / limit) if limit > 0 else 1
+
+            meta = PaginationMetadata(
+                page=page,
+                limit=limit,
+                total=total,
+                total_pages=total_pages
+            )
+
+            tests = (
+                base_query
+                .options(
+                    joinedload(Test.sections),
+                    joinedload(Test.questions)
+                )
+                .order_by(
+                    Test.start_time.desc().nullslast(),
+                    Test.created_at.desc()
+                )
+                .offset(skip)
+                .limit(limit)
+                .all()
+            )
+
+            if not tests:
+                return PaginationResponse(data=[], meta=meta)
+
+            results = []
+            for test in tests:
+                skill_area = (
+                    test.sections[0].skill_area
+                    if test.sections
+                    else SkillArea.READING
+                )
+                results.append(StudentTestListResponse(
+                    id=test.id,
+                    title=test.title,
+                    description=test.description,
+                    skill=skill_area,
+                    difficulty=DifficultyLevel.MEDIUM,
+                    test_type=test.test_type.value if hasattr(test.test_type, 'value') else test.test_type,
+                    duration_minutes=test.time_limit_minutes or 0,
+                    total_questions=len(test.questions),
+                    created_at=test.created_at,
+                    status=test.status.value if hasattr(test.status, 'value') else test.status,
+                    total_points=float(test.total_points or 0),
+                    passing_score=float(test.passing_score or 0),
+                    attempts_count=0,
+                    max_attempts=test.max_attempts or 1,
+                    can_attempt=True
+                ))
+
+            return PaginationResponse(
+                data=results,
+                meta=meta
+            )
+        except Exception as e:
+            raise APIException(status_code=500, code="LIST_TESTS_ERROR", message=None)
+
 
     def get_test_summary(self, db: Session, test_id: UUID):
         """

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, status, Query, BackgroundTasks, UploadFi
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from app.core.database import get_db
-from app.dependencies import get_current_active_user, get_current_admin_user, get_current_user, CommonQueryParams
+from app.dependencies import get_current_active_user, get_current_admin_user, get_current_user, CommonQueryParams, require_any_role, require_role
 from app.schemas.user import UserResponse, UserCreate, UserUpdate, UserPasswordUpdate, UserListResponse, BulkImportRequest, UserUpdateForm, ClassWithMembersResponse, TargetBandRequest
 from app.services.user_service import user_service
 from app.models.user import User, UserRole, UserStatus
@@ -158,7 +158,7 @@ async def create_user(
         description="ID của lớp học mà sinh viên sẽ được tự động gán vào (Enrollment ban đầu)"
     ),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_role(UserRole.SYSTEM_ADMIN))
 ):
     """Create new user (admin only)"""
     data = await user_service.create_user(db, user_create, current_user.id, default_class_id=default_class_id, background_tasks=background_tasks)
@@ -168,7 +168,7 @@ async def create_user(
 async def bulk_create_users(
     request: BulkImportRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_role(UserRole.SYSTEM_ADMIN))
 ):
     """Bulk create users from a list with auto-generated passwords and email notifications (admin only)."""
     data = await user_service.bulk_create_users(db, request, current_user.id)
@@ -180,7 +180,7 @@ async def list_users(
     role: Optional[UserRole] = Query(None, description="Filter by user role"),
     search: Optional[str] = Query(None, description="Search in name and email"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(require_any_role(UserRole.SYSTEM_ADMIN, UserRole.CENTER_ADMIN, UserRole.OFFICE_ADMIN))
 ):
     """List users with filters (admin only)"""
     data = await user_service.get_list_user(commons=commons, role=role, search=search, db=db, current_user=current_user)
@@ -189,7 +189,7 @@ async def list_users(
 @router.get("/overview", response_model=ApiResponse[dict])
 async def get_user_overview(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user)
+    current_user: User = Depends(require_any_role(UserRole.SYSTEM_ADMIN, UserRole.CENTER_ADMIN, UserRole.OFFICE_ADMIN))
 ):
     """Get user overview statistics"""
     data = user_service.get_user_overview(db, current_user=current_user)
@@ -199,7 +199,7 @@ async def get_user_overview(
 async def get_user(
     user_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_any_role(UserRole.SYSTEM_ADMIN, UserRole.CENTER_ADMIN, UserRole.OFFICE_ADMIN))
 ):
     """Get user by ID (admin only)"""
     user = await user_service.get(db, user_id)
@@ -228,7 +228,7 @@ async def update_user(
     update_form: UserUpdateForm = Depends(),
     avatar_file: Optional[UploadFile] = File(None, description="Avatar image file"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_admin_user)
+    current_user: User = Depends(require_role(UserRole.SYSTEM_ADMIN))
 ):
     """Update user (admin only)"""
     user_update = update_form.to_update_schema(UserUpdate)
