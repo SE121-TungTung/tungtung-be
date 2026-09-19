@@ -1,0 +1,36 @@
+[
+  {
+    "id": 1,
+    "skill": "writing",
+    "task_type": "writing_task_1",
+    "title": "Task 1: Process of Recycling Plastic Bottles",
+    "prompt": "The diagram below shows the process of recycling plastic bottles. Summarise the information by selecting and reporting the main features, and make comparisons where relevant.",
+    "image_url": "https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?w=800",
+    "min_words": 150
+  },
+  {
+    "id": 2,
+    "skill": "writing",
+    "task_type": "writing_task_2",
+    "title": "Task 2: Impact of Artificial Intelligence on Future Employment",
+    "prompt": "Some people believe that Artificial Intelligence (AI) will create more job opportunities, while others argue that it will cause widespread unemployment. Discuss both views and give your opinion.",
+    "min_words": 250
+  },
+  {
+    "id": 3,
+    "skill": "writing",
+    "task_type": "writing_task_1",
+    "title": "Task 1: Coffee Consumption Bar Chart",
+    "prompt": "The bar chart below shows the average daily coffee consumption per person in five European countries in 2024. Summarise the main trends and compare where relevant.",
+    "image_url": "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?w=800",
+    "min_words": 150
+  },
+  {
+    "id": 4,
+    "skill": "writing",
+    "task_type": "writing_task_2",
+    "title": "Task 2: Remote Work vs Office Work",
+    "prompt": "Working from home has become increasingly common. Do the advantages of remote working outweigh the disadvantages for both employers and employees?",
+    "min_words": 250
+  }
+]

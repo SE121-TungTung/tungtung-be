@@ -224,7 +224,7 @@ async def create_post(
     return post
 
 
-def update_post(
+async def update_post(
     db: Session,
     post: ClassPost,
     current_user: User,
@@ -232,8 +232,15 @@ def update_post(
     content: Optional[str] = None,
     material_category: Optional[MaterialCategory] = None,
     is_comment_locked: Optional[bool] = None,
+    remove_attachment_indices: Optional[List[int]] = None,
+    new_files: Optional[List[UploadFile]] = None,
 ) -> ClassPost:
-    """Chỉnh sửa nội dung bài viết. Chỉ tác giả (hoặc Admin) được phép."""
+    """Chỉnh sửa nội dung bài viết. Chỉ tác giả (hoặc Admin) được phép.
+
+    Hỗ trợ quản lý tệp đính kèm:
+    - remove_attachment_indices: danh sách index (0-based) của attachments cần xóa
+    - new_files: danh sách file mới cần upload và thêm vào
+    """
     if not _is_authorized_to_edit(current_user, post):
         raise APIException(
             status_code=403,
@@ -249,6 +256,37 @@ def update_post(
         post.material_category = material_category
     if is_comment_locked is not None:
         post.is_comment_locked = is_comment_locked
+
+    # ─── Xử lý attachments ────────────────────────────────────────────────
+    current_attachments = list(post.attachments or [])
+
+    # 1. Xóa attachments theo index (giảm dần để index không bị lệch)
+    if remove_attachment_indices:
+        valid_indices = sorted(
+            [i for i in remove_attachment_indices if 0 <= i < len(current_attachments)],
+            reverse=True,
+        )
+        for idx in valid_indices:
+            current_attachments.pop(idx)
+
+    # 2. Upload file mới
+    new_attachments: List[dict] = []
+    if new_files:
+        new_attachments = await _validate_and_upload_files(new_files)
+
+    # 3. Merge và kiểm tra giới hạn
+    merged = current_attachments + new_attachments
+    if len(merged) > MAX_FILES_PER_POST:
+        raise APIException(
+            status_code=400,
+            code="UPLOAD_TOO_MANY_FILES",
+            message=f"Tổng số tệp đính kèm không được vượt quá {MAX_FILES_PER_POST}. "
+                    f"Hiện tại: {len(current_attachments)} giữ lại + {len(new_attachments)} mới = {len(merged)}.",
+        )
+
+    # Chỉ cập nhật attachments nếu có thay đổi
+    if remove_attachment_indices or new_files:
+        post.attachments = merged
 
     post.is_edited = True
     post.updated_by = current_user.id

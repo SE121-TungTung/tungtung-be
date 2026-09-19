@@ -127,7 +127,15 @@ class ClassPostRepository(BaseRepository[ClassPost]):
             )
         )
         if material_category is not None:
-            q = q.filter(self.model.material_category == material_category)
+            if material_category == MaterialCategory.OTHER:
+                q = q.filter(
+                    or_(
+                        self.model.material_category == MaterialCategory.OTHER,
+                        self.model.material_category.is_(None),
+                    )
+                )
+            else:
+                q = q.filter(self.model.material_category == material_category)
         if search:
             search_pat = f"%{search}%"
             q = q.filter(

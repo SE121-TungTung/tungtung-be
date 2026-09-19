@@ -21,10 +21,12 @@ from app.models.user import User, UserRole
 from app.models.academic import Class, EnrollmentStatus
 from app.models.class_post import ClassPostType, MaterialCategory
 from app.repositories.class_post import class_post_repo
+from app.repositories.class_post_reaction import class_post_reaction_repo
 from app.schemas.class_post import ClassPostResponse, ClassPostUpdate, ClassPostPinRequest
-from app.schemas.class_post_reaction import ReactionToggleRequest, ReactionToggleResponse
-from app.schemas.class_post_view import RecordViewResponse, ViewersSummaryResponse
+from app.schemas.class_post_reaction import ReactionToggleRequest, ReactionToggleResponse, ReactionsSummary
+from app.schemas.class_post_view import RecordViewResponse, ViewersSummaryResponse, RecordDownloadRequest, RecordDownloadResponse, PostEngagementSummaryResponse
 from app.repositories.class_post_view import class_post_view_repo
+from app.repositories.class_post_download import class_post_download_repo
 from app.services import class_post_service
 from app.services import class_post_reaction_service
 from app.services.notification_service import run_broadcast_task
@@ -141,6 +143,28 @@ async def create_class_post(
     return ApiResponse(data=post, message="Đăng bài viết thành công.")
 
 
+# ─── Helpers — Batch Reaction Enrichment ──────────────────────────────────────
+
+def _enrich_posts_with_reactions(db: Session, posts: list, current_user: User) -> list:
+    """Enrich danh sách ORM posts với reactions_summary (batch — 2 query duy nhất)."""
+    if not posts:
+        return posts
+
+    post_ids = [p.id for p in posts]
+    counts_map = class_post_reaction_repo.get_reactions_summary_batch(db, post_ids)
+    user_rxn_map = class_post_reaction_repo.get_user_reactions_batch(db, post_ids, current_user.id)
+
+    for post in posts:
+        summary = counts_map.get(post.id, {"like": 0, "heart": 0, "understood": 0})
+        post.reactions_summary = ReactionsSummary(
+            like=summary.get("like", 0),
+            heart=summary.get("heart", 0),
+            understood=summary.get("understood", 0),
+            user_reactions=user_rxn_map.get(post.id, []),
+        )
+    return posts
+
+
 # ─── GET — Danh sách bài viết ─────────────────────────────────────────────────
 
 @router.get("/{class_id}/posts", response_model=PaginationResponse[ClassPostResponse])
@@ -157,6 +181,7 @@ def get_class_posts(
     - Bài ghim luôn đứng đầu.
     - Hỗ trợ filter theo post_type.
     - Tự lọc bài đã bị soft-delete.
+    - reactions_summary được enrich qua batch query (tránh N+1).
     """
     class_obj = _get_class_or_404(db, class_id)
     _check_class_access(current_user, class_obj)
@@ -168,6 +193,8 @@ def get_class_posts(
     skip = (page - 1) * limit
     posts = class_post_repo.get_by_class(db, class_id=class_id, skip=skip, limit=limit, post_type=post_type_enum)
     total = class_post_repo.count_by_class(db, class_id=class_id, post_type=post_type_enum)
+
+    _enrich_posts_with_reactions(db, posts, current_user)
 
     return PaginationResponse(data=posts, total=total, page=page, limit=limit)
 
@@ -217,23 +244,31 @@ def get_class_materials(
         material_category=mat_cat_enum, search=search_term,
     )
 
+    _enrich_posts_with_reactions(db, posts, current_user)
+
     return PaginationResponse(data=posts, total=total, page=page, limit=limit)
 
 
 # ─── PUT — Chỉnh sửa bài viết ────────────────────────────────────────────────
 
 @router.put("/{class_id}/posts/{post_id}", response_model=ApiResponse[ClassPostResponse])
-def update_class_post(
+async def update_class_post(
     class_id: UUID,
     post_id: UUID,
     title: Optional[str] = Form(None),
     content: Optional[str] = Form(None),
     material_category: Optional[str] = Form(None),
     is_comment_locked: Optional[bool] = Form(None),
+    remove_attachment_indices: Optional[str] = Form(None, description='JSON array of indices to remove, e.g. "[0,2]"'),
+    files: List[UploadFile] = File(default=[]),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
     """Chỉnh sửa nội dung bài viết. Chỉ tác giả (hoặc Admin) được phép.
+    
+    Hỗ trợ quản lý tệp đính kèm:
+    - `remove_attachment_indices`: JSON array các index cần xóa, VD: "[0,2]"
+    - `files`: tệp mới thêm vào (multipart)
     
     Sau khi cập nhật, `is_edited` sẽ tự động được set thành True.
     """
@@ -252,7 +287,21 @@ def update_class_post(
                 message=f"material_category không hợp lệ: '{material_category}'.",
             )
 
-    updated_post = class_post_service.update_post(
+    # Parse remove_attachment_indices
+    indices_to_remove: List[int] = []
+    if remove_attachment_indices:
+        import json
+        try:
+            indices_to_remove = json.loads(remove_attachment_indices)
+            if not isinstance(indices_to_remove, list):
+                indices_to_remove = []
+        except (json.JSONDecodeError, TypeError):
+            indices_to_remove = []
+
+    # Filter file rỗng
+    valid_new_files = [f for f in files if f.filename]
+
+    updated_post = await class_post_service.update_post(
         db=db,
         post=post,
         current_user=current_user,
@@ -260,6 +309,8 @@ def update_class_post(
         content=content,
         material_category=mat_cat_enum,
         is_comment_locked=is_comment_locked,
+        remove_attachment_indices=indices_to_remove,
+        new_files=valid_new_files,
     )
     return ApiResponse(data=updated_post, message="Cập nhật bài viết thành công.")
 
@@ -461,16 +512,63 @@ def record_post_view(
     )
 
 
-# ─── GET /views — Danh sách người đã xem (GV / TA / Admin) ─────────────────
+# ─── POST /download — Ghi nhận tải tệp đính kèm (Học viên) ───────────────────
 
-@router.get("/{class_id}/posts/{post_id}/views", response_model=ApiResponse[ViewersSummaryResponse])
+@router.post("/{class_id}/posts/{post_id}/download", response_model=ApiResponse[RecordDownloadResponse])
+def record_post_file_download(
+    class_id: UUID,
+    post_id:  UUID,
+    payload:  RecordDownloadRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    class_obj = _get_class_or_404(db, class_id)
+    _check_class_access(current_user, class_obj)
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    if current_user.role == UserRole.STUDENT:
+        record, is_new = class_post_download_repo.record_download(
+            db=db,
+            post_id=post_id,
+            user_id=current_user.id,
+            file_name=payload.file_name,
+            file_url=payload.file_url,
+        )
+        return ApiResponse(
+            data=RecordDownloadResponse(
+                post_id=post_id,
+                file_name=payload.file_name,
+                downloaded=True,
+                downloaded_at=record.downloaded_at,
+            ),
+            message="Ghi nhận lượt tải tệp đính kèm thành công.",
+        )
+
+    return ApiResponse(
+        data=RecordDownloadResponse(
+            post_id=post_id,
+            file_name=payload.file_name,
+            downloaded=False,
+            downloaded_at=None,
+        ),
+        message="Không ghi nhận lượt tải cho tài khoản quản trị/giảng viên.",
+    )
+
+
+# ─── GET /views — Danh sách người đã xem & Thống kê tương tác (GV / TA / Admin) ─
+
+@router.get("/{class_id}/posts/{post_id}/views", response_model=ApiResponse[PostEngagementSummaryResponse])
+@router.get("/{class_id}/posts/{post_id}/engagement", response_model=ApiResponse[PostEngagementSummaryResponse])
 def get_post_viewers(
     class_id: UUID,
     post_id:  UUID,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    """Lấy danh sách học viên đã xem và chưa xem bài viết.
+    """Lấy danh sách thống kê tương tác bài viết (Views, Reactions/Comments, Downloads).
     
     Quyền hạn: Chỉ Giáo viên chủ nhiệm, Giáo viên dạy thay, Trợ giảng hoặc Quản trị viên.
     """
@@ -495,5 +593,6 @@ def get_post_viewers(
         raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
 
     summary = class_post_view_repo.get_viewers_summary(db, post_id=post_id, class_id=class_id)
-    return ApiResponse(data=summary, message="Lấy danh sách người đã xem thành công.")
+    return ApiResponse(data=summary, message="Lấy danh sách thống kê tương tác thành công.")
+
 

@@ -31,10 +31,13 @@ async def handle_cloudinary_upload(uploaded_file: UploadFile, folder_name: str) 
         # Trả về Exception phù hợp
         raise
 
-    # 2. Tạo Public ID duy nhất
-    # Đây là ID mà bạn sẽ dùng để tham chiếu file này sau này
+    # 2. Tạo Public ID duy nhất — giữ lại extension gốc để download đúng định dạng
+    original_filename = uploaded_file.filename or ""
+    ext = ""
+    if "." in original_filename:
+        ext = "." + original_filename.rsplit(".", 1)[-1].lower()
     unique_id = uuid4()
-    public_id = f"{folder_name}/{unique_id}"
+    public_id = f"{folder_name}/{unique_id}{ext}"
     
     # 3. Thực hiện Upload
     try:
