@@ -30,13 +30,20 @@ def get_current_admin_user(
         )
     return current_user
 
-def require_role(required_role: UserRole):
+def require_role(required_role: UserRole | list[UserRole]):
     def role_checker(current_user: User = Depends(get_current_active_user)) -> User:
-        if current_user.role != required_role:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not enough permissions"
-            )
+        if isinstance(required_role, list):
+            if current_user.role not in required_role:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not enough permissions"
+                )
+        else:
+            if current_user.role != required_role:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Not enough permissions"
+                )
         return current_user
     return role_checker
 

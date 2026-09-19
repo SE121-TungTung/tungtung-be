@@ -4,15 +4,12 @@ import app.core.database as database
 from app.core.config import settings
 from app.core.exceptions import APIException, api_exception_handler, http_exception_handler, global_exception_handler, validation_exception_handler
 from app.routers import (
-    auth, users, 
-    room, course, classes, enrollment, class_session,
-    attendance, schedule, ga_schedule, test, 
-    message, notification,
-    kpi,
-    invoice, payment, report, refund,
-    chatbot, audit_log, recommendation,
-    substitution, certificate,
-    vocabulary, public)
+    auth, users, room, course, classes, enrollment, class_session,
+    attendance, schedule, ga_schedule, message, test,
+    notification, kpi, invoice, payment, report, refund,
+    chatbot, audit_log, recommendation, substitution, certificate, vocabulary, public,
+    lead
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 from contextlib import asynccontextmanager
@@ -88,6 +85,7 @@ api_router.include_router(report.router)
 api_router.include_router(refund.router)
 api_router.include_router(chatbot.router)
 api_router.include_router(audit_log.router)
+api_router.include_router(lead.router)
 api_router.include_router(recommendation.router)
 api_router.include_router(substitution.router)
 api_router.include_router(certificate.router)
