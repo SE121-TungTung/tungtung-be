@@ -66,3 +66,33 @@ def cleanup_expired_guests(self):
         raise self.retry(exc=exc, countdown=60 * 10)  # retry sau 10 phút
     finally:
         db.close()
+
+
+@celery_app.task(name="app.tasks.cleanup_guest.cleanup_guest_test_attempts", bind=True, max_retries=3)
+def cleanup_guest_test_attempts(self):
+    """Xóa dữ liệu thi thử nháp của Guest sau 7 ngày."""
+    from app.models.academic import TestAttempt
+    from datetime import timedelta
+    
+    db = SessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        seven_days_ago = now - timedelta(days=7)
+
+        # Lấy các bài thi của guest (student_id IS NULL) và đã tạo quá 7 ngày
+        deleted_count = db.query(TestAttempt).filter(
+            TestAttempt.student_id.is_(None),
+            TestAttempt.guest_session_id.isnot(None),
+            TestAttempt.created_at < seven_days_ago
+        ).delete(synchronize_session=False)
+
+        db.commit()
+        logger.info("Cleanup guest test attempts: deleted %d records.", deleted_count)
+        return {"deleted": deleted_count}
+
+    except Exception as exc:
+        db.rollback()
+        logger.error("Cleanup guest test attempts failed: %s", exc)
+        raise self.retry(exc=exc, countdown=60 * 10)
+    finally:
+        db.close()

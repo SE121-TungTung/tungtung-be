@@ -21,7 +21,8 @@ from app.core.exceptions import APIException
 from app.schemas.token import (
     Token, LoginRequest, LoginResponse, 
     PasswordResetRequest, PasswordResetConfirm, 
-    PasswordResetResponse, RefreshTokenRequest
+    PasswordResetResponse, RefreshTokenRequest,
+    DualHookRequest
 )
 from app.services.user_service import user_service
 from app.models.user import UserStatus
@@ -218,4 +219,36 @@ async def guest_login(db: Session = Depends(get_db)):
         "refresh_token": refresh_token,
         "token_type": "bearer",
         "is_first_login": False,
+    })
+
+@router.post("/dual-hook", response_model=ApiResponse[LoginResponse])
+async def dual_hook(
+    data: DualHookRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Dual Hook: Nhận thông tin Lead -> Tạo User -> Liên kết bài thi -> Trả về JWT.
+    """
+    user = await user_service.handle_dual_hook(
+        db=db,
+        full_name=data.full_name,
+        email=data.email,
+        phone=data.phone,
+        guest_session_id=data.guest_session_id
+    )
+
+    access_token = create_access_token(
+        subject=user.email,
+        expires_delta=timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    refresh_token = create_refresh_token(subject=user.email)
+
+    # Chuyển attempt_id sang frontend qua response metadata nếu cần,
+    # nhưng frontend đã biết session_id nên có thể gọi get attempt list sau khi login.
+
+    return ApiResponse(data={
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "is_first_login": user.is_first_login,
     })

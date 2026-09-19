@@ -33,6 +33,7 @@ class RouteGenerator:
         crud_class: CRUDBase,
         db_dependency,
         auth_dependency = None,
+        write_auth_dependency = None,
         prefix: str = None,
         tag_prefix: str = None
     ):
@@ -40,6 +41,7 @@ class RouteGenerator:
         self.crud = crud_class
         self.get_db = db_dependency
         self.auth_dependency = auth_dependency
+        self.write_auth_dependency = write_auth_dependency or auth_dependency
         
         self.model_name = model.__name__.lower()
         self.model_plural = inflector.plural(self.model_name)
@@ -73,6 +75,7 @@ class RouteGenerator:
         UpdateSchema = self.schemas['update']
         
         auth_dep = [Depends(self.auth_dependency)] if self.auth_dependency else []
+        write_auth_dep = [Depends(self.write_auth_dependency)] if self.write_auth_dependency else []
         db_dep = Depends(self.get_db)
 
         # ==========================================
@@ -147,7 +150,7 @@ class RouteGenerator:
                 response_model=ApiResponse[ResponseSchema], 
                 status_code=status.HTTP_201_CREATED,
                 summary=f"Create {self.model_name}",
-                dependencies=auth_dep
+                dependencies=write_auth_dep
             )
             async def create_item(
                 item: Any = Body(...), db: Session = db_dep
@@ -167,7 +170,7 @@ class RouteGenerator:
                 "/{id}",
                 response_model=ApiResponse[ResponseSchema], 
                 summary=f"Update {self.model_name}",
-                dependencies=auth_dep
+                dependencies=write_auth_dep
             )
             async def update_item(
                 id: str = Path(...), item: Any = Body(...), db: Session = db_dep
@@ -191,7 +194,7 @@ class RouteGenerator:
                 "/{id}",
                 response_model=ApiResponse[Dict[str, Any]], 
                 summary=f"Delete {self.model_name}",
-                dependencies=auth_dep
+                dependencies=write_auth_dep
             )
             async def delete_item(
                 id: str = Path(...), soft: bool = Query(True), db: Session = db_dep
@@ -214,6 +217,7 @@ def create_crud_router(
     model,
     db_dependency,
     auth_dependency = None,
+    write_auth_dependency = None,
     include_routes: List[str] = None,
     exclude_routes: List[str] = None,
     prefix: str = None,
@@ -230,6 +234,7 @@ def create_crud_router(
         crud_class=crud,
         db_dependency=db_dependency,
         auth_dependency=auth_dependency,
+        write_auth_dependency=write_auth_dependency,
         prefix=prefix,
         tag_prefix=tag_prefix
     )

@@ -15,11 +15,11 @@ from app.models.user import PasswordResetOTP
 db = get_db()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-security = HTTPBearer()
+security = HTTPBearer(auto_error=False)
 
 def create_refresh_token(subject: Union[str, Any]) -> str:
     """Create refresh token (long-lived for remember me)"""
-    expire = datetime.now() + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+    expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     
     to_encode = {
         "exp": expire, 
@@ -110,9 +110,9 @@ def create_access_token(
     subject: Union[str, Any], expires_delta: Optional[timedelta] = None
 ) -> str:
     if expires_delta:
-        expire = datetime.now() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.now() + timedelta(
+        expire = datetime.now(timezone.utc) + timedelta(
             minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )
     to_encode = {"exp": expire, "sub": str(subject)}
@@ -135,6 +135,9 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     
+    if not credentials:
+        raise credentials_exception
+        
     try:
         payload = jwt.decode(
             credentials.credentials, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]

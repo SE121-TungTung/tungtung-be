@@ -52,6 +52,7 @@ class ClassStatus(enum.Enum):
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     POSTPONED = "postponed"
+    OPEN = "open"
 
 class PaymentStatus(enum.Enum):
     PENDING = "pending"

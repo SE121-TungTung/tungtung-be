@@ -22,6 +22,7 @@ from app.schemas.test.test_attempt import (
     StartAttemptResponse,
     SubmitAttemptRequest,
     SubmitAttemptResponse,
+    GuestSubmitAttemptResponse,
     QuestionResult,
     GradeAttemptRequest,
     TestAttemptSummaryResponse
@@ -35,6 +36,7 @@ from app.services.notification_service import notification_service
 from app.schemas.notification import NotificationCreate
 from app.models.notification import NotificationType, NotificationPriority
 from app.services.test.test_grader_service import get_grader
+from app.core.redis import redis_manager
 
 class AttemptService:
     
@@ -83,6 +85,50 @@ class AttemptService:
             test_id=test_id,
             student_id=student_id,
             attempt_number=count + 1,
+            status=AttemptStatus.IN_PROGRESS,
+            started_at=now
+        )
+        db.add(attempt)
+        db.commit()
+        db.refresh(attempt)
+
+        return StartAttemptResponse(
+            attempt_id=attempt.id,
+            test_id=attempt.test_id,
+            started_at=attempt.started_at,
+            attempt_number=attempt.attempt_number
+        )
+
+    def start_guest_attempt(self, db: Session, test_id: UUID, guest_session_id: str) -> StartAttemptResponse:
+        test = db.query(Test).filter(Test.id == test_id, Test.deleted_at.is_(None)).first()
+        if not test:
+            raise HTTPException(status_code=404, detail="Test not found")
+
+        now = datetime.now(timezone.utc)
+        if test.start_time and now < test.start_time:
+            raise HTTPException(status_code=400, detail="Test not started yet")
+        if test.end_time and now > test.end_time:
+            raise HTTPException(status_code=400, detail="Test has ended")
+
+        existing = db.query(TestAttempt).filter(
+            TestAttempt.test_id == test_id,
+            TestAttempt.guest_session_id == guest_session_id,
+            TestAttempt.status == AttemptStatus.IN_PROGRESS
+        ).first()
+        
+        if existing:
+            return StartAttemptResponse(
+                attempt_id=existing.id,
+                test_id=existing.test_id,
+                started_at=existing.started_at,
+                attempt_number=existing.attempt_number
+            )
+
+        attempt = TestAttempt(
+            test_id=test_id,
+            guest_session_id=guest_session_id,
+            student_id=None,
+            attempt_number=1,
             status=AttemptStatus.IN_PROGRESS,
             started_at=now
         )
@@ -322,6 +368,191 @@ class AttemptService:
             teacher_feedback=teacher_feedback,
             
             question_results=question_results
+        )
+
+    async def submit_guest_attempt(
+        self, 
+        db: Session, 
+        attempt_id: UUID, 
+        data: SubmitAttemptRequest,
+        guest_session_id: str,
+        ip_address: str = "unknown"
+    ) -> GuestSubmitAttemptResponse:
+        
+        # 1. Validate Attempt
+        attempt = db.query(TestAttempt).filter(TestAttempt.id == attempt_id).first()
+        if not attempt:
+            raise HTTPException(404, "Attempt not found")
+        if attempt.guest_session_id != guest_session_id:
+            raise HTTPException(403, "Not authorized")
+        if attempt.status != AttemptStatus.IN_PROGRESS:
+            raise HTTPException(400, "Attempt already submitted or expired")
+
+        # Quota Check for AI Grader (10 submissions/day/IP)
+        quota_key = f"grader_quota:ip:{ip_address}"
+        if redis_manager.redis_client:
+            current_count = await redis_manager.redis_client.get(quota_key)
+            if current_count and int(current_count) >= 10:
+                raise HTTPException(status_code=429, detail="AI_GRADER_QUOTA_EXCEEDED")
+                
+            pipe = redis_manager.redis_client.pipeline()
+            pipe.incr(quota_key)
+            if not current_count:
+                pipe.expire(quota_key, 86400) # 24 hours
+            await pipe.execute()
+
+        attempt.submitted_at = datetime.now(timezone.utc)
+        attempt.time_taken_seconds = int((attempt.submitted_at - attempt.started_at).total_seconds())
+        
+        # 2. Prepare Data
+        questions_query = (
+            db.query(QuestionBank, TestQuestion.points)
+            .join(TestQuestion, TestQuestion.question_id == QuestionBank.id)
+            .filter(TestQuestion.test_id == attempt.test_id)
+            .all()
+        )
+        
+        q_map = {q.id: (q, float(pts)) for q, pts in questions_query}
+        answers_map = {item.question_id: item for item in data.responses}
+
+        total_points_earned = 0.0
+        max_total_points = 0.0
+        any_manual_grading_required = False
+        
+        # Trữ lại các task AI grading để await
+        import asyncio
+        import json
+        grading_tasks = []
+        grading_context = []
+
+        # 3. Process Each Question
+        for q_id, (qb, max_points) in q_map.items():
+            submission = answers_map.get(q_id)
+            existing_resp = db.query(TestResponse).filter(
+                TestResponse.attempt_id == attempt.id,
+                TestResponse.question_id == q_id
+            ).first()
+            
+            points_earned = 0.0
+            is_correct = None
+            auto_graded = False
+            flagged = submission.flagged_for_review if submission else False
+            student_data = submission.response_data if submission else None
+            student_text = submission.response_text if submission else ""
+            
+            ai_feedback = None
+
+            # AUTO GRADING ONLY (Guest is only for public tests, usually just Reading/Listening)
+            if QuestionType.is_auto_gradable(qb.question_type):
+                auto_graded = True
+                if submission and qb.correct_answer:
+                    user_answer = None
+                    if isinstance(student_data, dict):
+                        user_answer = student_data.get("selected")
+                    else:
+                        user_answer = student_text
+                    
+                    is_correct = self._check_answer_correctness(
+                        user_answer=user_answer,
+                        correct_answer=qb.correct_answer,
+                        question_type=qb.question_type
+                    )
+                    points_earned = max_points if is_correct else 0.0
+                
+                total_points_earned += points_earned
+                max_total_points += max_points
+
+            elif qb.question_type in [QuestionType.WRITING_TASK_1, QuestionType.WRITING_TASK_2]:
+                if student_text:
+                    task = ai_grade_service.ai_grade_writing(qb, 1 if qb.question_type == QuestionType.WRITING_TASK_1 else 2, student_text)
+                    grading_tasks.append(task)
+                    grading_context.append((q_id, max_points))
+                else:
+                    auto_graded = True
+                max_total_points += max_points
+
+            elif qb.question_type in [
+                QuestionType.SPEAKING_PART_1, 
+                QuestionType.SPEAKING_PART_2, 
+                QuestionType.SPEAKING_PART_3
+            ]:
+                audio_url = student_data.get("audio_url") if isinstance(student_data, dict) else None
+                if audio_url:
+                    task = ai_grade_service.ai_grade_speaking(qb, audio_url)
+                    grading_tasks.append(task)
+                    grading_context.append((q_id, max_points))
+                else:
+                    auto_graded = True
+                max_total_points += max_points
+
+            if not existing_resp:
+                new_resp = TestResponse(
+                    attempt_id=attempt.id,
+                    question_id=q_id,
+                    response_text=student_text,
+                    response_data=student_data,
+                    is_correct=is_correct,
+                    points_earned=points_earned,
+                    auto_graded=auto_graded,
+                    flagged_for_review=flagged,
+                    ai_feedback=ai_feedback
+                )
+                db.add(new_resp)
+                db.flush()
+
+        # Thực thi AI grading cho Guest
+        if grading_tasks:
+            results = await asyncio.gather(*grading_tasks, return_exceptions=True)
+            for i, result in enumerate(results):
+                q_id, max_pts = grading_context[i]
+                resp = db.query(TestResponse).filter(TestResponse.attempt_id == attempt.id, TestResponse.question_id == q_id).first()
+                if resp:
+                    if isinstance(result, Exception):
+                        resp.ai_feedback = json.dumps({"error": str(result)})
+                        any_manual_grading_required = True
+                    else:
+                        resp.ai_feedback = json.dumps(result)
+                        resp.auto_graded = True
+                        # Parse score from AI
+                        raw_data = result.get("raw", {})
+                        if "overallScore" in raw_data:
+                            band = float(raw_data["overallScore"])
+                            resp.points_earned = (band / 9.0) * max_pts
+                            total_points_earned += resp.points_earned
+
+        # Finalize Attempt Status & Score
+        self.finalize_score(attempt, total_points_earned, max_total_points, any_manual_grading_required)
+
+        db.commit()
+        db.refresh(attempt)
+
+        return GuestSubmitAttemptResponse(
+            attempt_id=attempt.id,
+            submitted_at=attempt.submitted_at,
+            time_taken_seconds=int((attempt.submitted_at - attempt.started_at).total_seconds()),
+            status=attempt.status.value,
+            total_score=float(attempt.total_score or 0),
+            percentage_score=float(attempt.percentage_score or 0),
+            band_score=float(attempt.band_score) if attempt.band_score else None,
+            passed=attempt.passed
+        )
+
+    def get_guest_attempt_summary(self, db: Session, attempt_id: UUID, guest_session_id: str) -> GuestSubmitAttemptResponse:
+        attempt = db.query(TestAttempt).filter(TestAttempt.id == attempt_id).first()
+        if not attempt:
+            raise HTTPException(404, "Attempt not found")
+        if attempt.guest_session_id != guest_session_id:
+            raise HTTPException(403, "Not authorized to view this attempt")
+        
+        return GuestSubmitAttemptResponse(
+            attempt_id=attempt.id,
+            submitted_at=attempt.submitted_at or attempt.started_at,
+            time_taken_seconds=attempt.time_taken_seconds or 0,
+            status=attempt.status.value,
+            total_score=float(attempt.total_score or 0),
+            percentage_score=float(attempt.percentage_score or 0),
+            band_score=float(attempt.band_score) if attempt.band_score else None,
+            passed=attempt.passed
         )
 
     # ============================================================

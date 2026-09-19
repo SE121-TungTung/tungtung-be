@@ -533,7 +533,8 @@ class TestAttempt(BaseModel):
     __tablename__ = "test_attempts"
 
     test_id = Column(UUID(as_uuid=True), ForeignKey("tests.id", ondelete="CASCADE"), nullable=False)
-    student_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    student_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    guest_session_id = Column(String(255), index=True, nullable=True)
 
     attempt_number = Column(Integer, default=1, nullable=False)
     started_at = Column(DateTime(timezone=True), default=func.now(), nullable=False)

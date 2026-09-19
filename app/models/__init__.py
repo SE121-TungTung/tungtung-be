@@ -20,4 +20,5 @@ from .ga_schedule import GARun, GAScheduleProposal, TeacherUnavailability
 from .recommendation import RecommendationLog
 from .substitution import SubstitutionRequest
 from .certificate import Certificate
-from .vocabulary import UserVocabulary
+from .vocabulary import UserVocabulary
+from .lead import Lead

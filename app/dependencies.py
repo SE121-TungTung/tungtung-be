@@ -79,7 +79,7 @@ def require_non_guest(
     """Chặn Guest truy cập các tính năng yêu cầu tài khoản thật.
     Dùng cho: tham gia lớp học, chat giáo viên, xem hồ sơ cá nhân đầy đủ, v.v.
     """
-    if current_user.role == UserRole.GUEST:
+    if current_user.role in [UserRole.GUEST, UserRole.GUEST_STUDENT]:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This feature is not available for guest accounts. Please register to continue."
@@ -152,6 +152,32 @@ async def get_current_user_from_token(token: str):
             
     except JWTError:
         raise HTTPException(401, "Could not validate credentials")
+
+# Actually, I'll just write get_current_user_optional manually.
+from fastapi.security import OAuth2PasswordBearer
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
+
+async def get_current_user_optional(
+    db: Session = Depends(get_db),
+    token: str = Depends(oauth2_scheme_optional)
+) -> User | None:
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(
+            token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+        )
+        email: str = payload.get("sub")
+        if email is None:
+            return None
+    except JWTError:
+        return None
+    
+    from app.services.user_service import user_service
+    user = await user_service.get_user_by_email(db, email=email)
+    if user is None:
+        return None
+    return user
 
 # Common query parameters
 class CommonQueryParams:

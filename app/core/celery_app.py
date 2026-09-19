@@ -24,5 +24,9 @@ celery_app.conf.update(
             "task": "app.tasks.cleanup_guest.cleanup_expired_guests",
             "schedule": crontab(hour=3, minute=0),
         },
+        "cleanup-guest-test-attempts-daily": {
+            "task": "app.tasks.cleanup_guest.cleanup_guest_test_attempts",
+            "schedule": crontab(hour=3, minute=10),
+        },
     },
 )

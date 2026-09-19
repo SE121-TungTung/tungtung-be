@@ -4,7 +4,7 @@ from uuid import UUID
 from typing import List, Optional
 
 from app.core.database import get_db
-from app.dependencies import get_current_admin_user, get_current_active_user, get_current_user, CommonQueryParams, require_non_guest
+from app.dependencies import get_current_admin_user, get_current_active_user, get_current_user, CommonQueryParams, require_non_guest, require_any_role
 from app.models.academic import Class
 from app.routers.generator import create_crud_router
 from app.schemas.classes import ClassResponse
@@ -20,8 +20,9 @@ from app.core.exceptions import APIException
 base_router = create_crud_router(
     model=Class,
     db_dependency=get_db,
-    auth_dependency=get_current_admin_user,
-    exclude_routes="list, get"
+    auth_dependency=require_non_guest,
+    write_auth_dependency=require_any_role(UserRole.SYSTEM_ADMIN, UserRole.CENTER_ADMIN, UserRole.OFFICE_ADMIN),
+    exclude_routes=["list", "get"]
 )
 
 # Step 1: Khai báo Router với ResponseWrapperRoute
@@ -39,7 +40,7 @@ def list_classes(
     search: Optional[str] = Query(None),
     include_deleted: bool = Query(False),
     db: Session = Depends(get_db),
-    current_user = Depends(get_current_active_user)
+    current_user = Depends(require_non_guest)
 ):
     """Danh sách lớp học có phân trang, sort, search và join các bảng liên quan"""
 
@@ -93,7 +94,7 @@ def list_classes(
 # GET CLASS DETAIL
 # ============================================================
 @router.get("/classes/{class_id}", response_model=ApiResponse[ClassResponse])
-def get_class(class_id: UUID, db: Session = Depends(get_db), current_user = Depends(get_current_active_user)):
+def get_class(class_id: UUID, db: Session = Depends(get_db), current_user = Depends(require_non_guest)):
     c = (
         db.query(Class)
         .options(
