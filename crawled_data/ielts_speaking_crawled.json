@@ -1,0 +1,50 @@
+[
+  {
+    "id": 1,
+    "skill": "speaking",
+    "title": "Speaking Test: Work, Education & Technology",
+    "part1": [
+      "Do you work or are you a student?",
+      "What subject are you studying or what is your job responsibilities?",
+      "Do you prefer using a smartphone or a laptop for your daily tasks?"
+    ],
+    "part2_cue_card": {
+      "topic": "Describe a time when you used an AI tool to solve a problem.",
+      "cues": [
+        "What the AI tool was",
+        "When and why you used it",
+        "How it helped you solve the problem",
+        "And explain how you felt after using it"
+      ]
+    },
+    "part3": [
+      "In what ways do you think AI will change higher education in the next decade?",
+      "Do you think students rely too much on technology nowadays?",
+      "How can teachers ensure students maintain critical thinking skills when AI tools are available?"
+    ]
+  },
+  {
+    "id": 2,
+    "skill": "speaking",
+    "title": "Speaking Test: Travel, Hobbies & Environment",
+    "part1": [
+      "Do you enjoy traveling during holidays?",
+      "What is your favorite type of destination?",
+      "How often do you go outdoors?"
+    ],
+    "part2_cue_card": {
+      "topic": "Describe a memorable journey you took with friends or family.",
+      "cues": [
+        "Where you went",
+        "Who you went with",
+        "What activities you did there",
+        "And explain why this journey was so memorable"
+      ]
+    },
+    "part3": [
+      "Why do people like visiting tourist destinations in their free time?",
+      "What impact does mass tourism have on local cultures and ecosystems?",
+      "Should governments restrict the number of visitors to natural reserves?"
+    ]
+  }
+]

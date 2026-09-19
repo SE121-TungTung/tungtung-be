@@ -1,159 +1,598 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks
+"""
+Router: Class Posts
+Endpoint: /api/v1/classes/{class_id}/posts
+
+Endpoints:
+  POST   /                        — Tạo bài viết mới (có thể kèm file)
+  GET    /                        — Lấy danh sách bài viết (filter by post_type)
+  PUT    /{post_id}               — Chỉnh sửa bài viết (tác giả / Admin)
+  DELETE /{post_id}               — Soft delete bài viết (tác giả / GV / Admin)
+  PATCH  /{post_id}/pin           — Ghim / bỏ ghim bài (GV / TA / Admin)
+"""
+
+from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks, Query
 from sqlalchemy.orm import Session
 from uuid import UUID
 from typing import List, Optional, Any
-import json
 
 from app.core.database import get_db
-from app.dependencies import get_current_user
-from app.models.user import User
-from app.models.academic import Class
-from app.models.class_post import ClassPost, ClassPostType
+from app.dependencies import get_current_active_user
+from app.models.user import User, UserRole
+from app.models.academic import Class, EnrollmentStatus
+from app.models.class_post import ClassPostType, MaterialCategory
 from app.repositories.class_post import class_post_repo
-from app.schemas.class_post import ClassPostResponse
-from app.services.cloudinary import handle_cloudinary_upload
+from app.repositories.class_post_reaction import class_post_reaction_repo
+from app.schemas.class_post import ClassPostResponse, ClassPostUpdate, ClassPostPinRequest
+from app.schemas.class_post_reaction import ReactionToggleRequest, ReactionToggleResponse, ReactionsSummary
+from app.schemas.class_post_view import RecordViewResponse, ViewersSummaryResponse, RecordDownloadRequest, RecordDownloadResponse, PostEngagementSummaryResponse
+from app.repositories.class_post_view import class_post_view_repo
+from app.repositories.class_post_download import class_post_download_repo
+from app.services import class_post_service
+from app.services import class_post_reaction_service
+from app.services.notification_service import run_broadcast_task
 from app.core.route import ResponseWrapperRoute
 from app.schemas.base_schema import ApiResponse, PaginationResponse
 from app.core.exceptions import APIException
 
-router = APIRouter(prefix="/classes", tags=["Class Posts"], route_class=ResponseWrapperRoute)
+router = APIRouter(
+    prefix="/classes",
+    tags=["Class Posts"],
+    route_class=ResponseWrapperRoute,
+)
 
-@router.post("/{class_id}/posts", response_model=ApiResponse[ClassPostResponse])
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _get_class_or_404(db: Session, class_id: UUID) -> Class:
+    class_obj = db.query(Class).filter(Class.id == class_id).first()
+    if not class_obj:
+        raise APIException(status_code=404, code="CLASS_NOT_FOUND", message="Lớp học không tồn tại.")
+    return class_obj
+
+
+def _check_class_access(current_user: User, class_obj: Class) -> None:
+    """Kiểm tra user có quyền xem bài viết lớp này không (GV, TA, Admin, hoặc học viên ghi danh)."""
+    if current_user.role in (UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN):
+        return
+    user_id_str = str(current_user.id)
+    is_teacher_or_ta = (
+        str(class_obj.teacher_id) == user_id_str
+        or (class_obj.substitute_teacher_id and str(class_obj.substitute_teacher_id) == user_id_str)
+        or (class_obj.ta_id and str(class_obj.ta_id) == user_id_str)
+    )
+    if is_teacher_or_ta:
+        return
+    is_enrolled = any(str(e.student_id) == user_id_str for e in class_obj.enrollments)
+    if not is_enrolled:
+        raise APIException(
+            status_code=403,
+            code="AUTH_PERMISSION_DENIED",
+            message="Bạn không có quyền xem bảng tin của lớp học này.",
+        )
+
+
+# ─── POST — Tạo bài viết ─────────────────────────────────────────────────────
+
+@router.post("/{class_id}/posts", response_model=ApiResponse[ClassPostResponse], status_code=201)
 async def create_class_post(
     class_id: UUID,
     background_tasks: BackgroundTasks,
-    title: str = Form(...),
+    title: str = Form(..., min_length=1, max_length=255),
     content: Optional[str] = Form(None),
     post_type: str = Form("announcement"),
+    material_category: Optional[str] = Form(None),
     files: Optional[List[UploadFile]] = File(None),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_active_user),
 ):
-    # 1. Check if class exists
-    class_obj = db.query(Class).filter(Class.id == class_id).first()
-    if not class_obj:
-        raise APIException(status_code=404, code="NOT_FOUND", message="Class not found")
-        
-    # 2. Check authorization: current user must be class teacher, sub teacher, TA, or Admin/CenterAdmin
-    is_authorized = (
-        current_user.role in ["admin", "center_admin"] or
-        str(class_obj.teacher_id) == str(current_user.id) or
-        (class_obj.substitute_teacher_id and str(class_obj.substitute_teacher_id) == str(current_user.id)) or
-        (class_obj.ta_id and str(class_obj.ta_id) == str(current_user.id))
-    )
-    if not is_authorized:
-        raise APIException(status_code=403, code="FORBIDDEN", message="You are not authorized to post in this class")
+    """Tạo bài viết / tài liệu cho lớp học.
 
-    # 3. Handle file uploads to Cloudinary if post_type is material
-    attachments = []
-    if files and post_type == "material":
-        for file in files:
-            if file.filename: # avoid empty file parts
-                try:
-                    upload_res = await handle_cloudinary_upload(file, folder_name="class_materials")
-                    attachments.append({
-                        "file_name": file.filename,
-                        "file_url": upload_res["file_url"],
-                        "file_size": upload_res["bytes"],
-                        "mime_type": file.content_type
-                    })
-                except Exception as e:
-                    raise APIException(status_code=500, code="UPLOAD_FAILED", message=f"Failed to upload file {file.filename}: {str(e)}")
+    - Cho phép đính kèm tệp cho cả ANNOUNCEMENT và MATERIAL.
+    - Áp dụng upload security policy (MIME, extension, size).
+    """
+    class_obj = _get_class_or_404(db, class_id)
 
-    # 4. Create class post
+    # Parse enums
     post_type_enum = ClassPostType.MATERIAL if post_type == "material" else ClassPostType.ANNOUNCEMENT
-    
-    db_post = ClassPost(
-        class_id=class_id,
-        author_id=current_user.id,
+    mat_cat_enum: Optional[MaterialCategory] = None
+    if material_category and post_type_enum == ClassPostType.MATERIAL:
+        try:
+            mat_cat_enum = MaterialCategory(material_category)
+        except ValueError:
+            raise APIException(
+                status_code=400,
+                code="VALIDATION_ERROR",
+                message=f"material_category không hợp lệ: '{material_category}'.",
+            )
+
+    post = await class_post_service.create_post(
+        db=db,
+        class_obj=class_obj,
+        current_user=current_user,
         title=title,
         content=content,
         post_type=post_type_enum,
-        attachments=attachments,
-        created_by=current_user.id,
-        updated_by=current_user.id
+        material_category=mat_cat_enum,
+        files=files,
     )
-    
-    db.add(db_post)
-    db.commit()
-    db.refresh(db_post)
-    
-    # 5. Notify enrolled active students in the class
+
+    # Gửi notification cho học viên active (background)
     try:
-        from app.models.academic import EnrollmentStatus
-        from app.services.notification_service import run_broadcast_task
-        
         active_student_ids = [
-            enroll.student_id 
-            for enroll in class_obj.enrollments 
+            enroll.student_id
+            for enroll in class_obj.enrollments
             if enroll.status == EnrollmentStatus.ACTIVE and enroll.deleted_at is None
         ]
-        
         if active_student_ids:
-            post_type_text = "thông báo mới" if post_type == "announcement" else "tài liệu học tập mới"
+            post_type_text = "tài liệu học tập mới" if post_type == "material" else "thông báo mới"
             background_tasks.add_task(
                 run_broadcast_task,
                 user_ids=active_student_ids,
                 title=f"Lớp {class_obj.name} có {post_type_text}",
                 content=title,
                 priority="normal",
-                action_url="/student/class",
+                action_url=f"/student/class/{class_id}",
                 channels=["in_app"],
-                notification_type="class_announcement"
+                notification_type="class_announcement",
             )
     except Exception as notif_err:
-        # Prevent notification failures from failing the post creation
-        print(f"Error dispatching class post notifications: {notif_err}")
+        # Notification failure không ảnh hưởng tới kết quả tạo bài
+        import logging
+        logging.getLogger(__name__).error(f"Notification dispatch failed: {notif_err}")
 
-    return ApiResponse(data=db_post, message="Tạo bài viết thành công")
+    return ApiResponse(data=post, message="Đăng bài viết thành công.")
+
+
+# ─── Helpers — Batch Reaction Enrichment ──────────────────────────────────────
+
+def _enrich_posts_with_reactions(db: Session, posts: list, current_user: User) -> list:
+    """Enrich danh sách ORM posts với reactions_summary (batch — 2 query duy nhất)."""
+    if not posts:
+        return posts
+
+    post_ids = [p.id for p in posts]
+    counts_map = class_post_reaction_repo.get_reactions_summary_batch(db, post_ids)
+    user_rxn_map = class_post_reaction_repo.get_user_reactions_batch(db, post_ids, current_user.id)
+
+    for post in posts:
+        summary = counts_map.get(post.id, {"like": 0, "heart": 0, "understood": 0})
+        post.reactions_summary = ReactionsSummary(
+            like=summary.get("like", 0),
+            heart=summary.get("heart", 0),
+            understood=summary.get("understood", 0),
+            user_reactions=user_rxn_map.get(post.id, []),
+        )
+    return posts
+
+
+# ─── GET — Danh sách bài viết ─────────────────────────────────────────────────
 
 @router.get("/{class_id}/posts", response_model=PaginationResponse[ClassPostResponse])
 def get_class_posts(
     class_id: UUID,
-    page: int = 1,
-    limit: int = 20,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    post_type: Optional[str] = Query(None, description="Filter: 'announcement' | 'material'"),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_active_user),
 ):
-    # Check if user is enrolled or teaches the class, or is admin
-    class_obj = db.query(Class).filter(Class.id == class_id).first()
-    if not class_obj:
-        raise APIException(status_code=404, code="NOT_FOUND", message="Class not found")
+    """Lấy danh sách bài viết active của lớp.
     
-    # Check if student is enrolled
-    is_student_enrolled = any(str(enroll.student_id) == str(current_user.id) for enroll in class_obj.enrollments)
-    is_authorized = (
-        current_user.role in ["admin", "center_admin"] or
-        str(class_obj.teacher_id) == str(current_user.id) or
-        (class_obj.substitute_teacher_id and str(class_obj.substitute_teacher_id) == str(current_user.id)) or
-        (class_obj.ta_id and str(class_obj.ta_id) == str(current_user.id)) or
-        is_student_enrolled
-    )
-    
-    if not is_authorized:
-        raise APIException(status_code=403, code="FORBIDDEN", message="You are not authorized to view posts of this class")
+    - Bài ghim luôn đứng đầu.
+    - Hỗ trợ filter theo post_type.
+    - Tự lọc bài đã bị soft-delete.
+    - reactions_summary được enrich qua batch query (tránh N+1).
+    """
+    class_obj = _get_class_or_404(db, class_id)
+    _check_class_access(current_user, class_obj)
+
+    post_type_enum: Optional[ClassPostType] = None
+    if post_type in ("announcement", "material"):
+        post_type_enum = ClassPostType(post_type)
 
     skip = (page - 1) * limit
-    posts = class_post_repo.get_by_class(db, class_id=class_id, skip=skip, limit=limit)
-    total = class_post_repo.count_by_class(db, class_id=class_id)
-    
+    posts = class_post_repo.get_by_class(db, class_id=class_id, skip=skip, limit=limit, post_type=post_type_enum)
+    total = class_post_repo.count_by_class(db, class_id=class_id, post_type=post_type_enum)
+
+    _enrich_posts_with_reactions(db, posts, current_user)
+
     return PaginationResponse(data=posts, total=total, page=page, limit=limit)
+
+
+# ─── GET — Kho Học Liệu (Material Library) ──────────────────────────────────
+
+@router.get("/{class_id}/materials", response_model=PaginationResponse[ClassPostResponse])
+def get_class_materials(
+    class_id: UUID,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=100),
+    material_category: Optional[str] = Query(None, description="Filter: 'lecture_slide' | 'exercise' | 'reference' | 'audio' | 'video' | 'other'"),
+    search: Optional[str] = Query(None, max_length=200, description="Tìm kiếm theo title hoặc tên file đính kèm"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Kho Học Liệu — lấy tất cả bài đăng type=material của lớp.
+
+    Hỗ trợ:
+    - Lọc theo material_category (lecture_slide, exercise, reference, audio, video, other).
+    - Tìm kiếm theo title hoặc tên file trong attachments.
+    - Phân trang chuẩn (page, limit).
+    """
+    class_obj = _get_class_or_404(db, class_id)
+    _check_class_access(current_user, class_obj)
+
+    mat_cat_enum: Optional[MaterialCategory] = None
+    if material_category:
+        try:
+            mat_cat_enum = MaterialCategory(material_category)
+        except ValueError:
+            raise APIException(
+                status_code=400,
+                code="INVALID_MATERIAL_CATEGORY",
+                message=f"Danh mục tài liệu không hợp lệ: '{material_category}'.",
+            )
+
+    search_term = search.strip() if search else None
+
+    skip = (page - 1) * limit
+    posts = class_post_repo.get_materials(
+        db, class_id=class_id, skip=skip, limit=limit,
+        material_category=mat_cat_enum, search=search_term,
+    )
+    total = class_post_repo.count_materials(
+        db, class_id=class_id,
+        material_category=mat_cat_enum, search=search_term,
+    )
+
+    _enrich_posts_with_reactions(db, posts, current_user)
+
+    return PaginationResponse(data=posts, total=total, page=page, limit=limit)
+
+
+# ─── PUT — Chỉnh sửa bài viết ────────────────────────────────────────────────
+
+@router.put("/{class_id}/posts/{post_id}", response_model=ApiResponse[ClassPostResponse])
+async def update_class_post(
+    class_id: UUID,
+    post_id: UUID,
+    title: Optional[str] = Form(None),
+    content: Optional[str] = Form(None),
+    material_category: Optional[str] = Form(None),
+    is_comment_locked: Optional[bool] = Form(None),
+    remove_attachment_indices: Optional[str] = Form(None, description='JSON array of indices to remove, e.g. "[0,2]"'),
+    files: List[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Chỉnh sửa nội dung bài viết. Chỉ tác giả (hoặc Admin) được phép.
+    
+    Hỗ trợ quản lý tệp đính kèm:
+    - `remove_attachment_indices`: JSON array các index cần xóa, VD: "[0,2]"
+    - `files`: tệp mới thêm vào (multipart)
+    
+    Sau khi cập nhật, `is_edited` sẽ tự động được set thành True.
+    """
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    mat_cat_enum: Optional[MaterialCategory] = None
+    if material_category:
+        try:
+            mat_cat_enum = MaterialCategory(material_category)
+        except ValueError:
+            raise APIException(
+                status_code=400,
+                code="VALIDATION_ERROR",
+                message=f"material_category không hợp lệ: '{material_category}'.",
+            )
+
+    # Parse remove_attachment_indices
+    indices_to_remove: List[int] = []
+    if remove_attachment_indices:
+        import json
+        try:
+            indices_to_remove = json.loads(remove_attachment_indices)
+            if not isinstance(indices_to_remove, list):
+                indices_to_remove = []
+        except (json.JSONDecodeError, TypeError):
+            indices_to_remove = []
+
+    # Filter file rỗng
+    valid_new_files = [f for f in files if f.filename]
+
+    updated_post = await class_post_service.update_post(
+        db=db,
+        post=post,
+        current_user=current_user,
+        title=title,
+        content=content,
+        material_category=mat_cat_enum,
+        is_comment_locked=is_comment_locked,
+        remove_attachment_indices=indices_to_remove,
+        new_files=valid_new_files,
+    )
+    return ApiResponse(data=updated_post, message="Cập nhật bài viết thành công.")
+
+
+# ─── DELETE — Soft delete bài viết ───────────────────────────────────────────
 
 @router.delete("/{class_id}/posts/{post_id}", response_model=ApiResponse[Any])
 def delete_class_post(
     class_id: UUID,
     post_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_active_user),
 ):
-    post = db.query(ClassPost).filter(ClassPost.id == post_id, ClassPost.class_id == class_id).first()
+    """Xóa mềm bài viết (set deleted_at + deleted_by). Dữ liệu không bị xóa khỏi DB."""
+    class_obj = _get_class_or_404(db, class_id)
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
     if not post:
-        raise APIException(status_code=404, code="NOT_FOUND", message="Post not found")
-        
-    # Only author or Admin can delete
-    if str(post.author_id) != str(current_user.id) and current_user.role not in ["admin", "center_admin"]:
-        raise APIException(status_code=403, code="FORBIDDEN", message="You are not authorized to delete this post")
-        
-    db.delete(post)
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    class_post_service.soft_delete_post(db=db, post=post, current_user=current_user, class_obj=class_obj)
+    return ApiResponse(data={}, message="Xóa bài viết thành công.")
+
+
+# ─── PATCH /pin — Ghim / bỏ ghim bài ────────────────────────────────────────
+
+@router.patch("/{class_id}/posts/{post_id}/pin", response_model=ApiResponse[ClassPostResponse])
+def pin_class_post(
+    class_id: UUID,
+    post_id: UUID,
+    body: ClassPostPinRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Ghim hoặc bỏ ghim bài viết. Chỉ GV / TA / Admin của lớp được phép.
+
+    Giới hạn ghim: **tối đa 3 bài / lớp**.
+
+    Khi đạt giới hạn mà `force_unpin_oldest = False`:
+    - Trả về 409 POST_PIN_LIMIT_EXCEEDED kèm `oldest_pinned_id` trong details.
+    - FE hiển thị PinLimitModal cho user xác nhận.
+
+    Khi user xác nhận trong modal → FE gọi lại với `force_unpin_oldest = True`:
+    - Bài ghim cũ nhất tự động bị bỏ ghim.
+    - Bài hiện tại được ghim.
+    """
+    class_obj = _get_class_or_404(db, class_id)
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    updated_post = class_post_service.toggle_pin(
+        db=db,
+        class_id=class_id,
+        post=post,
+        current_user=current_user,
+        class_obj=class_obj,
+        pin=body.pin,
+        force_unpin_oldest=body.force_unpin_oldest,
+    )
+    action = "Ghim" if body.pin else "Bỏ ghim"
+    return ApiResponse(data=updated_post, message=f"{action} bài viết thành công.")
+
+
+# ─── POST /reactions — Toggle reaction ───────────────────────────────────────
+
+@router.post("/{class_id}/posts/{post_id}/reactions", response_model=ApiResponse[ReactionToggleResponse])
+def toggle_post_reaction(
+    class_id: UUID,
+    post_id:  UUID,
+    body:     ReactionToggleRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Toggle reaction (Like / Heart / Understood) trên bài viết.
+
+    - Click lần 1 → thêm reaction.
+    - Click lần 2 (cùng type) → bỏ reaction.
+    - 1 user có thể active nhiều type cùng lúc trên cùng bài viết.
+    """
+    class_obj = _get_class_or_404(db, class_id)
+    _check_class_access(current_user, class_obj)
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    result = class_post_reaction_service.toggle_reaction(
+        db=db,
+        post=post,
+        user_id=current_user.id,
+        reaction_type=body.reaction_type,
+    )
+    action_text = "Đã thêm" if result.action == "added" else "Đã bỏ"
+    return ApiResponse(data=result, message=f"{action_text} reaction '{body.reaction_type}'.")
+
+
+# ─── PATCH /lock-comments — Khóa / Mở bình luận ─────────────────────────────
+
+class _LockCommentsBody(ClassPostUpdate):
+    pass  # Tái dùng ClassPostUpdate nhưng chỉ cần is_comment_locked
+
+
+from pydantic import BaseModel as PydanticBaseModel
+
+class LockCommentsRequest(PydanticBaseModel):
+    is_comment_locked: bool
+
+
+@router.patch("/{class_id}/posts/{post_id}/lock-comments", response_model=ApiResponse[ClassPostResponse])
+def lock_post_comments(
+    class_id: UUID,
+    post_id:  UUID,
+    body:     LockCommentsRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Bật / tắt khóa bình luận cho 1 bài viết.
+
+    Khi khóa: Học viên không thể đăng bình luận mới.
+    Quyền hạn: Chỉ Giáo viên / Trợ giảng / Quản trị viên.
+    """
+    class_obj = _get_class_or_404(db, class_id)
+
+    # Chỉ staff/admin mới được khóa
+    user_id_str = str(current_user.id)
+    is_staff = (
+        current_user.role in (UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN)
+        or str(class_obj.teacher_id) == user_id_str
+        or (class_obj.substitute_teacher_id and str(class_obj.substitute_teacher_id) == user_id_str)
+        or (class_obj.ta_id and str(class_obj.ta_id) == user_id_str)
+    )
+    if not is_staff:
+        raise APIException(
+            status_code=403,
+            code="AUTH_PERMISSION_DENIED",
+            message="Chỉ Giáo viên / Trợ giảng / Quản trị viên mới có quyền khóa bình luận.",
+        )
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    post.is_comment_locked = body.is_comment_locked
+    post.updated_by = current_user.id
     db.commit()
-    return ApiResponse(data={}, message="Xóa bài viết thành công")
+    db.refresh(post)
+
+    state = "Khóa" if body.is_comment_locked else "Mở khóa"
+    return ApiResponse(data=post, message=f"{state} bình luận bài viết thành công.")
+
+
+# ─── POST /view — Ghi nhận lượt xem (Học viên) ──────────────────────────────
+
+@router.post("/{class_id}/posts/{post_id}/view", response_model=ApiResponse[RecordViewResponse])
+def record_post_view(
+    class_id: UUID,
+    post_id:  UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Ghi nhận lượt xem bài viết của học viên (idempotent).
+    
+    - Chỉ học viên (role = STUDENT) được ghi nhận lượt xem vào DB.
+    - GV / TA / Admin khi xem bài sẽ không được ghi nhận vào bảng class_post_views.
+    """
+    class_obj = _get_class_or_404(db, class_id)
+    _check_class_access(current_user, class_obj)
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    # Chỉ ghi nhận lượt xem cho học viên
+    if current_user.role == UserRole.STUDENT:
+        view_record, is_new = class_post_view_repo.record_view(db, post_id=post_id, user_id=current_user.id)
+        view_count = class_post_view_repo.get_view_count(db, post_id=post_id)
+        return ApiResponse(
+            data=RecordViewResponse(
+                post_id=post_id,
+                viewed=True,
+                viewed_at=view_record.viewed_at,
+                view_count=view_count,
+            ),
+            message="Đã ghi nhận lượt xem." if is_new else "Bài viết đã được xem trước đó.",
+        )
+
+    # Nếu là GV/TA/Admin: Không lưu vào DB, trả về count hiện tại
+    view_count = class_post_view_repo.get_view_count(db, post_id=post_id)
+    return ApiResponse(
+        data=RecordViewResponse(
+            post_id=post_id,
+            viewed=False,
+            viewed_at=None,
+            view_count=view_count,
+        ),
+        message="Không ghi nhận lượt xem cho tài khoản quản trị/giảng viên.",
+    )
+
+
+# ─── POST /download — Ghi nhận tải tệp đính kèm (Học viên) ───────────────────
+
+@router.post("/{class_id}/posts/{post_id}/download", response_model=ApiResponse[RecordDownloadResponse])
+def record_post_file_download(
+    class_id: UUID,
+    post_id:  UUID,
+    payload:  RecordDownloadRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    class_obj = _get_class_or_404(db, class_id)
+    _check_class_access(current_user, class_obj)
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    if current_user.role == UserRole.STUDENT:
+        record, is_new = class_post_download_repo.record_download(
+            db=db,
+            post_id=post_id,
+            user_id=current_user.id,
+            file_name=payload.file_name,
+            file_url=payload.file_url,
+        )
+        return ApiResponse(
+            data=RecordDownloadResponse(
+                post_id=post_id,
+                file_name=payload.file_name,
+                downloaded=True,
+                downloaded_at=record.downloaded_at,
+            ),
+            message="Ghi nhận lượt tải tệp đính kèm thành công.",
+        )
+
+    return ApiResponse(
+        data=RecordDownloadResponse(
+            post_id=post_id,
+            file_name=payload.file_name,
+            downloaded=False,
+            downloaded_at=None,
+        ),
+        message="Không ghi nhận lượt tải cho tài khoản quản trị/giảng viên.",
+    )
+
+
+# ─── GET /views — Danh sách người đã xem & Thống kê tương tác (GV / TA / Admin) ─
+
+@router.get("/{class_id}/posts/{post_id}/views", response_model=ApiResponse[PostEngagementSummaryResponse])
+@router.get("/{class_id}/posts/{post_id}/engagement", response_model=ApiResponse[PostEngagementSummaryResponse])
+def get_post_viewers(
+    class_id: UUID,
+    post_id:  UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Lấy danh sách thống kê tương tác bài viết (Views, Reactions/Comments, Downloads).
+    
+    Quyền hạn: Chỉ Giáo viên chủ nhiệm, Giáo viên dạy thay, Trợ giảng hoặc Quản trị viên.
+    """
+    class_obj = _get_class_or_404(db, class_id)
+
+    user_id_str = str(current_user.id)
+    is_staff = (
+        current_user.role in (UserRole.CENTER_ADMIN, UserRole.SYSTEM_ADMIN)
+        or str(class_obj.teacher_id) == user_id_str
+        or (class_obj.substitute_teacher_id and str(class_obj.substitute_teacher_id) == user_id_str)
+        or (class_obj.ta_id and str(class_obj.ta_id) == user_id_str)
+    )
+    if not is_staff:
+        raise APIException(
+            status_code=403,
+            code="AUTH_PERMISSION_DENIED",
+            message="Chỉ Giáo viên / Trợ giảng / Quản trị viên mới có quyền xem danh sách người đã xem.",
+        )
+
+    post = class_post_repo.get_active_post_by_id(db, post_id=post_id, class_id=class_id)
+    if not post:
+        raise APIException(status_code=404, code="POST_NOT_FOUND", message="Bài viết không tồn tại hoặc đã bị xóa.")
+
+    summary = class_post_view_repo.get_viewers_summary(db, post_id=post_id, class_id=class_id)
+    return ApiResponse(data=summary, message="Lấy danh sách thống kê tương tác thành công.")
+
+
