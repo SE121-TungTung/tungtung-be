@@ -10,7 +10,7 @@ from app.routers import (
     attendance, schedule, ga_schedule, message, test,
     notification, kpi, invoice, payment, report, refund,
     chatbot, audit_log, recommendation, substitution, certificate, vocabulary, public,
-    lead, class_posts, class_post_comments, wallet
+    lead, class_posts, class_post_comments, wallet, pronunciation
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
@@ -96,6 +96,7 @@ api_router.include_router(class_post_comments.router)
 api_router.include_router(wallet.router)
 api_router.include_router(vocabulary.router)
 api_router.include_router(public.router)
+api_router.include_router(pronunciation.router)
 
 app.include_router(api_router, prefix="/api/v1")
 

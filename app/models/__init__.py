@@ -28,3 +28,4 @@ from .class_post_comment import ClassPostComment
 from .class_post_reaction import ClassPostReaction, ReactionType
 from .class_post_view import ClassPostView
 from .class_post_download import ClassPostDownload
+from .pronunciation import PronunciationPractice, TargetType
