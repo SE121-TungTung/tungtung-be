@@ -1,4 +1,5 @@
-from typing import Optional
+import random
+from typing import Optional, List, Dict
 from uuid import UUID
 from fastapi import APIRouter, Depends, Query, File, UploadFile, Form, Path, status
 from sqlalchemy.orm import Session
@@ -15,14 +16,126 @@ from app.schemas.pronunciation import (
     PronunciationPracticeListItem,
     PronunciationStatsResponse,
     PronunciationStreakResponse,
+    DrillSuggestionsResponse,
 )
 from app.services.pronunciation_service import pronunciation_service
+
+# Kho dữ liệu từ vựng và câu IELTS theo 6 chủ đề chuẩn
+DRILL_TOPICS_DATA: Dict[str, List[str]] = {
+    "environment": [
+        "biodiversity conservation",
+        "deforestation",
+        "renewable energy source",
+        "carbon footprint reduction",
+        "greenhouse gas emissions",
+        "ecosystem preservation",
+        "sustainable agriculture",
+        "climate change mitigation",
+        "hazardous waste disposal",
+        "ecological catastrophe",
+        "The depletion of natural resources poses a severe threat to future generations.",
+        "Governments worldwide must enact stringent environmental legislation.",
+    ],
+    "technology": [
+        "artificial intelligence",
+        "cybersecurity breach",
+        "algorithmic decision making",
+        "technological breakthrough",
+        "cloud computing infrastructure",
+        "virtual reality simulation",
+        "autonomous vehicle",
+        "biometric authentication",
+        "machine learning model",
+        "digital transformation",
+        "Technological advancements have radically revolutionized our daily communication.",
+        "Automation in manufacturing significantly boosts industrial productivity.",
+    ],
+    "health": [
+        "cardiovascular disease",
+        "sedentary lifestyle",
+        "nutritional balance",
+        "psychological well-being",
+        "immune system resilience",
+        "chronic illness management",
+        "preventive healthcare",
+        "epidemiological investigation",
+        "therapeutic intervention",
+        "metabolic rate",
+        "Regular physical exercise is indispensable for maintaining cardiovascular health.",
+        "A nutritious diet plays a pivotal role in preventing chronic disorders.",
+    ],
+    "education": [
+        "curriculum development",
+        "academic achievement",
+        "pedagogical approach",
+        "critical thinking skills",
+        "vocational education",
+        "distance learning platform",
+        "interdisciplinary research",
+        "educational inequality",
+        "comprehensive assessment",
+        "lifelong learning",
+        "Fostering independent critical thinking should be the cornerstone of higher education.",
+        "Interactive learning environments stimulate student engagement and academic excellence.",
+    ],
+    "travel": [
+        "breathtaking panoramic view",
+        "itinerary planning",
+        "indigenous cultural heritage",
+        "hospitality industry",
+        "picturesque destination",
+        "sustainable ecotourism",
+        "cosmopolitan metropolis",
+        "remote excursion",
+        "scenic coastline",
+        "historical monument",
+        "Traveling to exotic destinations broadens one's cultural horizons significantly.",
+        "Ecotourism encourages the preservation of delicate natural habitats.",
+    ],
+    "culture": [
+        "multicultural diversity",
+        "cultural assimilation",
+        "traditional craftsmanship",
+        "customary celebration",
+        "intangible heritage",
+        "linguistic preservation",
+        "folklore and mythology",
+        "societal norms",
+        "cross-cultural understanding",
+        "ancestral ritual",
+        "Preserving intangible cultural heritage fosters a deep sense of communal identity.",
+        "Cultural diversity enriches society through varied artistic and culinary expressions.",
+    ],
+}
 
 router = APIRouter(
     prefix="/pronunciation",
     tags=["Pronunciation Practice"],
     route_class=ResponseWrapperRoute,
 )
+
+
+@router.get(
+    "/drill-suggestions",
+    response_model=ApiResponse[DrillSuggestionsResponse],
+    summary="Gợi ý từ/câu luyện phát âm theo chủ đề IELTS",
+    description="Trả về 5 từ hoặc cụm câu ngẫu nhiên từ kho từ vựng IELTS theo 6 chủ đề chính: environment, technology, health, education, travel, culture.",
+)
+async def get_drill_suggestions(
+    topic: str = Query("environment", description="Chủ đề luyện tập: environment, technology, health, education, travel, culture"),
+):
+    topic_key = topic.strip().lower()
+    if topic_key not in DRILL_TOPICS_DATA:
+        topic_key = "environment"
+
+    pool = DRILL_TOPICS_DATA[topic_key]
+    sample_size = min(5, len(pool))
+    sampled_items = random.sample(pool, sample_size)
+
+    return ApiResponse(
+        data=DrillSuggestionsResponse(topic=topic_key, items=sampled_items),
+        message=f"Lấy 5 gợi ý luyện tập chủ đề {topic_key} thành công.",
+    )
 
 
 @router.post(

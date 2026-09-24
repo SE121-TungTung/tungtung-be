@@ -128,6 +128,12 @@ class PronunciationStreakResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DrillSuggestionsResponse(BaseModel):
+    """Gợi ý từ/câu luyện tập theo chủ đề IELTS (GET /drill-suggestions)."""
+    topic: str
+    items: List[str]
+
+
 # ---------------------------------------------------------------------------
 # Typed response wrappers
 # ---------------------------------------------------------------------------
@@ -136,3 +142,4 @@ PronunciationPracticeApiResponse = ApiResponse[PronunciationPracticeDetailRespon
 PronunciationPracticeListResponse = PaginationResponse[PronunciationPracticeListItem]
 PronunciationStatsApiResponse = ApiResponse[PronunciationStatsResponse]
 PronunciationStreakApiResponse = ApiResponse[PronunciationStreakResponse]
+PronunciationDrillSuggestionsApiResponse = ApiResponse[DrillSuggestionsResponse]
