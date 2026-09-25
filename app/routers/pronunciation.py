@@ -149,6 +149,7 @@ async def create_practice(
     audio: UploadFile = File(..., description="File âm thanh giọng đọc (wav, mp3, m4a, webm)"),
     target: str = Form(..., description="Từ, cụm từ, câu hoặc âm IPA mẫu"),
     target_type: TargetType = Form(TargetType.WORD, description="Loại mục tiêu: word, phrase, sentence, ipa"),
+    accent: Optional[str] = Form("US", description="Giọng chuẩn đối chiếu: US (Mỹ) hoặc UK (Anh)"),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
@@ -161,6 +162,7 @@ async def create_practice(
         audio_content_type=audio.content_type or "audio/wav",
         target=target,
         target_type=target_type,
+        accent=accent or "US",
     )
     return ApiResponse(
         data=PronunciationPracticeCreateResponse.model_validate(practice),

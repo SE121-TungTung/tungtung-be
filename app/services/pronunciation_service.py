@@ -47,6 +47,7 @@ class PronunciationService:
         audio_content_type: str,
         target: str,
         target_type: TargetType,
+        accent: str = "US",
     ) -> PronunciationPractice:
         """
         Gửi file audio sang AI Service để chấm điểm phát âm 7 thành phần,
@@ -71,6 +72,7 @@ class PronunciationService:
                 form_data = {
                     "target": target,
                     "target_type": target_type_str,
+                    "accent": accent,
                 }
                 response = await client.post(ai_url, data=form_data, files=files)
 
