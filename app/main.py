@@ -10,8 +10,9 @@ from app.routers import (
     attendance, schedule, ga_schedule, message, test,
     notification, kpi, invoice, payment, report, refund,
     chatbot, audit_log, recommendation, substitution, certificate, vocabulary, public,
-    lead, class_posts, wallet
+    lead, class_posts, wallet, dictionary
 )
+from app.routers import flashcard
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 from contextlib import asynccontextmanager
@@ -94,7 +95,9 @@ api_router.include_router(certificate.router)
 api_router.include_router(class_posts.router)
 api_router.include_router(wallet.router)
 api_router.include_router(vocabulary.router)
+api_router.include_router(flashcard.router)
 api_router.include_router(public.router)
+api_router.include_router(dictionary.router)
 
 app.include_router(api_router, prefix="/api/v1")
 

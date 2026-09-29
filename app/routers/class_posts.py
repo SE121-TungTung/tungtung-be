@@ -139,6 +139,19 @@ def get_class_posts(
     
     return PaginationResponse(data=posts, total=total, page=page, limit=limit)
 
+@router.get("/{class_id}/posts/{post_id}/comments", response_model=PaginationResponse[Any])
+def get_class_post_comments(
+    class_id: UUID,
+    post_id: UUID,
+    page: int = 1,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # Dummy endpoint to prevent 404 errors on frontend.
+    # TODO: Implement real comment feature with ClassPostComment model.
+    return PaginationResponse(data=[], total=0, page=page, limit=limit)
+
 @router.delete("/{class_id}/posts/{post_id}", response_model=ApiResponse[Any])
 def delete_class_post(
     class_id: UUID,
