@@ -24,3 +24,4 @@ from .chatbot_document import ChatbotDocument, DocCategory
 from .class_post import ClassPost, ClassPostType
 from .vocabulary import UserVocabulary
 from .lead import Lead
+from .flashcard import FlashcardDeck, Flashcard, FlashcardReview
