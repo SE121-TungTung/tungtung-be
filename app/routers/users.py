@@ -189,7 +189,7 @@ async def list_users(
 @router.get("/overview", response_model=ApiResponse[dict])
 async def get_user_overview(
     db: Session = Depends(get_db),
-    current_user: User = Depends(require_any_role(UserRole.SYSTEM_ADMIN, UserRole.CENTER_ADMIN, UserRole.OFFICE_ADMIN))
+    current_user: User = Depends(get_current_active_user)
 ):
     """Get user overview statistics"""
     data = user_service.get_user_overview(db, current_user=current_user)
