@@ -249,3 +249,148 @@ async def get_practice_detail(
     return ApiResponse(
         data=PronunciationPracticeDetailResponse.model_validate(practice),
     )
+
+
+# ════════════════════════════════════════════════════════════
+# PHONEME MASTERY — Progress & Spaced Repetition endpoints
+# ════════════════════════════════════════════════════════════
+
+@router.get(
+    "/mastery/summary",
+    summary="Tổng hợp mastery theo nhóm âm (Radar Chart data)",
+    description="Trả về mastery trung bình theo 8 nhóm âm (Stops, Fricatives...), "
+                "tổng phonemes mastered/learning/unseen, và số phoneme cần ôn.",
+)
+async def get_mastery_summary(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    summary = pronunciation_service.get_phoneme_mastery_summary(
+        db=db, student_id=current_user.id
+    )
+    return ApiResponse(data=summary, message="Lấy mastery summary thành công.")
+
+
+@router.get(
+    "/mastery/review-queue",
+    summary="Danh sách phoneme cần ôn tập (Spaced Repetition)",
+    description="Trả về phonemes có next_review_at <= now, sắp xếp theo mastery thấp nhất.",
+)
+async def get_review_queue(
+    limit: int = Query(10, ge=1, le=30, description="Số phoneme tối đa"),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    items = pronunciation_service.get_due_for_review(
+        db=db, student_id=current_user.id, limit=limit
+    )
+    return ApiResponse(
+        data={"due_phonemes": items, "count": len(items)},
+        message=f"Có {len(items)} âm cần ôn tập.",
+    )
+
+
+@router.get(
+    "/mastery/map",
+    summary="Bản đồ 44 phoneme IPA với mã màu mastery",
+    description="Trả về danh sách 44 phoneme với mastery_level, avg_score, status (unseen/learning/familiar/practiced/mastered).",
+)
+async def get_mastery_map(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    phoneme_map = pronunciation_service.get_phoneme_mastery_map(
+        db=db, student_id=current_user.id
+    )
+    return ApiResponse(
+        data={"phonemes": phoneme_map},
+        message="Lấy phoneme mastery map thành công.",
+    )
+
+
+# ════════════════════════════════════════════════════════════
+# ASSESSMENT (Placement Test) endpoints
+# ════════════════════════════════════════════════════════════
+
+@router.get(
+    "/assessment/items",
+    summary="Lấy danh sách items cho Placement Test",
+    description="Trả về 10 từ/câu mẫu bao phủ 8 nhóm âm để đánh giá trình độ.",
+)
+async def get_assessment_items(
+    current_user: User = Depends(get_current_active_user),
+):
+    items = pronunciation_service.get_assessment_items()
+    return ApiResponse(
+        data={"items": items, "total": len(items)},
+        message="Lấy assessment items thành công.",
+    )
+
+
+@router.post(
+    "/assessment",
+    status_code=status.HTTP_201_CREATED,
+    summary="Nộp kết quả Placement Test",
+    description="Gửi kết quả đánh giá từng item, hệ thống sẽ phân tích weak/strong phonemes và ước lượng CEFR/IELTS.",
+)
+async def submit_assessment(
+    request_body: dict,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    items = request_body.get("items", [])
+    if not items:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="items không được để trống.")
+
+    result = pronunciation_service.submit_assessment(
+        db=db,
+        student_id=current_user.id,
+        items=items,
+    )
+    return ApiResponse(
+        data=result,
+        message="Đánh giá trình độ phát âm hoàn tất.",
+    )
+
+
+@router.get(
+    "/assessment/latest",
+    summary="Lấy kết quả Placement Test gần nhất",
+    description="Trả về kết quả assessment gần nhất (CEFR, IELTS estimate, weak phonemes).",
+)
+async def get_latest_assessment(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    result = pronunciation_service.get_latest_assessment(
+        db=db, student_id=current_user.id
+    )
+    if not result:
+        return ApiResponse(
+            data=None,
+            message="Chưa có bài đánh giá nào. Hãy làm Placement Test.",
+        )
+    return ApiResponse(data=result, message="Lấy assessment thành công.")
+
+
+# ════════════════════════════════════════════════════════════
+# DAILY MISSIONS endpoints
+# ════════════════════════════════════════════════════════════
+
+@router.get(
+    "/missions/today",
+    summary="Nhiệm vụ luyện tập cá nhân hóa hôm nay",
+    description="Tạo 5-8 missions dựa trên SR review queue, weak phonemes, new phonemes, và sentence drills.",
+)
+async def get_daily_missions(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    missions = pronunciation_service.get_daily_missions(
+        db=db, student_id=current_user.id
+    )
+    return ApiResponse(
+        data=missions,
+        message=f"Có {missions['total_missions']} nhiệm vụ hôm nay.",
+    )

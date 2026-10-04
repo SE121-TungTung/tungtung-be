@@ -143,3 +143,83 @@ PronunciationPracticeListResponse = PaginationResponse[PronunciationPracticeList
 PronunciationStatsApiResponse = ApiResponse[PronunciationStatsResponse]
 PronunciationStreakApiResponse = ApiResponse[PronunciationStreakResponse]
 PronunciationDrillSuggestionsApiResponse = ApiResponse[DrillSuggestionsResponse]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Assessment + Mastery schemas
+# ---------------------------------------------------------------------------
+
+class AssessmentItemRequest(BaseModel):
+    """Một mục trong bài placement test."""
+    target_text: str
+    target_type: str = "word"
+    overall_score: float
+    phoneme_results: Optional[List[Dict[str, Any]]] = None
+
+
+class AssessmentSubmitRequest(BaseModel):
+    """Request body cho POST /pronunciation/assessment."""
+    items: List[AssessmentItemRequest] = Field(..., min_length=1, max_length=20)
+    accent: str = "US"
+
+
+class AssessmentResponse(BaseModel):
+    """Response cho kết quả placement test."""
+    id: UUID
+    cefr_level: Optional[str] = None
+    ielts_band_estimate: Optional[float] = None
+    weak_phonemes: List[str]
+    strong_phonemes: List[str]
+    assessment_items: Optional[List[Dict[str, Any]]] = None
+    retake_count: int = 0
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PhonemeMasteryItem(BaseModel):
+    """Một phoneme trong mastery map."""
+    phoneme: str
+    mastery_level: int
+    avg_score: Optional[float] = None
+    total_attempts: int
+    status: str
+
+
+class MasteryMapResponse(BaseModel):
+    phonemes: List[PhonemeMasteryItem]
+
+
+class ReviewQueueItem(BaseModel):
+    phoneme: str
+    mastery_level: int
+    last_score: Optional[float] = None
+    interval_days: int
+    next_review_at: Optional[str] = None
+
+
+class ReviewQueueResponse(BaseModel):
+    due_phonemes: List[ReviewQueueItem]
+    count: int
+
+
+class MissionItem(BaseModel):
+    """Một nhiệm vụ luyện tập trong ngày."""
+    mission_id: str
+    type: str  # "review" | "weak_practice" | "new_phoneme" | "sentence"
+    label: str
+    description: str
+    target_text: str
+    target_type: str = "word"
+    phoneme: Optional[str] = None
+    priority: int = 0
+    completed: bool = False
+
+
+class DailyMissionsResponse(BaseModel):
+    """Response cho GET /pronunciation/missions/today."""
+    date: str
+    missions: List[MissionItem]
+    total_missions: int
+    completed_count: int
+    streak_bonus: bool = False

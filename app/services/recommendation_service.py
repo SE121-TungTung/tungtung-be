@@ -544,9 +544,51 @@ class RecommendationService:
         ).order_by(desc(RecommendationLog.generated_at)).first()
 
         if not log:
-            # 3. Generate new recommendation from AI service
-            log = await self.generate_recommendation(db, student_id)
-            
+            # 3. Generate new recommendation from AI service, fallback to latest or baseline
+            try:
+                log = await self.generate_recommendation(db, student_id)
+            except Exception as e:
+                logger.warning(f"Could not generate AI recommendation for student {student_id}: {e}. Falling back to latest log.")
+                log = db.query(RecommendationLog).filter(
+                    RecommendationLog.student_id == student_id
+                ).order_by(desc(RecommendationLog.generated_at)).first()
+
+        if not log:
+            # Baseline fallback if student has never generated any recommendation yet
+            target = self.get_student_target(db, student_id)
+            skill_scores = self.get_student_skill_scores(db, student_id)
+            result = {
+                "id": None,
+                "student_id": str(student_id),
+                "generated_at": now.isoformat(),
+                "is_read": False,
+                "skill_scores": skill_scores,
+                "attendance_rate": 100.0,
+                "target_band": target.get("target_band", 6.5),
+                "target_cefr": target.get("target_cefr", "B2"),
+                "predicted_band": 5.0,
+                "predicted_cefr": "B1",
+                "weakest_skill": "reading",
+                "estimated_weeks": 8,
+                "recommendation_type": "daily_focus",
+                "recommendation_data": {
+                    "title": "Kế hoạch rèn luyện hôm nay",
+                    "skill": "reading",
+                    "difficulty": "medium",
+                    "suggested_test_ids": [],
+                    "tips": ["Luyện đọc hiểu 20 phút mỗi ngày", "Tra cứu và ghi chú từ mới theo chủ đề"],
+                    "materials": []
+                },
+                "learning_path": {
+                    "estimated_weeks": 8,
+                    "milestones": [
+                        {"month": 1, "target_band": 5.5, "target_cefr": "B2", "focus": "Củng cố từ vựng và ngữ pháp nền tảng"}
+                    ],
+                    "narrative": "Tập trung cải thiện các kỹ năng nền tảng và duy trì việc làm bài tập đều đặn."
+                }
+            }
+            return {"data": result}
+
         result = {
             "id": str(log.id),
             "student_id": str(log.student_id),
