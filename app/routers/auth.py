@@ -134,6 +134,7 @@ async def refresh_token(
         
         return ApiResponse(data={
             "access_token": access_token,
+            "refresh_token": refresh_data.refresh_token,
             "token_type": "bearer"
         })
         

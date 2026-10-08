@@ -42,7 +42,11 @@ from app.services.flashcard_service import (
     flashcard_review_service,
     flashcard_stats_service,
 )
-from app.repositories.flashcard import flashcard_review_repo
+from app.repositories.flashcard import (
+    flashcard_deck_repo,
+    flashcard_card_repo,
+    flashcard_review_repo,
+)
 
 # ---- RBAC helpers ----
 _require_content_manager = require_any_role(
@@ -107,6 +111,8 @@ async def list_decks(
     items = []
     for deck in decks:
         resp = FlashcardDeckResponse.model_validate(deck)
+        actual_count = flashcard_card_repo.count_by_deck(db, deck.id)
+        resp.card_count = actual_count if actual_count > 0 else (deck.card_count or 0)
         resp.due_today_count = flashcard_review_repo.get_due_count_for_deck(
             db, user_id=current_user.id, deck_id=deck.id
         )
@@ -127,14 +133,13 @@ async def list_decks(
 )
 async def create_deck(
     payload: FlashcardDeckCreate,
-    current_user=Depends(_require_content_manager),
+    current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """
     **Tạo deck thẻ học mới.**
 
-    - Chỉ TEACHER, TA, CENTER_ADMIN, SYSTEM_ADMIN mới có quyền tạo.
-    - `guest_student` hoặc `student` sẽ nhận HTTP 403.
+    - Tất cả người dùng đăng nhập đều có thể tạo deck cho riêng mình hoặc public.
     """
     deck = await flashcard_deck_service.create_deck(db, user_id=current_user.id, payload=payload)
     return ApiResponse(data=FlashcardDeckResponse.model_validate(deck), message="Deck created successfully.")
@@ -167,14 +172,13 @@ async def get_deck_detail(
 async def update_deck(
     deck_id: UUID,
     payload: FlashcardDeckUpdate,
-    current_user=Depends(_require_content_manager),
+    current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """
     **Cập nhật thông tin Flashcard Deck.**
 
     - Chỉ người tạo deck mới được sửa.
-    - TEACHER, TA, CENTER_ADMIN, SYSTEM_ADMIN.
     """
     deck = await flashcard_deck_service.update_deck(db, deck_id=deck_id, user_id=current_user.id, payload=payload)
     return ApiResponse(data=FlashcardDeckResponse.model_validate(deck), message="Deck updated successfully.")
@@ -187,7 +191,7 @@ async def update_deck(
 )
 async def delete_deck(
     deck_id: UUID,
-    current_user=Depends(_require_content_manager),
+    current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """
@@ -234,7 +238,7 @@ async def list_cards(
 async def create_card(
     deck_id: UUID,
     payload: FlashcardCreate,
-    current_user=Depends(_require_content_manager),
+    current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """

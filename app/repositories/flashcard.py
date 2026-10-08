@@ -113,6 +113,13 @@ class FlashcardRepository(BaseRepository[Flashcard]):
         )
         return items, total
 
+    def count_by_deck(self, db: Session, deck_id: UUID) -> int:
+        return (
+            db.query(func.count(Flashcard.id))
+            .filter(Flashcard.deck_id == deck_id, Flashcard.deleted_at.is_(None))
+            .scalar() or 0
+        )
+
     def check_word_exists(self, db: Session, deck_id: UUID, word: str, exclude_id: Optional[UUID] = None) -> bool:
         """Kiểm tra xem từ đã tồn tại trong deck chưa (trừ card đang edit)."""
         q = db.query(Flashcard).filter(
