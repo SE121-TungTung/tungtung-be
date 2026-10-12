@@ -14,7 +14,7 @@ Endpoints:
   /calibrate                       POST  Trigger batch calibration job (System Admin)
 """
 
-from typing import Optional
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -34,6 +34,7 @@ from app.schemas.adaptive_quiz import (
     FinishSessionResponse,
     NextQuestionResponse,
     QuestionIRTRead,
+    SessionResponseDetail,
     StartSessionRequest,
     SubmitResponseRequest,
     SubmitResponseResponse,
@@ -191,6 +192,24 @@ def finish_session(
     current_user: User = Depends(_require_student_or_guest),
 ):
     return quiz_service.finish_session(db=db, current_user=current_user, session_id=id)
+
+
+# ---------------------------------------------------------------------------
+# 6b. Get administered responses in session
+# ---------------------------------------------------------------------------
+@router.get(
+    "/sessions/{id}/responses",
+    response_model=List[SessionResponseDetail],
+    summary="Get detailed list of responses with IRT parameters for a session",
+)
+def get_session_responses(
+    id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    return quiz_service.get_session_responses(
+        db=db, current_user=current_user, session_id=id
+    )
 
 
 # ---------------------------------------------------------------------------

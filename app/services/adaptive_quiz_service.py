@@ -397,6 +397,27 @@ class AdaptiveQuizService:
             "theta_history": session.theta_history or [],
         }
 
+    def get_session_responses(
+        self, db: Session, current_user: User, session_id: UUID
+    ) -> List[Dict[str, Any]]:
+        session = self.get_session(db, current_user, session_id)
+        responses = self.response_repo.list_by_session(db, session.id)
+        result = []
+        for r in responses:
+            question_title = r.question.title if r.question else f"Câu hỏi #{r.item_position}"
+            result.append({
+                "id": r.id,
+                "item_position": r.item_position,
+                "question_id": r.question_id,
+                "question_title": question_title,
+                "irt_a_used": float(r.irt_a_used),
+                "irt_b_used": float(r.irt_b_used),
+                "irt_c_used": float(r.irt_c_used),
+                "is_correct": r.is_correct,
+                "time_spent_seconds": r.time_spent_seconds,
+            })
+        return result
+
     def _finalize_session(self, db: Session, session: AdaptiveQuizSession, reason: str):
         final_theta = float(session.theta_current)
         final_se = float(session.se_current)

@@ -134,3 +134,17 @@ class TriggerCalibrateResponse(BaseModel):
     calibrated_items_count: int
     message: str
     timestamp: datetime
+
+
+class SessionResponseDetail(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    item_position: int
+    question_id: UUID
+    question_title: Optional[str] = None
+    irt_a_used: float
+    irt_b_used: float
+    irt_c_used: float
+    is_correct: bool
+    time_spent_seconds: Optional[int] = None
