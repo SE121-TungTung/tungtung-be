@@ -489,6 +489,14 @@ class QuestionBank(BaseModel):
 
     extra_metadata = Column(JSONB)
 
+    # IRT & Adaptive Testing (CAT)
+    irt_discrimination = Column(Numeric(6, 4), default=1.0, nullable=False)
+    irt_difficulty = Column(Numeric(6, 4), default=0.0, nullable=False)
+    irt_guessing = Column(Numeric(6, 4), default=0.25, nullable=False)
+    irt_calibrated = Column(Boolean, default=False, nullable=False)
+    irt_calibrated_at = Column(DateTime(timezone=True), nullable=True)
+    is_cat_eligible = Column(Boolean, default=False, nullable=False)
+
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     reviewed_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     reviewed_at = Column(DateTime(timezone=True))

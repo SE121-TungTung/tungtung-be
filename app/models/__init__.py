@@ -30,4 +30,4 @@ from .class_post_view import ClassPostView
 from .class_post_download import ClassPostDownload
 from .pronunciation import PronunciationPractice, PronunciationPhonemeMastery, PronunciationAssessment, TargetType
 from .flashcard import FlashcardDeck, Flashcard, FlashcardReview
-
+from .adaptive_quiz import AdaptiveQuizSession, AdaptiveQuizResponse, AdaptiveSessionStatus, AdaptiveStopReason
