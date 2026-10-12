@@ -36,7 +36,7 @@ async def get_history(params: CommonQueryParams = Depends(), db: Session = Depen
     ).order_by(desc(RecommendationLog.generated_at))
     
     total = query.count()
-    logs = query.offset((params.page - 1) * params.size).limit(params.size).all()
+    logs = query.offset(params.skip).limit(params.limit).all()
     
     result = []
     for log in logs:

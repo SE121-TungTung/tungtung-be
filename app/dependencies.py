@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import Tuple, Optional
 import string
 import secrets
 from datetime import date, timedelta
@@ -190,10 +190,13 @@ class CommonQueryParams:
     def __init__(
         self,
         page: int = Query(1, ge=1, description="Trang hiện tại (bắt đầu từ 1)"),
-        limit: int = Query(20, ge=1, le=1000, description="Số lượng bản ghi trên mỗi trang"),
+        limit: Optional[int] = Query(None, ge=1, le=1000, description="Số lượng bản ghi trên mỗi trang"),
+        size: Optional[int] = Query(None, ge=1, le=1000, description="Số lượng bản ghi trên mỗi trang (alias của limit)"),
     ):
         self.page = page
-        self.limit = limit
+        effective_limit = limit if limit is not None else (size if size is not None else 20)
+        self.limit = effective_limit
+        self.size = effective_limit
 
     @property
     def skip(self) -> int:
