@@ -12,7 +12,7 @@ from app.routers import (
     chatbot, audit_log, recommendation, substitution, certificate, vocabulary, public,
     lead, class_posts, class_post_comments, wallet, pronunciation, dictionary
 )
-from app.routers import flashcard
+from app.routers import flashcard, adaptive_quiz
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import APIRouter
 from contextlib import asynccontextmanager
@@ -100,6 +100,7 @@ api_router.include_router(flashcard.router)
 api_router.include_router(public.router)
 api_router.include_router(pronunciation.router)
 api_router.include_router(dictionary.router)
+api_router.include_router(adaptive_quiz.router)
 
 app.include_router(api_router, prefix="/api/v1")
 
