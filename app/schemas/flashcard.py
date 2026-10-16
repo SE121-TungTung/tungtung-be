@@ -2,10 +2,10 @@
 Schemas: Flashcard
 Covers: FlashcardDeck, Flashcard, FlashcardReview, Stats
 """
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from uuid import UUID
 from datetime import datetime, date
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.flashcard import TopicTag, DeckLevel, WordType, ReviewState, Rating
 
@@ -180,3 +180,59 @@ class ImportFromVocabularyRequest(BaseModel):
         ..., min_length=1, max_length=100,
         description="Danh sách ID từ user_vocabulary cần import (tối đa 100 từ)"
     )
+
+
+# ---------------------------------------------------------------------------
+# AI generate + bulk add
+# ---------------------------------------------------------------------------
+
+class AIGenerateRequest(BaseModel):
+    """POST /flashcard-decks/{id}/ai/generate"""
+    mode: Literal["extract", "enrich"] = Field(
+        ..., description="extract: trích từ vựng từ văn bản | enrich: sinh nghĩa/ví dụ cho danh sách từ"
+    )
+    text: Optional[str] = Field(None, max_length=8000, description="Văn bản nguồn (mode=extract)")
+    words: Optional[List[str]] = Field(None, max_length=30, description="Danh sách từ (mode=enrich)")
+    max_items: int = Field(15, ge=1, le=30, description="Số từ tối đa khi extract")
+    level: Optional[str] = Field(None, max_length=30)
+    topic: Optional[str] = Field(None, max_length=50)
+
+    @model_validator(mode="after")
+    def _check_input(self):
+        if self.mode == "extract":
+            if not self.text or len(self.text.strip()) < 20:
+                raise ValueError("Văn bản quá ngắn để trích xuất từ vựng (tối thiểu 20 ký tự).")
+        else:
+            cleaned = [w.strip() for w in (self.words or []) if w and w.strip()]
+            if not cleaned:
+                raise ValueError("Vui lòng nhập ít nhất một từ.")
+            self.words = cleaned
+        return self
+
+
+class AICardSuggestion(BaseModel):
+    word: str
+    ipa: Optional[str] = None
+    word_type: Optional[str] = None
+    definition_vi: Optional[str] = None
+    definition_en: Optional[str] = None
+    example_sentence: Optional[str] = None
+
+
+class AIGenerateResponse(BaseModel):
+    suggestions: List[AICardSuggestion]
+
+
+class BulkCardCreateRequest(BaseModel):
+    """POST /flashcard-decks/{id}/cards/bulk"""
+    cards: List[FlashcardCreate] = Field(..., min_length=1, max_length=50)
+
+
+class BulkCardCreateResponse(BaseModel):
+    created: int
+    skipped: int
+
+
+class DeckHideRequest(BaseModel):
+    """Kiểm duyệt: lý do ẩn deck đã publish (bắt buộc, sẽ gửi cho chủ deck)."""
+    reason: str = Field(..., min_length=5, max_length=500)

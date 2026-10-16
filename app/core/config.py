@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     AI_BASE_URL: str
 
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    GEMINI_MODEL: str = "gemini-flash-latest"
     GEMINI_API_URL: str = "https://generativelanguage.googleapis.com/v1beta"
     OPENAI_API_KEY: Optional[str] = None
 

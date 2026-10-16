@@ -300,6 +300,14 @@ def seed_tests():
                 for local_idx, q in enumerate(g.get("questions", []), 1):
                     q_text = q.get("text") or q.get("stem") or f"Question {q_r_global}"
                     options = q.get("options")
+                    if not options and g.get("word_bank"):
+                        options = []
+                        for wb_item in g.get("word_bank", []):
+                            if "." in wb_item:
+                                p_k, p_t = wb_item.split(".", 1)
+                                options.append({"key": p_k.strip(), "text": p_t.strip()})
+                            else:
+                                options.append({"key": wb_item, "text": wb_item})
                     ans = q.get("answer", "")
 
                     # Handle table completion rows if text is just Row X

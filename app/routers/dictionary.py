@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.core.route import ResponseWrapperRoute
 from app.core.database import get_db
 from app.schemas.base_schema import ApiResponse
+from app.schemas.dictionary import IpaBatchRequest, IpaBatchResponse, IpaItem
 from app.services.dictionary_service import dictionary_service
 from app.dependencies import require_non_guest
 
@@ -32,4 +33,23 @@ async def lookup_word(
     return ApiResponse(
         data=result,
         message="Lookup successful"
+    )
+
+
+@router.post("/ipa", response_model=ApiResponse[IpaBatchResponse])
+async def lookup_ipa(
+    payload: IpaBatchRequest,
+    db: Session = Depends(get_db),
+    current_user=Depends(require_non_guest),
+):
+    """
+    **Tra IPA US/UK cho nhiều từ hoặc câu (tối đa 20 chuỗi).**
+
+    Thứ tự nguồn: cache DB -> Free Dictionary API -> Gemini. Câu/cụm từ được tra
+    từng từ rồi ghép. Không tra được thì `ipa_us`/`ipa_uk` = null (không trả lại chính chữ).
+    """
+    items = await dictionary_service.lookup_ipa_batch(db, payload.texts)
+    return ApiResponse(
+        data=IpaBatchResponse(items=[IpaItem(**i) for i in items]),
+        message="IPA lookup successful",
     )

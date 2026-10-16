@@ -6,6 +6,8 @@ class DictionaryWord(BaseModel):
 
     word = Column(String(255), unique=True, index=True, nullable=False)
     ipa = Column(String(255), nullable=True)
+    ipa_us = Column(String(255), nullable=True)
+    ipa_uk = Column(String(255), nullable=True)
     word_type = Column(String(50), nullable=True)
     definition_en = Column(Text, nullable=True)
     example_sentence = Column(Text, nullable=True)

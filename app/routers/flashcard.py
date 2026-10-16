@@ -35,6 +35,8 @@ from app.schemas.flashcard import (
     ReviewSubmitRequest, ReviewResponse,
     FlashcardStatsResponse, DailyActivity,
     ImportFromVocabularyRequest,
+    AIGenerateRequest, AIGenerateResponse, AICardSuggestion,
+    BulkCardCreateRequest, BulkCardCreateResponse, DeckHideRequest,
 )
 from app.services.flashcard_service import (
     flashcard_deck_service,
@@ -180,7 +182,13 @@ async def update_deck(
 
     - Chỉ người tạo deck mới được sửa.
     """
-    deck = await flashcard_deck_service.update_deck(db, deck_id=deck_id, user_id=current_user.id, payload=payload)
+    deck = await flashcard_deck_service.update_deck(
+        db,
+        deck_id=deck_id,
+        user_id=current_user.id,
+        payload=payload,
+        user_role=current_user.role.value if hasattr(current_user.role, 'value') else str(current_user.role),
+    )
     return ApiResponse(data=FlashcardDeckResponse.model_validate(deck), message="Deck updated successfully.")
 
 
@@ -200,8 +208,40 @@ async def delete_deck(
     - Chỉ người tạo deck mới được xóa.
     - Deck không bị xóa vĩnh viễn, chỉ đánh dấu `deleted_at`.
     """
-    await flashcard_deck_service.soft_delete_deck(db, deck_id=deck_id, user_id=current_user.id)
+    await flashcard_deck_service.soft_delete_deck(
+        db,
+        deck_id=deck_id,
+        user_id=current_user.id,
+        user_role=current_user.role.value if hasattr(current_user.role, 'value') else str(current_user.role),
+    )
     return ApiResponse(data=None, message="Deck deleted successfully.")
+
+
+@router.post(
+    "/flashcard-decks/{deck_id}/hide",
+    response_model=ApiResponse[FlashcardDeckResponse],
+    summary="Ẩn (unpublish) deck public - kiểm duyệt",
+)
+async def hide_deck(
+    deck_id: UUID,
+    payload: DeckHideRequest,
+    current_user=Depends(_require_content_manager),
+    db: Session = Depends(get_db),
+):
+    """
+    **Kiểm duyệt: ẩn deck đã publish.**
+
+    - Chỉ Teacher/TA/Admin; chỉ áp dụng cho deck đã publish.
+    - Deck chưa publish của người khác không được phép can thiệp.
+    """
+    deck = await flashcard_deck_service.hide_deck(
+        db,
+        deck_id=deck_id,
+        user_id=current_user.id,
+        user_role=current_user.role.value if hasattr(current_user.role, 'value') else str(current_user.role),
+        reason=payload.reason.strip(),
+    )
+    return ApiResponse(data=FlashcardDeckResponse.model_validate(deck), message="Deck hidden successfully.")
 
 
 # ============================================================
@@ -246,8 +286,59 @@ async def create_card(
 
     - Trả về 409 nếu từ đã tồn tại trong deck này.
     """
-    card = await flashcard_card_service.create_card(db, deck_id=deck_id, user_id=current_user.id, payload=payload)
+    card = await flashcard_card_service.create_card(
+        db,
+        deck_id=deck_id,
+        user_id=current_user.id,
+        payload=payload,
+        user_role=current_user.role.value if hasattr(current_user.role, 'value') else str(current_user.role),
+    )
     return ApiResponse(data=FlashcardResponse.model_validate(card), message="Card created successfully.")
+
+
+@router.post(
+    "/flashcard-decks/{deck_id}/ai/generate",
+    response_model=ApiResponse[AIGenerateResponse],
+    summary="AI gợi ý thẻ (trích từ vựng / sinh nghĩa & ví dụ)",
+)
+async def ai_generate_cards(
+    deck_id: UUID,
+    payload: AIGenerateRequest,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """
+    **AI gợi ý nội dung thẻ — không ghi DB.**
+
+    - `mode=extract`: trích từ vựng đáng học từ một đoạn văn.
+    - `mode=enrich`: sinh IPA, loại từ, nghĩa Việt/Anh, câu ví dụ cho danh sách từ.
+    - Chỉ chủ sở hữu deck mới được dùng. Lưu thẻ qua `/cards/bulk`.
+    """
+    suggestions = await flashcard_card_service.ai_suggest(
+        db, deck_id=deck_id, user_id=current_user.id, payload=payload
+    )
+    return ApiResponse(
+        data=AIGenerateResponse(suggestions=[AICardSuggestion(**s) for s in suggestions])
+    )
+
+
+@router.post(
+    "/flashcard-decks/{deck_id}/cards/bulk",
+    response_model=ApiResponse[BulkCardCreateResponse],
+    status_code=201,
+    summary="Thêm nhiều thẻ vào deck",
+)
+async def bulk_create_cards(
+    deck_id: UUID,
+    payload: BulkCardCreateRequest,
+    current_user=Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """**Thêm tối đa 50 thẻ một lượt; từ trùng sẽ được bỏ qua.**"""
+    created, skipped = await flashcard_card_service.bulk_create_cards(
+        db, deck_id=deck_id, user_id=current_user.id, cards=payload.cards
+    )
+    return ApiResponse(data=BulkCardCreateResponse(created=created, skipped=skipped))
 
 
 @router.put(
@@ -259,12 +350,17 @@ async def update_card(
     deck_id: UUID,
     card_id: UUID,
     payload: FlashcardUpdate,
-    current_user=Depends(_require_content_manager),
+    current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """**Cập nhật nội dung một thẻ flashcard.**"""
+    """**Cập nhật nội dung một thẻ flashcard (dành cho chủ sở hữu deck hoặc giáo viên/admin).**"""
     card = await flashcard_card_service.update_card(
-        db, deck_id=deck_id, card_id=card_id, user_id=current_user.id, payload=payload
+        db,
+        deck_id=deck_id,
+        card_id=card_id,
+        user_id=current_user.id,
+        payload=payload,
+        user_role=current_user.role.value if hasattr(current_user.role, 'value') else str(current_user.role),
     )
     return ApiResponse(data=FlashcardResponse.model_validate(card), message="Card updated successfully.")
 
@@ -277,12 +373,16 @@ async def update_card(
 async def delete_card(
     deck_id: UUID,
     card_id: UUID,
-    current_user=Depends(_require_content_manager),
+    current_user=Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    """**Xóa mềm (soft delete) một thẻ flashcard.**"""
+    """**Xóa mềm (soft delete) một thẻ flashcard (dành cho chủ sở hữu deck hoặc giáo viên/admin).**"""
     await flashcard_card_service.soft_delete_card(
-        db, deck_id=deck_id, card_id=card_id, user_id=current_user.id
+        db,
+        deck_id=deck_id,
+        card_id=card_id,
+        user_id=current_user.id,
+        user_role=current_user.role.value if hasattr(current_user.role, 'value') else str(current_user.role),
     )
     return ApiResponse(data=None, message="Card deleted successfully.")
 

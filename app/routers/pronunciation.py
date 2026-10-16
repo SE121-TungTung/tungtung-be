@@ -19,6 +19,18 @@ from app.schemas.pronunciation import (
     DrillSuggestionsResponse,
 )
 from app.services.pronunciation_service import pronunciation_service
+from app.schemas.pronunciation_word_list import (
+    WordListAddRequest,
+    WordListItemResponse,
+    WordListResponse,
+)
+from app.services.pronunciation_word_list_service import pronunciation_word_list_service
+from app.schemas.pronunciation_practice_set import (
+    PracticeSetGenerateRequest,
+    PracticeSetResponse,
+    DrillTopicsResponse,
+)
+from app.services.pronunciation_practice_set_service import pronunciation_practice_set_service
 
 # Kho dữ liệu từ vựng và câu IELTS theo 6 chủ đề chuẩn
 DRILL_TOPICS_DATA: Dict[str, List[str]] = {
@@ -138,6 +150,36 @@ async def get_drill_suggestions(
     )
 
 
+@router.get(
+    "/drill-topics",
+    response_model=ApiResponse[DrillTopicsResponse],
+    summary="Danh sách chủ đề Drill",
+)
+async def get_drill_topics(
+    current_user: User = Depends(get_current_active_user),
+):
+    return ApiResponse(data=DrillTopicsResponse(topics=pronunciation_practice_set_service.list_topics()))
+
+
+@router.post(
+    "/practice-sets/generate",
+    response_model=ApiResponse[PracticeSetResponse],
+    summary="Sinh bộ bài luyện phát âm bằng AI (Lộ trình / Theo âm / Drill)",
+    description=(
+        "Ưu tiên lấy từ kho bài dùng chung; kho chưa đủ phong phú thì AI sinh thêm và lưu kho. "
+        "Lỗi AI trả 503 AI_UNAVAILABLE."
+    ),
+)
+async def generate_practice_set(
+    payload: PracticeSetGenerateRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    result = await pronunciation_practice_set_service.generate(db, current_user.id, payload)
+    return ApiResponse(data=result, message="Practice set ready.")
+
+
+
 @router.post(
     "/practices",
     response_model=ApiResponse[PronunciationPracticeCreateResponse],
@@ -249,6 +291,53 @@ async def get_practice_detail(
     return ApiResponse(
         data=PronunciationPracticeDetailResponse.model_validate(practice),
     )
+
+
+# ════════════════════════════════════════════════════════════
+# WORD LIST — Danh sách luyện phát âm cá nhân (liên kết Flashcard)
+# ════════════════════════════════════════════════════════════
+
+@router.get(
+    "/word-list",
+    response_model=ApiResponse[WordListResponse],
+    summary="Danh sách từ/câu luyện phát âm cá nhân",
+    description="Kèm thống kê luyện tập (số lần, điểm cao nhất, điểm gần nhất) và liên kết flashcard nguồn.",
+)
+async def get_word_list(
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    return ApiResponse(data=await pronunciation_word_list_service.list(db, current_user.id))
+
+
+@router.post(
+    "/word-list",
+    response_model=ApiResponse[WordListItemResponse],
+    status_code=status.HTTP_201_CREATED,
+    summary="Thêm từ/câu (hoặc thẻ flashcard) vào danh sách luyện phát âm",
+    description="Truyền `flashcard_id` để thêm từ một thẻ flashcard, hoặc `target_text` để thêm thủ công. Idempotent theo text.",
+)
+async def add_word_list_item(
+    payload: WordListAddRequest,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    item = await pronunciation_word_list_service.add(db, current_user.id, payload)
+    return ApiResponse(data=item, message="Đã thêm vào danh sách luyện phát âm.")
+
+
+@router.delete(
+    "/word-list/{item_id}",
+    response_model=ApiResponse[None],
+    summary="Xóa mục khỏi danh sách luyện phát âm",
+)
+async def delete_word_list_item(
+    item_id: UUID = Path(..., description="ID mục trong danh sách"),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    pronunciation_word_list_service.remove(db, current_user.id, item_id)
+    return ApiResponse(data=None, message="Đã xóa khỏi danh sách luyện phát âm.")
 
 
 # ════════════════════════════════════════════════════════════

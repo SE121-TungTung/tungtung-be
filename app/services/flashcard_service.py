@@ -5,6 +5,7 @@ Covers:
   - FlashcardReviewService  (FSRS engine integration)
   - FlashcardStatsService   (streak, heatmap, mastered count)
 """
+import logging
 from typing import Optional, List, Tuple
 from uuid import UUID
 from datetime import datetime, timezone, date, timedelta
@@ -26,10 +27,15 @@ from app.schemas.flashcard import (
     FlashcardCreate, FlashcardUpdate,
     ReviewSubmitRequest,
     ImportFromVocabularyRequest,
+    AIGenerateRequest,
 )
+from app.services.flashcard_ai_service import flashcard_ai_service
 from app.services.fsrs_engine import FSRSEngine
 
 _fsrs = FSRSEngine()
+logger = logging.getLogger(__name__)
+
+MODERATOR_ROLES = {"teacher", "ta", "center_admin", "system_admin"}
 
 
 # ---------------------------------------------------------------------------
@@ -81,10 +87,10 @@ class FlashcardDeckService:
     # ---- UPDATE ----
 
     async def update_deck(
-        self, db: Session, deck_id: UUID, user_id: UUID, payload: FlashcardDeckUpdate
+        self, db: Session, deck_id: UUID, user_id: UUID, payload: FlashcardDeckUpdate, user_role: str = "student"
     ) -> FlashcardDeck:
         deck = await self.get_detail(db, deck_id)
-        self._check_author(deck, user_id)
+        self._check_author(deck, user_id, user_role)
 
         update_data = payload.model_dump(exclude_unset=True)
         if "topic_tag" in update_data and update_data["topic_tag"] is not None:
@@ -97,16 +103,55 @@ class FlashcardDeckService:
     # ---- DELETE ----
 
     async def soft_delete_deck(
-        self, db: Session, deck_id: UUID, user_id: UUID
+        self, db: Session, deck_id: UUID, user_id: UUID, user_role: str = "student"
     ) -> None:
         deck = await self.get_detail(db, deck_id)
-        self._check_author(deck, user_id)
+        self._check_author(deck, user_id, user_role)
         flashcard_deck_repo.soft_delete(db, deck)
+
+    # ---- MODERATE ----
+
+    async def hide_deck(
+        self, db: Session, deck_id: UUID, user_id: UUID, user_role: str = "student", reason: str = ""
+    ) -> FlashcardDeck:
+        """Kiểm duyệt: teacher/TA/admin ẩn (unpublish) deck public của người khác.
+
+        Deck chưa publish (private) của người khác không thuộc quyền kiểm duyệt.
+        """
+        deck = await self.get_detail(db, deck_id)
+        if user_role not in MODERATOR_ROLES:
+            raise APIException(
+                status_code=403, code="DECK_FORBIDDEN",
+                message="You do not have permission to moderate this deck.",
+            )
+        if not deck.is_public:
+            raise APIException(
+                status_code=403, code="DECK_NOT_PUBLISHED",
+                message="Only published decks can be moderated.",
+            )
+        updated = flashcard_deck_repo.update(db, deck, {"is_public": False, "updated_by": user_id})
+
+        # Thông báo cho chủ deck kèm lý do (không để lỗi thông báo làm hỏng thao tác ẩn)
+        if deck.created_by and deck.created_by != user_id:
+            try:
+                from app.services.notification_service import notification_service
+                await notification_service.broadcast_notification(
+                    db=db,
+                    user_ids=[deck.created_by],
+                    title="Bộ thẻ của bạn đã bị ẩn",
+                    content=f"Bộ thẻ \"{deck.title}\" đã bị chuyển về chế độ riêng tư. Lý do: {reason}",
+                    priority="high",
+                    action_url="/student/flashcards",
+                    notification_type="system_alert",
+                )
+            except Exception:
+                logger.exception("Failed to notify deck owner about moderation")
+        return updated
 
     # ---- GUARD ----
 
-    def _check_author(self, deck: FlashcardDeck, user_id: UUID) -> None:
-        """Chỉ người tạo (hoặc admin) mới được sửa/xóa."""
+    def _check_author(self, deck: FlashcardDeck, user_id: UUID, user_role: str = "student") -> None:
+        """Chỉ người tạo deck mới được sửa/xóa (deck public của người khác là read-only)."""
         if deck.created_by != user_id:
             raise APIException(
                 status_code=403,
@@ -130,12 +175,23 @@ class FlashcardCardService:
             raise APIException(status_code=404, code="DECK_NOT_FOUND", message="Flashcard deck not found.")
         return flashcard_card_repo.get_by_deck(db, deck_id, page=page, limit=limit)
 
+    def _check_card_permission(self, deck: FlashcardDeck, user_id: UUID, user_role: str = "student") -> None:
+        # Chỉ chủ sở hữu deck mới được thêm/sửa/xóa thẻ; deck public của người khác là read-only.
+        if deck.created_by != user_id:
+            raise APIException(
+                status_code=403,
+                code="CARD_FORBIDDEN",
+                message="You do not have permission to modify cards in this deck.",
+            )
+
     async def create_card(
-        self, db: Session, deck_id: UUID, user_id: UUID, payload: FlashcardCreate
+        self, db: Session, deck_id: UUID, user_id: UUID, payload: FlashcardCreate, user_role: str = "student"
     ) -> Flashcard:
         deck = flashcard_deck_repo.get_by_id(db, deck_id)
         if not deck:
             raise APIException(status_code=404, code="DECK_NOT_FOUND", message="Flashcard deck not found.")
+
+        self._check_card_permission(deck, user_id, user_role)
 
         # Unique check
         if flashcard_card_repo.check_word_exists(db, deck_id, payload.word):
@@ -167,9 +223,72 @@ class FlashcardCardService:
         flashcard_deck_repo.increment_card_count(db, deck, delta=1)
         return card
 
+    async def ai_suggest(
+        self, db: Session, deck_id: UUID, user_id: UUID, payload: AIGenerateRequest
+    ) -> List[dict]:
+        """Gợi ý thẻ từ AI (không ghi DB). Chỉ chủ deck mới được dùng."""
+        deck = flashcard_deck_repo.get_by_id(db, deck_id)
+        if not deck:
+            raise APIException(status_code=404, code="DECK_NOT_FOUND", message="Flashcard deck not found.")
+        self._check_card_permission(deck, user_id)
+
+        def _val(v):
+            return v.value if hasattr(v, "value") else v
+
+        return await flashcard_ai_service.generate(
+            mode=payload.mode,
+            text=payload.text,
+            words=payload.words,
+            max_items=payload.max_items,
+            level=payload.level or _val(deck.level),
+            topic=payload.topic or _val(deck.topic_tag),
+        )
+
+    async def bulk_create_cards(
+        self, db: Session, deck_id: UUID, user_id: UUID, cards: List[FlashcardCreate]
+    ) -> Tuple[int, int]:
+        """Thêm nhiều thẻ một lượt (dùng cho AI). Bỏ qua từ trùng. Returns (created, skipped)."""
+        deck = flashcard_deck_repo.get_by_id(db, deck_id)
+        if not deck:
+            raise APIException(status_code=404, code="DECK_NOT_FOUND", message="Flashcard deck not found.")
+        self._check_card_permission(deck, user_id)
+
+        to_create = []
+        seen = set()
+        skipped = 0
+        for c in cards:
+            word = c.word.strip()
+            key = word.lower()
+            if not word or key in seen or flashcard_card_repo.check_word_exists(db, deck_id, word):
+                skipped += 1
+                continue
+            seen.add(key)
+            data = c.model_dump(exclude_none=False)
+            if data.get("word_type") is not None:
+                data["word_type"] = data["word_type"].value
+            data.update({"deck_id": deck_id, "word": word, "created_by": user_id, "updated_by": user_id})
+            to_create.append(data)
+
+        if to_create:
+            flashcard_card_repo.bulk_create(db, to_create)
+            flashcard_deck_repo.increment_card_count(db, deck, delta=len(to_create))
+        return len(to_create), skipped
+
     async def update_card(
-        self, db: Session, deck_id: UUID, card_id: UUID, user_id: UUID, payload: FlashcardUpdate
+        self,
+        db: Session,
+        deck_id: UUID,
+        card_id: UUID,
+        user_id: UUID,
+        payload: FlashcardUpdate,
+        user_role: str = "student",
     ) -> Flashcard:
+        deck = flashcard_deck_repo.get_by_id(db, deck_id)
+        if not deck:
+            raise APIException(status_code=404, code="DECK_NOT_FOUND", message="Flashcard deck not found.")
+
+        self._check_card_permission(deck, user_id, user_role)
+
         card = flashcard_card_repo.get_by_id(db, card_id)
         if not card or card.deck_id != deck_id:
             raise APIException(status_code=404, code="CARD_NOT_FOUND", message="Flashcard not found in this deck.")
@@ -192,16 +311,25 @@ class FlashcardCardService:
         return flashcard_card_repo.update(db, card, update_data)
 
     async def soft_delete_card(
-        self, db: Session, deck_id: UUID, card_id: UUID, user_id: UUID
+        self,
+        db: Session,
+        deck_id: UUID,
+        card_id: UUID,
+        user_id: UUID,
+        user_role: str = "student",
     ) -> None:
+        deck = flashcard_deck_repo.get_by_id(db, deck_id)
+        if not deck:
+            raise APIException(status_code=404, code="DECK_NOT_FOUND", message="Flashcard deck not found.")
+
+        self._check_card_permission(deck, user_id, user_role)
+
         card = flashcard_card_repo.get_by_id(db, card_id)
         if not card or card.deck_id != deck_id:
             raise APIException(status_code=404, code="CARD_NOT_FOUND", message="Flashcard not found in this deck.")
 
-        deck = flashcard_deck_repo.get_by_id(db, deck_id)
         flashcard_card_repo.soft_delete(db, card)
-        if deck:
-            flashcard_deck_repo.increment_card_count(db, deck, delta=-1)
+        flashcard_deck_repo.increment_card_count(db, deck, delta=-1)
 
     async def import_from_vocabulary(
         self, db: Session, user_id: UUID, payload: ImportFromVocabularyRequest
