@@ -33,11 +33,16 @@ class ResponseWrapperRoute(APIRoute):
                 "message": None
             }
 
-            # 6. Trả về Response mới
+            # 6. Trả về Response mới (loại bỏ content-length cũ để JSONResponse tự tính lại theo wrapped_data)
+            headers = {
+                k: v
+                for k, v in response.headers.items()
+                if k.lower() != "content-length"
+            }
             return JSONResponse(
                 content=wrapped_data,
                 status_code=response.status_code,
-                headers=dict(response.headers)
+                headers=headers
             )
 
         return custom_handler

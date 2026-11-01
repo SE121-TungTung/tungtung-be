@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks, Query
 from sqlalchemy.orm import Session
-from typing import List, Any
+from typing import List, Any, Optional
 from uuid import UUID
 
 from app.core.database import get_db
@@ -23,19 +23,34 @@ router = APIRouter(prefix="/notifications", tags=["Notifications"], route_class=
 # ============================================================
 @router.get("", response_model=PaginationResponse[NotificationResponse])
 def get_my_notifications(
-    params: CommonQueryParams = Depends(), 
+    params: CommonQueryParams = Depends(),
+    skip: Optional[int] = Query(None, ge=0, description="Offset bản ghi (tương thích ngược)"),
+    unread_only: bool = Query(False, description="Chỉ lấy thông báo chưa đọc"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """Lấy danh sách thông báo của user hiện tại"""
-    noti = notification_repo.get_by_user(db, user_id=current_user.id, skip=params.skip, limit=params.limit)
-    count = notification_repo.count_by_user(db, user_id=current_user.id)
+    effective_skip = skip if skip is not None else params.skip
+    effective_page = (effective_skip // params.limit) + 1 if (skip is not None and params.limit) else params.page
+
+    noti = notification_repo.get_by_user(
+        db,
+        user_id=current_user.id,
+        skip=effective_skip,
+        limit=params.limit,
+        unread_only=unread_only,
+    )
+    count = notification_repo.count_by_user(
+        db,
+        user_id=current_user.id,
+        unread_only=unread_only,
+    )
     
     # Step 3: Xử lý Pagination
     return PaginationResponse(
         data=noti,
         total=count,
-        page=params.page,
+        page=effective_page,
         limit=params.limit
     )
 

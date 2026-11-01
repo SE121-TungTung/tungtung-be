@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import UUID
 from typing import List, Optional
 
@@ -27,7 +27,7 @@ class NotificationService:
                     "id": str(notification.id),
                     "title": notification.title,
                     "content": notification.content,
-                    "priority": notification.priority,
+                    "priority": notification.priority.value if hasattr(notification.priority, "value") else notification.priority,
                     "action_url": notification.action_url,
                 },
             }
@@ -50,7 +50,7 @@ class NotificationService:
             return None
 
         if not noti.read_at:
-            noti.read_at = datetime.now()
+            noti.read_at = datetime.now(timezone.utc)
             db.commit()
             db.refresh(noti)
 

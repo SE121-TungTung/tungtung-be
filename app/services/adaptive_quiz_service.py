@@ -194,6 +194,7 @@ class AdaptiveQuizService:
             )
 
         selected_item, fisher_info = selection
+        context = self._extract_question_context(selected_item)
 
         return {
             "question_id": selected_item.id,
@@ -206,9 +207,12 @@ class AdaptiveQuizService:
             "skill_area": selected_item.skill_area.value
             if hasattr(selected_item.skill_area, "value")
             else selected_item.skill_area,
-            "options": selected_item.options,
-            "audio_url": selected_item.audio_url,
-            "image_url": selected_item.image_url,
+            "passage_title": context["passage_title"],
+            "passage_text": context["passage_text"],
+            "instructions": context["instructions"],
+            "options": self._normalize_options(selected_item),
+            "audio_url": context["audio_url"],
+            "image_url": context["image_url"],
             "current_theta": float(session.theta_current),
             "current_se": float(session.se_current),
             "items_administered": session.items_administered,
@@ -430,6 +434,121 @@ class AdaptiveQuizService:
         db.commit()
         db.refresh(session)
 
+    def _extract_question_context(self, question: QuestionBank) -> Dict[str, Optional[str]]:
+        meta = question.extra_metadata if isinstance(question.extra_metadata, dict) else {}
+        passage_title: Optional[str] = meta.get("passage_title")
+        passage_text: Optional[str] = meta.get("passage_text") or meta.get("passage")
+        instructions: Optional[str] = meta.get("instructions")
+        audio_url: Optional[str] = question.audio_url or meta.get("audio_url")
+        image_url: Optional[str] = question.image_url or meta.get("image_url")
+
+        skill_val = (
+            question.skill_area.value
+            if hasattr(question.skill_area, "value")
+            else str(question.skill_area or "")
+        ).lower()
+
+        if question.test_questions:
+            tq = question.test_questions[0]
+            group = tq.group
+            if group:
+                if not instructions and group.instructions:
+                    instructions = group.instructions
+                if not image_url and group.image_url:
+                    image_url = group.image_url
+                part = group.part
+                if part:
+                    if not instructions and part.instructions:
+                        instructions = part.instructions
+                    if not audio_url and part.audio_url:
+                        audio_url = part.audio_url
+                    if not image_url and part.image_url:
+                        image_url = part.image_url
+                    passage = part.passage
+                    if passage:
+                        if not passage_title and passage.title:
+                            passage_title = passage.title
+                        if not audio_url and passage.audio_url:
+                            audio_url = passage.audio_url
+                        if not image_url and passage.image_url:
+                            image_url = passage.image_url
+                        # Include passage text for reading, or for listening when no audio is present
+                        if not passage_text and passage.text_content:
+                            if skill_val == "reading" or not audio_url:
+                                passage_text = passage.text_content
+
+        return {
+            "passage_title": passage_title,
+            "passage_text": passage_text,
+            "instructions": instructions,
+            "audio_url": audio_url,
+            "image_url": image_url,
+        }
+
+    def _normalize_options(self, question: QuestionBank) -> List[Dict[str, str]]:
+        q_type = (
+            question.question_type.value
+            if hasattr(question.question_type, "value")
+            else str(question.question_type or "")
+        )
+        raw_options = question.options
+
+        if not raw_options:
+            if q_type == "true_false_not_given":
+                return [
+                    {"id": "TRUE", "text": "True"},
+                    {"id": "FALSE", "text": "False"},
+                    {"id": "NOT GIVEN", "text": "Not Given"},
+                ]
+            if q_type == "yes_no_not_given":
+                return [
+                    {"id": "YES", "text": "Yes"},
+                    {"id": "NO", "text": "No"},
+                    {"id": "NOT GIVEN", "text": "Not Given"},
+                ]
+            return []
+
+        letters = ["A", "B", "C", "D", "E", "F", "G", "H"]
+        normalized: List[Dict[str, str]] = []
+
+        if isinstance(raw_options, list):
+            for idx, opt in enumerate(raw_options):
+                fallback_id = letters[idx] if idx < len(letters) else str(idx + 1)
+                if isinstance(opt, dict):
+                    raw_id = str(
+                        opt.get("id")
+                        or opt.get("key")
+                        or opt.get("value")
+                        or fallback_id
+                    ).strip()
+                    raw_text = str(
+                        opt.get("text")
+                        or opt.get("label")
+                        or opt.get("content")
+                        or raw_id
+                    ).strip()
+                else:
+                    s = str(opt).strip()
+                    # Check if string starts with "A. " or "A) "
+                    if len(s) >= 3 and s[0].isalpha() and s[1] in (".", ")"):
+                        raw_id = s[0].upper()
+                        raw_text = s[2:].strip()
+                    else:
+                        raw_id = fallback_id
+                        raw_text = s
+
+                # Strip redundant prefix like "A. " when raw_id is "A"
+                prefix_dot = f"{raw_id}. "
+                prefix_paren = f"{raw_id}) "
+                if raw_text.startswith(prefix_dot):
+                    raw_text = raw_text[len(prefix_dot):].strip()
+                elif raw_text.startswith(prefix_paren):
+                    raw_text = raw_text[len(prefix_paren):].strip()
+
+                normalized.append({"id": raw_id, "text": raw_text})
+
+        return normalized
+
     def _check_correctness(self, question: QuestionBank, response_data: Any) -> bool:
         if response_data is None:
             return False
@@ -439,6 +558,25 @@ class AdaptiveQuizService:
         else:
             student_answer = str(response_data).strip()
 
-        correct = str(question.correct_answer or "").strip()
+        if not student_answer:
+            return False
 
-        return student_answer.lower() == correct.lower()
+        correct = str(question.correct_answer or "").strip()
+        if student_answer.lower() == correct.lower():
+            return True
+
+        # Check against normalized/raw options in case student submitted ID vs text or vice versa
+        if isinstance(question.options, list):
+            letters = ["A", "B", "C", "D", "E", "F", "G", "H"]
+            for idx, opt in enumerate(question.options):
+                fallback_id = letters[idx] if idx < len(letters) else str(idx + 1)
+                if isinstance(opt, dict):
+                    opt_id = str(opt.get("id") or opt.get("key") or opt.get("value") or fallback_id).strip()
+                    opt_text = str(opt.get("text") or opt.get("label") or "").strip()
+                    if student_answer.lower() in (opt_id.lower(), opt_text.lower()):
+                        if opt.get("is_correct") is True:
+                            return True
+                        if correct.lower() in (opt_id.lower(), opt_text.lower()):
+                            return True
+
+        return False

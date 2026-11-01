@@ -199,7 +199,9 @@ def estimate_theta_mle(
         fisher_information(theta, float(r["a"]), float(r["b"]), float(r["c"]))
         for r in responses
     )
-    se = 1.0 / math.sqrt(total_info) if total_info > 0.0 else 999.0
+    # Include unit normal prior precision (1.0) so SE remains bounded and well-behaved in 3PL tail regions
+    posterior_precision = 1.0 + total_info
+    se = 1.0 / math.sqrt(posterior_precision) if posterior_precision > 0.0 else 1.0
 
     return round(theta, 4), round(se, 4)
 
@@ -209,7 +211,7 @@ def update_theta(
     responses: List[Dict[str, Any]],
     clamp_range: Tuple[float, float] = DEFAULT_CLAMP_RANGE
 ) -> Tuple[float, float]:
-    """Hybrid ability update: EAP for first 5 items or homogeneous responses, MLE thereafter.
+    """Hybrid ability update: EAP for first 5 items or homogeneous responses, regularized MLE/EAP thereafter.
 
     Args:
         current_theta: Current ability estimate.
@@ -225,19 +227,27 @@ def update_theta(
     correct_count = sum(1 for r in responses if r["is_correct"])
     total_count = len(responses)
 
+    eap_theta, eap_se = estimate_theta_eap(
+        responses, prior_mean=0.0, prior_sd=1.0, clamp_range=clamp_range
+    )
+
     # Use EAP if few items administered, or responses are all correct / all wrong
     if total_count <= EAP_THRESHOLD_ITEMS or correct_count == 0 or correct_count == total_count:
-        return estimate_theta_eap(responses, prior_mean=0.0, prior_sd=1.0, clamp_range=clamp_range)
+        return eap_theta, eap_se
 
     # Use MLE with EAP as robust starting point
-    eap_theta, _ = estimate_theta_eap(responses, prior_mean=0.0, prior_sd=1.0, clamp_range=clamp_range)
     mle_theta, mle_se = estimate_theta_mle(eap_theta, responses, clamp_range=clamp_range)
 
-    # If MLE diverged to boundary or has invalid SE, fallback to EAP
-    if mle_se >= 999.0 or math.isnan(mle_se) or math.isnan(mle_theta):
-        return estimate_theta_eap(responses, prior_mean=0.0, prior_sd=1.0, clamp_range=clamp_range)
+    # If MLE diverged to boundary or has larger uncertainty than EAP, prefer EAP
+    if (
+        mle_se >= 1.0
+        or math.isnan(mle_se)
+        or math.isnan(mle_theta)
+        or abs(mle_theta - eap_theta) > 1.2
+    ):
+        return eap_theta, min(eap_se, mle_se)
 
-    return mle_theta, mle_se
+    return mle_theta, min(mle_se, eap_se)
 
 
 def select_next_question(

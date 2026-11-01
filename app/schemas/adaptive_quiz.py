@@ -48,6 +48,9 @@ class NextQuestionResponse(BaseModel):
     question_text: str
     question_type: str
     skill_area: str
+    passage_title: Optional[str] = None
+    passage_text: Optional[str] = None
+    instructions: Optional[str] = None
     options: Optional[Any] = None
     audio_url: Optional[str] = None
     image_url: Optional[str] = None
