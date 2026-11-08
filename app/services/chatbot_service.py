@@ -99,23 +99,38 @@ class ChatbotService:
         history: list = None,
         retrieval_mode: str = "hybrid_rerank",
         top_k: int = 4,
+        user_id: str | None = None,
+        auth_token: str | None = None,
+        simulate_429: bool = False,
     ):
         """
-        Gửi tin nhắn sang Chatbot Service (trả về cả reply và danh sách sources trích dẫn).
+        Gửi tin nhắn sang Chatbot Service (trả về reply, danh sách sources trích dẫn, ui_actions và tool_calls).
         """
         quick_reply = self._match_quick_chitchat(message)
         if quick_reply:
-            return {"reply": quick_reply, "sources": [], "retrieval_mode": retrieval_mode}
+            return {
+                "reply": quick_reply,
+                "sources": [],
+                "retrieval_mode": retrieval_mode,
+                "mode": "quick_chitchat",
+                "ui_actions": [],
+                "tool_calls": [],
+                "steps_used": 0,
+                "llm_calls": 0,
+            }
 
         url = f"{CHATBOT_SERVICE_URL}/message"
         allowed_audiences = resolve_allowed_audiences(user_role)
         payload = {
             "message": message,
             "user_role": user_role,
+            "user_id": str(user_id) if user_id else None,
             "allowed_audiences": allowed_audiences,
             "history": history or [],
             "retrieval_mode": retrieval_mode,
             "top_k": top_k,
+            "auth_token": auth_token,
+            "simulate_429": simulate_429,
         }
 
         async with httpx.AsyncClient() as client:
@@ -143,14 +158,19 @@ class ChatbotService:
         history: list = None,
         retrieval_mode: str = "hybrid_rerank",
         top_k: int = 4,
+        user_id: str | None = None,
+        auth_token: str | None = None,
+        simulate_429: bool = False,
     ):
         """
-        Gửi tin nhắn dạng stream (SSE) sang Chatbot Service, bảo toàn cả token text và metadata sources trích dẫn.
+        Gửi tin nhắn dạng stream (SSE) sang Chatbot Service, bảo toàn cả token text,
+        metadata sources trích dẫn và các sự kiện Agent (tool_call, ui_action, done).
         """
         quick_reply = self._match_quick_chitchat(message)
         if quick_reply:
             async def quick_generator():
                 yield {"text": quick_reply, "sources": []}
+                yield {"done": True, "mode": "quick_chitchat", "steps_used": 0, "llm_calls": 0}
             return quick_generator()
 
         url = f"{CHATBOT_SERVICE_URL}/message/stream"
@@ -158,10 +178,13 @@ class ChatbotService:
         payload = {
             "message": message,
             "user_role": user_role,
+            "user_id": str(user_id) if user_id else None,
             "allowed_audiences": allowed_audiences,
             "history": history or [],
             "retrieval_mode": retrieval_mode,
             "top_k": top_k,
+            "auth_token": auth_token,
+            "simulate_429": simulate_429,
         }
 
         async def stream_generator():
@@ -177,7 +200,10 @@ class ChatbotService:
                             if line.startswith("data: "):
                                 try:
                                     data = json.loads(line[6:])
-                                    if "sources" in data or "text" in data or "error" in data:
+                                    if any(
+                                        k in data
+                                        for k in ("sources", "text", "error", "tool_call", "ui_action", "done")
+                                    ):
                                         yield data
                                 except json.JSONDecodeError:
                                     continue

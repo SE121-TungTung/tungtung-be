@@ -108,19 +108,47 @@ async def update_target_band(
 ):
     """
     Student cập nhật target band score hoặc CEFR level.
-    Lưu vào users.preferences JSONB.
+    Lưu vào users.preferences JSONB và ghi nhận Audit Log (old_values / new_values).
     """
-    prefs = current_user.preferences or {}
+    from app.services.audit_log_service import audit_service
+    from app.models.audit_log import AuditAction
+
+    old_prefs = dict(current_user.preferences or {})
+    old_target = {
+        "target_band": old_prefs.get("target_band"),
+        "target_cefr": old_prefs.get("target_cefr"),
+    }
+
+    prefs = dict(current_user.preferences or {})
     if payload.target_band is not None:
+        if payload.target_band < 0.0 or payload.target_band > 9.0 or (round(payload.target_band * 2) != payload.target_band * 2):
+            raise APIException(
+                status_code=400,
+                code="INVALID_TARGET_BAND",
+                message="Điểm mục tiêu IELTS (target_band) phải nằm trong khoảng 0.0 – 9.0 với bước nhảy 0.5.",
+            )
         prefs["target_band"] = float(payload.target_band)
     if payload.target_cefr is not None:
         prefs["target_cefr"] = payload.target_cefr
-    
+
     # Ensure SQLAlchemy detects the mutation
     from sqlalchemy.orm.attributes import flag_modified
     current_user.preferences = prefs
     flag_modified(current_user, "preferences")
-    
+
+    audit_service.log(
+        db=db,
+        action=AuditAction.UPDATE,
+        table_name="users",
+        record_id=current_user.id,
+        user_id=current_user.id,
+        old_values=old_target,
+        new_values={
+            "target_band": prefs.get("target_band"),
+            "target_cefr": prefs.get("target_cefr"),
+        },
+    )
+
     db.commit()
     db.refresh(current_user)
 

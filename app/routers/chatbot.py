@@ -72,6 +72,7 @@ class UserChatRequest(BaseModel):
     history: Optional[List[dict]] = []
     retrieval_mode: str = "hybrid_rerank"
     top_k: int = 4
+    simulate_429: bool = False
 
 # --- Background task for uploading to AI server ---
 async def _process_upload_to_ai(
@@ -173,12 +174,14 @@ async def _process_upload_to_ai(
 @router.post("/ask", response_model=ApiResponse[dict])
 async def chat_with_ai(
     request: UserChatRequest,
+    http_request: Request,
     current_user = Depends(get_current_user)
 ):
     """
-    API cho Frontend gọi để chat với AI (trả về reply + danh sách sources trích dẫn).
+    API cho Frontend gọi để chat với AI (trả về reply + danh sách sources trích dẫn + sự kiện Agent).
     """
     real_role = current_user.role.value
+    auth_header = http_request.headers.get("authorization")
 
     try:
         response = await chatbot_service.ask_bot(
@@ -187,6 +190,9 @@ async def chat_with_ai(
             history=request.history,
             retrieval_mode=request.retrieval_mode,
             top_k=request.top_k,
+            user_id=str(current_user.id),
+            auth_token=auth_header,
+            simulate_429=request.simulate_429,
         )
         return ApiResponse(data=response)
     except Exception as e:
@@ -199,12 +205,14 @@ async def chat_with_ai(
 @router.post("/ask/stream")
 async def chat_with_ai_stream(
     request: UserChatRequest,
+    http_request: Request,
     current_user = Depends(get_current_user)
 ):
     """
-    API cho Frontend gọi để chat stream với AI (POST SSE kèm Source Citations).
+    API cho Frontend gọi để chat stream với AI (POST SSE kèm Source Citations, tool_call, ui_action).
     """
     real_role = current_user.role.value
+    auth_header = http_request.headers.get("authorization")
 
     try:
         stream_gen = await chatbot_service.ask_bot_stream(
@@ -213,6 +221,9 @@ async def chat_with_ai_stream(
             history=request.history,
             retrieval_mode=request.retrieval_mode,
             top_k=request.top_k,
+            user_id=str(current_user.id),
+            auth_token=auth_header,
+            simulate_429=request.simulate_429,
         )
 
         async def sse_wrapper():
@@ -233,16 +244,20 @@ async def chat_with_ai_stream(
 
 @router.get("/stream")
 async def chat_with_ai_stream_get(
+    http_request: Request,
     message: str = Query(..., description="Nội dung câu hỏi"),
     retrieval_mode: str = Query("hybrid_rerank", description="Chế độ truy xuất: standard | hybrid | hybrid_rerank"),
     top_k: int = Query(4, description="Số đoạn ngữ cảnh lấy sau Rerank"),
+    simulate_429: bool = Query(False, description="Giả lập lỗi 429 để kiểm thử cơ chế fallback"),
     current_user = Depends(get_current_user_optional)
 ):
     """
     Endpoint GET /api/v1/chatbot/stream dùng cơ chế Server-Sent Events (SSE),
-    gửi từng token câu trả lời kèm metadata các tài liệu tham khảo (Source Citations).
+    gửi từng token câu trả lời kèm metadata các tài liệu tham khảo (Source Citations) và sự kiện Agent.
     """
     real_role = current_user.role.value if current_user and hasattr(current_user, "role") else "guest"
+    uid = str(current_user.id) if current_user and hasattr(current_user, "id") else None
+    auth_header = http_request.headers.get("authorization")
     try:
         stream_gen = await chatbot_service.ask_bot_stream(
             message=message,
@@ -250,6 +265,9 @@ async def chat_with_ai_stream_get(
             history=[],
             retrieval_mode=retrieval_mode,
             top_k=top_k,
+            user_id=uid,
+            auth_token=auth_header,
+            simulate_429=simulate_429,
         )
 
         async def sse_wrapper():
@@ -750,3 +768,509 @@ async def update_document(
             code="UPDATE_FAILED",
             message=f"Failed to update document: {str(e)}"
         )
+
+
+# ============================================================
+# SCRUM-94: INTERNAL AGENT READ TOOLS FOR STUDENT
+# ============================================================
+
+def _resolve_agent_student_user(
+    request: Request,
+    db: Session,
+    current_user_opt = None,
+):
+    """
+    Xác thực yêu cầu gọi công cụ Agent:
+    1. Nếu gọi nội bộ từ `tungtung-chatbot` kèm `x-api-key` hợp lệ và `x-agent-user-id`,
+       lấy thông tin User theo `x-agent-user-id` (không tin tham số từ LLM).
+    2. Hoặc xác thực qua JWT Bearer token (`current_user_opt`).
+    3. Bắt buộc user phải mang vai trò `student`.
+    """
+    from app.core import config as app_config
+    from app.models.user import User, UserRole
+
+    internal_key = request.headers.get("x-api-key")
+    expected_key = app_config.settings.CHATBOT_API_KEY
+    agent_uid_header = request.headers.get("x-agent-user-id")
+
+    user_obj = None
+    if internal_key and expected_key and internal_key == expected_key and agent_uid_header:
+        try:
+            parsed_uid = UUID(str(agent_uid_header).strip())
+            user_obj = (
+                db.query(User)
+                .filter(User.id == parsed_uid, User.deleted_at.is_(None))
+                .first()
+            )
+        except ValueError:
+            user_obj = None
+
+    if user_obj is None and current_user_opt is not None:
+        user_obj = current_user_opt
+
+    if user_obj is None:
+        raise APIException(
+            status_code=401,
+            code="AGENT_TOOL_UNAUTHORIZED",
+            message="Không xác định được danh tính học viên cho công cụ Agent.",
+        )
+
+    role_val = user_obj.role.value if hasattr(user_obj.role, "value") else str(user_obj.role)
+    if role_val != UserRole.STUDENT.value:
+        raise APIException(
+            status_code=403,
+            code="AGENT_TOOL_FORBIDDEN_ROLE",
+            message="Công cụ Agent chỉ được phép truy xuất dữ liệu của học viên (student).",
+        )
+
+    return user_obj
+
+
+def _get_student_enrolled_class_ids(db: Session, student_id: UUID) -> List[UUID]:
+    from app.models.academic import ClassEnrollment, EnrollmentStatus, Class
+
+    rows = (
+        db.query(ClassEnrollment.class_id)
+        .join(Class, Class.id == ClassEnrollment.class_id)
+        .filter(
+            ClassEnrollment.student_id == student_id,
+            ClassEnrollment.deleted_at.is_(None),
+            Class.deleted_at.is_(None),
+            ClassEnrollment.status.in_([EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]),
+        )
+        .all()
+    )
+    return [r.class_id for r in rows]
+
+
+@router.get("/agent-tools/my-classes", response_model=ApiResponse[dict])
+async def agent_tool_get_my_classes(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_optional),
+):
+    """
+    Công cụ `get_my_classes`: Lấy danh sách các lớp học mà học viên đang ghi danh.
+    """
+    from sqlalchemy.orm import joinedload
+    from app.models.academic import Class, ClassEnrollment
+
+    student = _resolve_agent_student_user(request, db, current_user)
+    enrollments = (
+        db.query(ClassEnrollment)
+        .options(
+            joinedload(ClassEnrollment.enrollment_class).joinedload(Class.course),
+            joinedload(ClassEnrollment.enrollment_class).joinedload(Class.teacher),
+            joinedload(ClassEnrollment.enrollment_class).joinedload(Class.room),
+        )
+        .filter(
+            ClassEnrollment.student_id == student.id,
+            ClassEnrollment.deleted_at.is_(None),
+        )
+        .all()
+    )
+
+    classes_list = []
+    for enr in enrollments:
+        cls = enr.enrollment_class
+        if not cls or cls.deleted_at is not None:
+            continue
+        classes_list.append(
+            {
+                "class_id": str(cls.id),
+                "class_name": cls.name,
+                "course_name": cls.course.name if cls.course else None,
+                "teacher_name": f"{cls.teacher.first_name} {cls.teacher.last_name}".strip() if cls.teacher else None,
+                "room_name": cls.room.name if cls.room else None,
+                "start_date": cls.start_date.isoformat() if cls.start_date else None,
+                "end_date": cls.end_date.isoformat() if cls.end_date else None,
+                "class_status": cls.status.value if hasattr(cls.status, "value") else str(cls.status),
+                "enrollment_status": enr.status.value if hasattr(enr.status, "value") else str(enr.status),
+            }
+        )
+
+    return ApiResponse(
+        data={
+            "student_id": str(student.id),
+            "total_classes": len(classes_list),
+            "classes": classes_list,
+        }
+    )
+
+
+@router.get("/agent-tools/schedule", response_model=ApiResponse[dict])
+async def agent_tool_get_schedule(
+    request: Request,
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_optional),
+):
+    """
+    Công cụ `get_schedule`: Lấy lịch học cá nhân của học viên theo các lớp đã ghi danh.
+    """
+    from datetime import date, datetime, timedelta
+    from sqlalchemy.orm import joinedload
+    from app.models.session_attendance import ClassSession
+
+    student = _resolve_agent_student_user(request, db, current_user)
+    enrolled_class_ids = _get_student_enrolled_class_ids(db, student.id)
+
+    try:
+        start_d = datetime.strptime(date_from, "%Y-%m-%d").date() if date_from else date.today()
+    except ValueError:
+        start_d = date.today()
+
+    try:
+        end_d = datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else (start_d + timedelta(days=7))
+    except ValueError:
+        end_d = start_d + timedelta(days=7)
+
+    if not enrolled_class_ids:
+        return ApiResponse(
+            data={
+                "date_from": start_d.isoformat(),
+                "date_to": end_d.isoformat(),
+                "total_sessions": 0,
+                "sessions": [],
+            }
+        )
+
+    sessions = (
+        db.query(ClassSession)
+        .options(
+            joinedload(ClassSession.session_class),
+            joinedload(ClassSession.room),
+            joinedload(ClassSession.teacher),
+        )
+        .filter(
+            ClassSession.class_id.in_(enrolled_class_ids),
+            ClassSession.deleted_at.is_(None),
+            ClassSession.session_date >= start_d,
+            ClassSession.session_date <= end_d,
+        )
+        .order_by(ClassSession.session_date.asc(), ClassSession.start_time.asc())
+        .limit(30)
+        .all()
+    )
+
+    session_items = []
+    for s in sessions:
+        session_items.append(
+            {
+                "session_id": str(s.id),
+                "class_id": str(s.class_id),
+                "class_name": s.session_class.name if s.session_class else "",
+                "date": s.session_date.isoformat() if s.session_date else None,
+                "start_time": s.start_time.strftime("%H:%M") if s.start_time else None,
+                "end_time": s.end_time.strftime("%H:%M") if s.end_time else None,
+                "room_name": s.room.name if s.room else None,
+                "teacher_name": f"{s.teacher.first_name} {s.teacher.last_name}".strip() if s.teacher else None,
+                "topic": s.topic,
+                "status": s.status.value if hasattr(s.status, "value") else str(s.status),
+            }
+        )
+
+    return ApiResponse(
+        data={
+            "date_from": start_d.isoformat(),
+            "date_to": end_d.isoformat(),
+            "total_sessions": len(session_items),
+            "sessions": session_items,
+        }
+    )
+
+
+@router.get("/agent-tools/current-homework", response_model=ApiResponse[dict])
+async def agent_tool_get_current_homework(
+    request: Request,
+    class_id: Optional[str] = Query(None, description="UUID lớp học (tùy chọn)"),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_optional),
+):
+    """
+    Công cụ `get_current_homework`: Lấy bài tập / bài kiểm tra hiện tại của học viên
+    (kèm trạng thái đã nộp / chưa nộp và bài tập ghi trong buổi học gần nhất).
+    """
+    from app.models.test import Test, TestStatus, TestAttempt
+    from app.models.session_attendance import ClassSession
+
+    student = _resolve_agent_student_user(request, db, current_user)
+    enrolled_class_ids = _get_student_enrolled_class_ids(db, student.id)
+
+    target_class_ids = list(enrolled_class_ids)
+    if class_id:
+        try:
+            req_cid = UUID(str(class_id).strip())
+        except ValueError:
+            raise APIException(status_code=400, code="INVALID_CLASS_ID", message="Mã lớp học không hợp lệ.")
+        if req_cid not in enrolled_class_ids:
+            raise APIException(
+                status_code=403,
+                code="CLASS_ACCESS_DENIED",
+                message="Bạn không thuộc lớp học này nên không thể truy vấn bài tập.",
+            )
+        target_class_ids = [req_cid]
+
+    homework_items = []
+    if target_class_ids:
+        tests = (
+            db.query(Test)
+            .filter(
+                Test.deleted_at.is_(None),
+                Test.status == TestStatus.PUBLISHED,
+                Test.class_id.in_(target_class_ids),
+            )
+            .order_by(Test.end_time.asc().nullslast(), Test.created_at.desc())
+            .limit(15)
+            .all()
+        )
+        for t in tests:
+            attempts = (
+                db.query(TestAttempt)
+                .filter(
+                    TestAttempt.test_id == t.id,
+                    TestAttempt.student_id == student.id,
+                    TestAttempt.deleted_at.is_(None),
+                )
+                .order_by(TestAttempt.attempt_number.desc())
+                .all()
+            )
+            latest_status = (
+                attempts[0].status.value
+                if attempts and hasattr(attempts[0].status, "value")
+                else ("not_started" if not attempts else str(attempts[0].status))
+            )
+            homework_items.append(
+                {
+                    "type": "lms_test_or_homework",
+                    "id": str(t.id),
+                    "class_id": str(t.class_id) if t.class_id else None,
+                    "title": t.title,
+                    "test_type": t.test_type.value if hasattr(t.test_type, "value") else str(t.test_type or "homework"),
+                    "due_date": t.end_time.isoformat() if t.end_time else None,
+                    "attempts_used": len(attempts),
+                    "max_attempts": t.max_attempts or 1,
+                    "submission_status": latest_status,
+                }
+            )
+
+        # Bổ sung bài tập về nhà đính kèm trong các buổi học (ClassSession.homework)
+        sessions_with_hw = (
+            db.query(ClassSession)
+            .filter(
+                ClassSession.class_id.in_(target_class_ids),
+                ClassSession.deleted_at.is_(None),
+                ClassSession.homework.isnot(None),
+            )
+            .order_by(ClassSession.session_date.desc())
+            .limit(5)
+            .all()
+        )
+        for sess in sessions_with_hw:
+            if sess.homework:
+                homework_items.append(
+                    {
+                        "type": "session_homework",
+                        "session_id": str(sess.id),
+                        "class_id": str(sess.class_id),
+                        "session_date": sess.session_date.isoformat() if sess.session_date else None,
+                        "topic": sess.topic,
+                        "homework": sess.homework,
+                    }
+                )
+
+    return ApiResponse(
+        data={
+            "total_homework": len(homework_items),
+            "homework_items": homework_items,
+        }
+    )
+
+
+@router.get("/agent-tools/unread-notifications", response_model=ApiResponse[dict])
+async def agent_tool_get_unread_notifications(
+    request: Request,
+    limit: int = Query(5, ge=1, le=5, description="Tối đa 5 thông báo chưa đọc"),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_optional),
+):
+    """
+    Công cụ `get_unread_notifications`: Lấy tối đa 5 thông báo chưa đọc gần nhất của học viên.
+    """
+    from app.repositories.notification import notification_repo
+
+    student = _resolve_agent_student_user(request, db, current_user)
+    capped_limit = min(max(limit, 1), 5)
+    unread_list = notification_repo.get_by_user(
+        db,
+        user_id=student.id,
+        skip=0,
+        limit=capped_limit,
+        unread_only=True,
+    )
+    total_unread = notification_repo.count_unread(db, user_id=student.id)
+
+    items = [
+        {
+            "id": str(n.id),
+            "title": n.title,
+            "content": n.content,
+            "type": n.notification_type.value if hasattr(n.notification_type, "value") else str(n.notification_type),
+            "priority": n.priority.value if hasattr(n.priority, "value") else str(n.priority),
+            "action_url": n.action_url,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+        }
+        for n in unread_list
+    ]
+
+    return ApiResponse(
+        data={
+            "unread_count": total_unread,
+            "notifications": items,
+        }
+    )
+
+
+class AgentTargetBandUpdate(BaseModel):
+    target_band: float
+    target_cefr: Optional[str] = None
+
+
+@router.put("/agent-tools/target-band", response_model=ApiResponse[dict])
+async def agent_tool_set_target_band(
+    request: Request,
+    payload: AgentTargetBandUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_optional),
+):
+    """
+    Công cụ `set_target_band`: Học viên đặt hoặc cập nhật band mục tiêu IELTS (0.0 – 9.0, bước 0.5).
+    Ghi nhận nhật ký kiểm toán (`audit_logs`) với `old_values` và `new_values`.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    student = _resolve_agent_student_user(request, db, current_user)
+    band_val = float(payload.target_band)
+    if band_val < 0.0 or band_val > 9.0 or (round(band_val * 2) != band_val * 2):
+        raise APIException(
+            status_code=400,
+            code="INVALID_TARGET_BAND",
+            message="Điểm mục tiêu IELTS phải nằm trong khoảng 0.0 – 9.0 với bước nhảy 0.5.",
+        )
+
+    old_prefs = dict(student.preferences or {})
+    old_target = {
+        "target_band": old_prefs.get("target_band"),
+        "target_cefr": old_prefs.get("target_cefr"),
+    }
+
+    new_prefs = dict(student.preferences or {})
+    new_prefs["target_band"] = band_val
+    if payload.target_cefr is not None:
+        new_prefs["target_cefr"] = payload.target_cefr
+
+    student.preferences = new_prefs
+    flag_modified(student, "preferences")
+
+    audit_service.log(
+        db=db,
+        action=AuditAction.UPDATE,
+        table_name="users",
+        record_id=student.id,
+        user_id=student.id,
+        old_values=old_target,
+        new_values={
+            "target_band": new_prefs.get("target_band"),
+            "target_cefr": new_prefs.get("target_cefr"),
+            "source": "student_agent_tool",
+        },
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+
+    db.commit()
+    db.refresh(student)
+
+    return ApiResponse(
+        data={
+            "student_id": str(student.id),
+            "old_target_band": old_target.get("target_band"),
+            "new_target_band": band_val,
+            "target_cefr": new_prefs.get("target_cefr"),
+            "audit_logged": True,
+        },
+        message=f"Đã cập nhật điểm mục tiêu IELTS thành {band_val}.",
+    )
+
+
+@router.get("/agent-tools/class-posts", response_model=ApiResponse[dict])
+async def agent_tool_summarize_class_posts(
+    request: Request,
+    class_id: Optional[str] = Query(None, description="UUID lớp học (tùy chọn)"),
+    limit: int = Query(5, ge=1, le=10, description="Số bài đăng gần đây cần lấy"),
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user_optional),
+):
+    """
+    Công cụ `summarize_class_posts`: Lấy các bài đăng bảng tin lớp học gần đây của học viên.
+    Kiểm tra nghiêm ngặt học viên phải ghi danh trong lớp đó mới được phép đọc bài đăng.
+    """
+    from sqlalchemy.orm import joinedload
+    from app.models.class_post import ClassPost
+
+    student = _resolve_agent_student_user(request, db, current_user)
+    enrolled_class_ids = _get_student_enrolled_class_ids(db, student.id)
+
+    target_class_ids = list(enrolled_class_ids)
+    if class_id:
+        try:
+            req_cid = UUID(str(class_id).strip())
+        except ValueError:
+            raise APIException(status_code=400, code="INVALID_CLASS_ID", message="Mã lớp học không hợp lệ.")
+        if req_cid not in enrolled_class_ids:
+            raise APIException(
+                status_code=403,
+                code="CLASS_ACCESS_DENIED",
+                message="Bạn không ghi danh trong lớp học này nên không được xem bài đăng.",
+            )
+        target_class_ids = [req_cid]
+
+    if not target_class_ids:
+        return ApiResponse(data={"total_posts": 0, "posts": []})
+
+    capped_limit = min(max(limit, 1), 10)
+    posts = (
+        db.query(ClassPost)
+        .options(joinedload(ClassPost.author), joinedload(ClassPost.class_rel))
+        .filter(
+            ClassPost.class_id.in_(target_class_ids),
+            ClassPost.deleted_at.is_(None),
+        )
+        .order_by(ClassPost.is_pinned.desc(), ClassPost.created_at.desc())
+        .limit(capped_limit)
+        .all()
+    )
+
+    post_items = [
+        {
+            "post_id": str(p.id),
+            "class_id": str(p.class_id),
+            "class_name": p.class_rel.name if p.class_rel else None,
+            "title": p.title,
+            "content": (p.content or "")[:600],
+            "post_type": p.post_type.value if hasattr(p.post_type, "value") else str(p.post_type),
+            "is_pinned": bool(p.is_pinned),
+            "author_name": f"{p.author.first_name} {p.author.last_name}".strip() if p.author else None,
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        }
+        for p in posts
+    ]
+
+    return ApiResponse(
+        data={
+            "total_posts": len(post_items),
+            "posts": post_items,
+        }
+    )
+
