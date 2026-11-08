@@ -1,8 +1,9 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from uuid import UUID
 import logging
 import json
@@ -14,11 +15,53 @@ from app.schemas.base_schema import ApiResponse, PaginationResponse
 from app.core.exceptions import APIException
 from app.dependencies import get_current_user, get_current_user_optional, get_current_admin_user, CommonQueryParams
 
-from app.services.chatbot_service import chatbot_service
-from app.models.chatbot_document import ChatbotDocument, DocCategory, DocStatus
-from app.schemas.chatbot import ChatbotDocumentResponse
+from app.services.chatbot_service import chatbot_service, normalize_audience
+from app.services.audit_log_service import audit_service
+from app.models.audit_log import AuditAction
+from app.models.chatbot_document import ChatbotDocument, DocCategory, DocStatus, DEFAULT_DOCUMENT_AUDIENCE
+from app.schemas.chatbot import (
+    ChatbotDocumentResponse,
+    ChatbotDocumentAudienceUpdate,
+    ChatbotDocumentBulkAudienceUpdate,
+)
 
 logger = logging.getLogger(__name__)
+
+_schema_migrated = False
+
+
+def _ensure_chatbot_documents_schema(db: Session):
+    """
+    Migration tự động cho bảng chatbot_documents:
+      - Thêm cột audience (mặc định ['student', 'teacher', 'staff', 'admin'])
+      - Thêm cột audience_reviewed (mặc định FALSE cho tài liệu cũ)
+    """
+    global _schema_migrated
+    if _schema_migrated:
+        return
+    try:
+        db.execute(
+            text(
+                """
+                ALTER TABLE chatbot_documents
+                ADD COLUMN IF NOT EXISTS audience JSONB NOT NULL DEFAULT '["student", "teacher", "staff", "admin"]'::jsonb;
+                """
+            )
+        )
+        db.execute(
+            text(
+                """
+                ALTER TABLE chatbot_documents
+                ADD COLUMN IF NOT EXISTS audience_reviewed BOOLEAN NOT NULL DEFAULT FALSE;
+                """
+            )
+        )
+        db.commit()
+        _schema_migrated = True
+    except Exception as e:
+        db.rollback()
+        logger.warning(f"Could not auto-migrate chatbot_documents schema: {e}")
+
 
 # Step 1: Khai báo Router với ResponseWrapperRoute
 router = APIRouter(tags=["Chatbot"], prefix="/chatbot", route_class=ResponseWrapperRoute)
@@ -31,7 +74,16 @@ class UserChatRequest(BaseModel):
     top_k: int = 4
 
 # --- Background task for uploading to AI server ---
-async def _process_upload_to_ai(doc_db_id: UUID, file_content: bytes, filename: str, content_type: str, doc_category: str, user_id: UUID):
+async def _process_upload_to_ai(
+    doc_db_id: UUID,
+    file_content: bytes,
+    filename: str,
+    content_type: str,
+    doc_category: str,
+    user_id: UUID,
+    audience: Optional[List[str]] = None,
+    audience_reviewed: bool = True,
+):
     """
     Background task: upload file to AI server, then update DB record status.
     Also sends a notification to the user.
@@ -51,7 +103,12 @@ async def _process_upload_to_ai(doc_db_id: UUID, file_content: bytes, filename: 
         pseudo_file = StarletteUploadFile(filename=filename, file=file_like, headers={"content-type": content_type or "application/octet-stream"})
 
         try:
-            result = await chatbot_service.upload_document(pseudo_file, doc_category)
+            result = await chatbot_service.upload_document(
+                pseudo_file,
+                doc_category=doc_category,
+                audience=audience or doc.audience or list(DEFAULT_DOCUMENT_AUDIENCE),
+                audience_reviewed=audience_reviewed,
+            )
             doc_id_from_chatbot = result.get("doc_id")
 
             if not doc_id_from_chatbot:
@@ -240,16 +297,27 @@ async def get_ragas_evaluation_results(
 
 @router.post("/admin/upload-doc", response_model=ApiResponse[ChatbotDocumentResponse])
 async def upload_knowledge_base(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     doc_category: str = Form("business"),
+    audience: str = Form('["student","teacher","staff","admin"]'),
     db: Session = Depends(get_db),
     current_user = Depends(get_current_admin_user)
 ):
     """
-    API cho Admin upload tài liệu nội quy/giáo trình.
+    API cho Admin upload tài liệu nội quy/giáo trình kèm phân quyền audience bắt buộc.
     Trả về ngay lập tức với status=processing, upload AI chạy nền.
     """
+    _ensure_chatbot_documents_schema(db)
+    normalized_aud = normalize_audience(audience, fallback=[])
+    if not normalized_aud:
+        raise APIException(
+            status_code=400,
+            code="INVALID_AUDIENCE",
+            message="Vui lòng chọn ít nhất một đối tượng được phép truy xuất tài liệu (public, student, teacher, staff, admin).",
+        )
+
     try:
         file_content = await file.read()
 
@@ -257,10 +325,30 @@ async def upload_knowledge_base(
             doc_id=None,
             filename=file.filename,
             category=DocCategory(doc_category),
+            audience=normalized_aud,
+            audience_reviewed=True,
             status=DocStatus.processing,
             created_by=current_user.id
         )
         db.add(new_doc)
+        db.flush()
+
+        audit_service.log(
+            db,
+            action=AuditAction.CREATE,
+            table_name="chatbot_documents",
+            record_id=new_doc.id,
+            user_id=current_user.id,
+            new_values={
+                "filename": file.filename,
+                "category": doc_category,
+                "audience": normalized_aud,
+                "audience_reviewed": True,
+            },
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+
         db.commit()
         db.refresh(new_doc)
 
@@ -272,11 +360,15 @@ async def upload_knowledge_base(
             content_type=file.content_type,
             doc_category=doc_category,
             user_id=current_user.id,
+            audience=normalized_aud,
+            audience_reviewed=True,
         )
 
         new_doc.uploaded_by_name = f"{current_user.first_name} {current_user.last_name}"
 
         return ApiResponse(data=ChatbotDocumentResponse.model_validate(new_doc, from_attributes=True))
+    except APIException:
+        raise
     except Exception as e:
         db.rollback()
         raise APIException(
@@ -284,6 +376,181 @@ async def upload_knowledge_base(
             code="UPLOAD_FAILED",
             message=f"Failed to initiate upload: {str(e)}"
         )
+
+
+@router.patch("/admin/documents/bulk-audience", response_model=ApiResponse[List[ChatbotDocumentResponse]])
+async def bulk_update_document_audience(
+    request: Request,
+    payload: ChatbotDocumentBulkAudienceUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_admin_user),
+):
+    """
+    Cập nhật hàng loạt quyền truy cập audience cho nhiều tài liệu cùng lúc.
+    """
+    _ensure_chatbot_documents_schema(db)
+    normalized_aud = normalize_audience(payload.audience, fallback=[])
+    if not normalized_aud:
+        raise APIException(
+            status_code=400,
+            code="INVALID_AUDIENCE",
+            message="Danh sách audience phải chứa ít nhất một giá trị hợp lệ.",
+        )
+
+    from app.models.user import User
+
+    updated_docs: list[ChatbotDocumentResponse] = []
+    for raw_id in payload.document_ids:
+        doc = None
+        try:
+            parsed_uuid = UUID(str(raw_id))
+            doc = db.query(ChatbotDocument).filter(ChatbotDocument.id == parsed_uuid).first()
+        except ValueError:
+            pass
+        if not doc:
+            doc = db.query(ChatbotDocument).filter(ChatbotDocument.doc_id == str(raw_id)).first()
+        if not doc:
+            continue
+
+        old_aud = list(doc.audience) if doc.audience else list(DEFAULT_DOCUMENT_AUDIENCE)
+        old_rev = bool(doc.audience_reviewed)
+
+        if doc.doc_id and doc.status == DocStatus.completed:
+            try:
+                await chatbot_service.update_document_audience(
+                    doc_id=doc.doc_id,
+                    audience=normalized_aud,
+                    audience_reviewed=payload.audience_reviewed,
+                )
+            except HTTPException as he:
+                if he.status_code != 404:
+                    raise APIException(
+                        status_code=he.status_code,
+                        code="AI_AUDIENCE_UPDATE_FAILED",
+                        message=str(he.detail),
+                    )
+
+        doc.audience = normalized_aud
+        doc.audience_reviewed = bool(payload.audience_reviewed)
+        db.flush()
+
+        audit_service.log(
+            db,
+            action=AuditAction.UPDATE,
+            table_name="chatbot_documents",
+            record_id=doc.id,
+            user_id=current_user.id,
+            old_values={"audience": old_aud, "audience_reviewed": old_rev},
+            new_values={"audience": normalized_aud, "audience_reviewed": bool(payload.audience_reviewed)},
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+
+        user = db.query(User).filter(User.id == doc.created_by).first()
+        doc.uploaded_by_name = f"{user.first_name} {user.last_name}" if user else ""
+        updated_docs.append(ChatbotDocumentResponse.model_validate(doc, from_attributes=True))
+
+    db.commit()
+    return ApiResponse(
+        data=updated_docs,
+        message=f"Đã cập nhật phân quyền audience cho {len(updated_docs)} tài liệu.",
+    )
+
+
+@router.patch("/admin/documents/{doc_id}/audience", response_model=ApiResponse[ChatbotDocumentResponse])
+async def update_document_audience_endpoint(
+    doc_id: str,
+    request: Request,
+    payload: ChatbotDocumentAudienceUpdate,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_admin_user),
+):
+    """
+    Cập nhật danh sách audience cho tài liệu đã tồn tại (không cần embedding lại file).
+    Ghi nhận nhật ký kiểm toán (Audit Log).
+    """
+    _ensure_chatbot_documents_schema(db)
+    normalized_aud = normalize_audience(payload.audience, fallback=[])
+    if not normalized_aud:
+        raise APIException(
+            status_code=400,
+            code="INVALID_AUDIENCE",
+            message="Danh sách audience phải chứa ít nhất một giá trị hợp lệ (public, student, teacher, staff, admin).",
+        )
+
+    doc = None
+    try:
+        parsed_uuid = UUID(doc_id)
+        doc = db.query(ChatbotDocument).filter(ChatbotDocument.id == parsed_uuid).first()
+    except ValueError:
+        pass
+    if not doc:
+        doc = db.query(ChatbotDocument).filter(ChatbotDocument.doc_id == doc_id).first()
+
+    if not doc:
+        raise APIException(
+            status_code=404,
+            code="DOC_NOT_FOUND",
+            message="Không tìm thấy tài liệu trong cơ sở dữ liệu.",
+        )
+
+    old_aud = list(doc.audience) if doc.audience else list(DEFAULT_DOCUMENT_AUDIENCE)
+    old_rev = bool(doc.audience_reviewed)
+
+    try:
+        if doc.doc_id and doc.status == DocStatus.completed:
+            try:
+                await chatbot_service.update_document_audience(
+                    doc_id=doc.doc_id,
+                    audience=normalized_aud,
+                    audience_reviewed=payload.audience_reviewed,
+                )
+            except HTTPException as he:
+                if he.status_code != 404:
+                    raise APIException(
+                        status_code=he.status_code,
+                        code="AI_AUDIENCE_UPDATE_FAILED",
+                        message=str(he.detail),
+                    )
+
+        doc.audience = normalized_aud
+        doc.audience_reviewed = bool(payload.audience_reviewed)
+        db.flush()
+
+        audit_service.log(
+            db,
+            action=AuditAction.UPDATE,
+            table_name="chatbot_documents",
+            record_id=doc.id,
+            user_id=current_user.id,
+            old_values={"audience": old_aud, "audience_reviewed": old_rev},
+            new_values={"audience": normalized_aud, "audience_reviewed": bool(payload.audience_reviewed)},
+            ip_address=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+
+        db.commit()
+        db.refresh(doc)
+
+        from app.models.user import User
+        user = db.query(User).filter(User.id == doc.created_by).first()
+        doc.uploaded_by_name = f"{user.first_name} {user.last_name}" if user else ""
+
+        return ApiResponse(
+            data=ChatbotDocumentResponse.model_validate(doc, from_attributes=True),
+            message="Đã cập nhật quyền truy cập audience cho tài liệu thành công.",
+        )
+    except APIException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise APIException(
+            status_code=500,
+            code="AUDIENCE_UPDATE_ERROR",
+            message=f"Lỗi khi cập nhật quyền truy cập tài liệu: {str(e)}",
+        )
+
 
 @router.get("/admin/documents", response_model=PaginationResponse[ChatbotDocumentResponse])
 async def list_documents(
@@ -295,6 +562,7 @@ async def list_documents(
     """
     Lấy danh sách tài liệu Chatbot từ Database
     """
+    _ensure_chatbot_documents_schema(db)
     from app.models.user import User
 
     query = db.query(ChatbotDocument, User).join(User, ChatbotDocument.created_by == User.id)
@@ -307,6 +575,8 @@ async def list_documents(
 
     results = []
     for doc, user in items:
+        if not doc.audience:
+            doc.audience = list(DEFAULT_DOCUMENT_AUDIENCE)
         doc.uploaded_by_name = f"{user.first_name} {user.last_name}"
         results.append(ChatbotDocumentResponse.model_validate(doc, from_attributes=True))
 
@@ -414,6 +684,8 @@ async def retry_upload(
         content_type=file.content_type,
         doc_category=doc.category.value,
         user_id=current_user.id,
+        audience=doc.audience or list(DEFAULT_DOCUMENT_AUDIENCE),
+        audience_reviewed=bool(doc.audience_reviewed),
     )
 
     from app.models.user import User
@@ -432,6 +704,7 @@ async def update_document(
     """
     Thay thế file của tài liệu Chatbot hiện tại
     """
+    _ensure_chatbot_documents_schema(db)
     doc = db.query(ChatbotDocument).filter(ChatbotDocument.doc_id == doc_id).first()
     if not doc:
         raise APIException(
@@ -449,7 +722,12 @@ async def update_document(
             else:
                 raise he
 
-        result = await chatbot_service.upload_document(file, doc.category.value)
+        result = await chatbot_service.upload_document(
+            file,
+            doc_category=doc.category.value,
+            audience=doc.audience or list(DEFAULT_DOCUMENT_AUDIENCE),
+            audience_reviewed=bool(doc.audience_reviewed),
+        )
         new_doc_id_from_chatbot = result.get("doc_id")
 
         if not new_doc_id_from_chatbot:
